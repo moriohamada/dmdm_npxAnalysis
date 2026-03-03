@@ -5,6 +5,7 @@ Functions for extracting full FR matrix (nN x nT) + neural info.
 from config import PATHS, ANALYSIS_OPTIONS
 from data.session import Session
 from data.stimulus import get_trials_from_block_start
+from data.responses import extract_all_timings, get_event_aligned_responses
 from utils.smoothing import causal_boxcar
 import os
 from pathlib import Path
@@ -80,3 +81,5 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
             save_fr_matrix(session.fr_matrix, fr_save_path)
 
             # extract event-aligned responses, averages
+            session = extract_all_timings(session, ops)
+            get_event_aligned_responses(session, ops)
