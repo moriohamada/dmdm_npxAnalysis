@@ -4,6 +4,7 @@ Functions for extracting full FR matrix (nN x nT) + neural info.
 
 from config import PATHS, ANALYSIS_OPTIONS
 from data.session import Session
+from data.stimulus import get_trials_from_block_start
 from utils.smoothing import causal_boxcar
 import os
 from pathlib import Path
@@ -65,6 +66,9 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
         for sess_folder in sess_folders:
 
             session = Session.from_folder(sess_folder)
+            # add some useful columns to trials
+            session = get_trials_from_block_start(session)
+
             if not session.has_neural:
                 continue
 

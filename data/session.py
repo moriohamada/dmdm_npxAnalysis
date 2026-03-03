@@ -12,11 +12,18 @@ import numpy as np
 
 @dataclass
 class Session:
-    trials:    pd.DataFrame
-    daq:       pd.DataFrame   | None = None
-    move:      dict           | None = None
-    neural:    pd.DataFrame   | None = None
-    fr_matrix: pd.DataFrame   | None = None
+    trials:      pd.DataFrame
+    daq:         pd.DataFrame | None = None
+    move:        dict         | None = None
+    neural:      pd.DataFrame | None = None
+    fr_matrix:   pd.DataFrame | None = None
+
+    # event timings
+    bl_onsets:   pd.DataFrame | None = None
+    tf_pulses:   pd.DataFrame | None = None
+    ch_onsets:   pd.DataFrame | None = None
+    lick_times:  pd.DataFrame | None = None
+    abort_times: pd.DataFrame | None = None
 
     @property
     def has_neural(self) -> bool:
@@ -27,8 +34,22 @@ class Session:
         return len(self.fr_matrix) if self.fr_matrix is not None else 0
 
     @property
+    def get_areas(self):
+        return self.neural.brain_region_comb.unique()
+
+    @property
     def t_ax(self) -> np.ndarray:
         return self.fr_matrix.columns.values if self.fr_matrix is not None else None
+
+    @property
+    def trial_outcomes(self):
+        return dict(
+            Total = len(self.trials),
+            Hits  = self.trials['IsHit'].sum(),
+            Miss  = self.trials['IsMiss'].sum(),
+            FA    = self.trials['IsFA'].sum(),
+            Abort = self.trials['IsAbort'].sum(),
+        )
 
     @classmethod
     def from_folder(cls, sess_folder: str) -> Session:

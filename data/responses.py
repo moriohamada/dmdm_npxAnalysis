@@ -7,10 +7,10 @@ from config import PATHS, ANALYSIS_OPTIONS
 from data.stimulus import *
 from data.session import Session
 
-def extract_all_responses(session: Session = None,
-                          ops: dict = ANALYSIS_OPTIONS,
-                          save_path: str = PATHS['npx_dir_local']
-                          )-> tuple(dict, dict)
+def extract_all_timings(session: Session = None,
+                        ops: dict = ANALYSIS_OPTIONS,
+                        save_path: str = PATHS['npx_dir_local']
+                        ):
     """
     Extract event-aligned firing rates for all units in given session.
     Saves a file with all events per event type, as well as an
@@ -18,9 +18,10 @@ def extract_all_responses(session: Session = None,
     """
 
     # Baseline onsets
-    baseline_onsets = get_baseline_onset_times(session, ops)
+    session = get_baseline_onset_times(session, ops)
 
     # TF outliers
+
 
     # Change onset
 
@@ -29,4 +30,4 @@ def extract_all_responses(session: Session = None,
     # FAs
 
 
-    return t_ax, avg_resps
+    return session
