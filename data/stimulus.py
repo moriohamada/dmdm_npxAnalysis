@@ -23,15 +23,16 @@ def get_trials_from_block_start(session: Session) -> Session:
 
 
 def get_tf_outliers(session: Session,
-                    ops: dict = ANALYSIS_OPTIONS):
+                    ops: dict = ANALYSIS_OPTIONS) -> Session:
 
     tf_pulses = []
     for tr, row in session.trials.iterrows():
         # first some basic info about the trial and lick
-        block = session.trials['hazardblock']
-        tr_in_block = session.trials['trInBlock']
-        tr_outcome = session.trials['trialoutcome']
-
+        block = row['hazardblock']
+        tr_in_block = row['trInBlock']
+        tr_outcome = row['trialoutcome']
+        tr_lick = row['motion_onset']
+        tr_abort = row['rt_abort']
 
         tf_seq = row['TF'][row['TF'].nonzero()]
         ch_t   = row['stimT']
@@ -41,12 +42,36 @@ def get_tf_outliers(session: Session,
                  [~np.isnan(row['frame_time'])][:ch_fr:3])
         assert len(fr_t)==len(bl_tf)
 
-        outliers = np.where(np.abs(bl_tf) > ops['tf_outlier']*0.25)
+        outliers = np.where(np.abs(bl_tf) > ops['tf_outlier']*0.25)[0]
+
+        if outliers.size == 0:
+            continue
+
+        tf = bl_tf[outliers]
+        time = fr_t[outliers]
+        time_to_lick = tr_lick - time
+        time_to_abort = tr_abort - time
+        time_in_tr = time - row['Baseline_ON_rise']
+
+        tf_pulses.extend([{
+            'tf': tf[i],
+            'time': time[i],
+            'tr_time': time_in_tr[i],
+            'block': block,
+            'tr_in_block': tr_in_block,
+            'tr_outcome': tr_outcome,
+            'time_to_lick': time_to_lick[i],
+            'time_to_abort': time_to_abort[i],
+        } for i,_ in enumerate(outliers)])
+
+    session.tf_pulses = pd.DataFrame(tf_pulses)
+
+    return session
 
 
 
 def get_baseline_onset_times(session:Session,
-                             ops: dict = ANALYSIS_OPTIONS):
+                             ops: dict = ANALYSIS_OPTIONS) -> Session:
     bl_onsets = (session.daq[
                  session.daq.event_type=='Baseline_ON']
                  .reset_index()
@@ -60,8 +85,9 @@ def get_baseline_onset_times(session:Session,
     session.bl_onsets['trInBlock'] = session.trials['trInBlock'].to_numpy()
     return session
 
-def get_change_onset_times():
-    raise NotImplementedError
+def get_change_onset_times(session: Session,
+                           ops: dict = ANALYSIS_OPTIONS) -> Session:
+    ch_onsets
 
 def get_lick_onset_times():
     raise NotImplementedError

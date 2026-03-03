@@ -21,9 +21,10 @@ def extract_all_timings(session: Session = None,
     session = get_baseline_onset_times(session, ops)
 
     # TF outliers
+    session = get_tf_outliers(session, ops)
 
+    # Change onsets
 
-    # Change onset
 
     # Hits
 
