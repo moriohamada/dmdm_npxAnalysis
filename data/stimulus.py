@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 
 def get_trials_from_block_start(session: Session) -> Session:
+    """
+    Add number of trials since a block switch (or start of session)
+    as column in session.trials
+    """
     block = session.trials['hazardblock']
     trans = [tr for tr, b in enumerate(block)
              if tr==0 or b!=block[int(tr-1)]]
@@ -21,7 +25,6 @@ def get_trials_from_block_start(session: Session) -> Session:
     session.trials['trInBlock'] = tr_from_block_switch
     return session
 
-
 def get_tf_outliers(session: Session,
                     ops: dict = ANALYSIS_OPTIONS) -> Session:
 
@@ -31,7 +34,14 @@ def get_tf_outliers(session: Session,
         block = row['hazardblock']
         tr_in_block = row['trInBlock']
         tr_outcome = row['trialoutcome']
-        tr_lick = row['motion_onset']
+        if row['IsFA']:
+            tr_lick = row['motion_onset'] \
+                if not pd.isna(row['motion_onset']) \
+                else (row['Baseline_ON_rise'] + row['rt_FA'])
+        elif row['IsHit']:
+            tr_lick = row['motion_onset']
+        else:
+            tr_lick = np.nan
         tr_abort = row['rt_abort']
 
         tf_seq = row['TF'][row['TF'].nonzero()]
@@ -57,6 +67,7 @@ def get_tf_outliers(session: Session,
             'tf': tf[i],
             'time': time[i],
             'tr_time': time_in_tr[i],
+            'trial': tr,
             'block': block,
             'tr_in_block': tr_in_block,
             'tr_outcome': tr_outcome,
@@ -68,10 +79,7 @@ def get_tf_outliers(session: Session,
 
     return session
 
-
-
-def get_baseline_onset_times(session:Session,
-                             ops: dict = ANALYSIS_OPTIONS) -> Session:
+def get_baseline_onset_times(session:Session) -> Session:
     bl_onsets = (session.daq[
                  session.daq.event_type=='Baseline_ON']
                  .reset_index()
@@ -85,9 +93,55 @@ def get_baseline_onset_times(session:Session,
     session.bl_onsets['trInBlock'] = session.trials['trInBlock'].to_numpy()
     return session
 
-def get_change_onset_times(session: Session,
-                           ops: dict = ANALYSIS_OPTIONS) -> Session:
+def get_change_onset_times(session: Session) -> Session:
+    ch_onsets = []
+    for tr, row in session.trials.iterrows():
+        if not row['IsHit'] and not row['IsMiss']:
+             continue
 
+        ch_onsets.append({
+            'time': row['Change_ON_rise'],
+            'tr_time': row['stimT'],
+            'ch_tf': row['Stim2TF'],
+            'trial': tr,
+            'block': row['hazardblock'],
+            'tr_in_block': row['trInBlock'],
+            'isHit': row['IsHit'],
+            'isProbe': row['IsProbe'],
+        })
+    session.ch_onsets = pd.DataFrame(ch_onsets)
+    return session
 
-def get_lick_onset_times():
-    raise NotImplementedError
+def get_lick_onset_times(session: Session):
+    lick_onsets = []
+
+    for tr, row in session.trials.iterrows():
+        if not row['IsHit'] and not row['IsFA']:
+            continue
+        if np.isnan(row['motion_onset']):
+            continue
+
+        # get stimulus sequence leading up to lick
+        window_fr = round(2 * 60 / 3)  # number of samples in 2s window at /3 subsampling
+        lick_fr = round((row['motion_onset'] -
+                        row['Baseline_ON_rise']) * 60)
+        start_fr = max(0, lick_fr - round(2 * 60))
+
+        tf_seq = row['TF'][row['TF'].nonzero()]
+        lick_tf = np.log2(tf_seq[start_fr:lick_fr:3])
+
+        # pad front with NaNs if window is shorter than 2s
+        pad = window_fr - len(lick_tf)
+        if pad > 0:
+            lick_tf = np.concatenate([np.full(pad, np.nan), lick_tf])
+
+        lick_onsets.append({
+            'time': row['motion_onset'],
+            'tr_time': row['motion_onset'] - row['Baseline_ON_rise'],
+            'block': row['hazardblock'],
+            'tr_in_block': row['trInBlock'],
+            'isHit': row['IsHit'],
+            'isFA': row['IsFA'],
+            'isProbe': row['IsProbe'],
+            'precedingTF': lick_tf,
+        })

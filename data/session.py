@@ -34,7 +34,7 @@ class Session:
         return len(self.fr_matrix) if self.fr_matrix is not None else 0
 
     @property
-    def get_areas(self):
+    def areas(self):
         return self.neural.brain_region_comb.unique()
 
     @property

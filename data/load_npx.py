@@ -66,8 +66,10 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
         for sess_folder in sess_folders:
 
             session = Session.from_folder(sess_folder)
+
             # add some useful columns to trials
             session = get_trials_from_block_start(session)
+
 
             if not session.has_neural:
                 continue
