@@ -87,7 +87,7 @@ def get_baseline_onset_times(session:Session,
 
 def get_change_onset_times(session: Session,
                            ops: dict = ANALYSIS_OPTIONS) -> Session:
-    ch_onsets
+
 
 def get_lick_onset_times():
     raise NotImplementedError
