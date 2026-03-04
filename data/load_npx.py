@@ -13,6 +13,7 @@ from pathlib import Path
 import pickle
 import pandas as pd
 import numpy as np
+import gc
 from scipy.stats import zscore
 
 
@@ -53,8 +54,8 @@ def save_fr_matrix(fr_matrix: pd.DataFrame,
 
     save_dir = Path(save_path).parent
     save_dir.mkdir(parents=True, exist_ok=True)
+    fr_matrix = fr_matrix.astype(np.float32)
     fr_matrix.to_parquet(save_path)
-
 
 def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
                          npx_dir_local: str = PATHS['npx_dir_local'],
@@ -71,26 +72,34 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
         sess_folders = [f.path for f in os.scandir(subj_folder) if f.is_dir()]
         for sess_folder in sess_folders:
 
+            file_parts   = sess_folder.split('/')
+            session_name = file_parts[-1]
+            save_dir     = sess_folder.replace(npx_dir_ceph, npx_dir_local)
+
+            # if os.path.exists(os.path.join(save_dir, 'session.pkl')):
+            #     print(f'Skipping {session_name} - already extracted')
+            #     continue
+
             session = Session.from_folder(sess_folder)
+            print(f'Extracting neural data from {session.animal}, {session.name}')
 
             # add some useful columns to trials
             session = get_trials_from_block_start(session)
 
-
             if not session.has_neural:
+                print('No neural data found!')
+                session.save(save_dir)
                 continue
 
             session.fr_matrix = extract_FR_matrix(session.neural,
                                                   bin_size=ops['spBinWidth'],
                                                   normalize=True)
-
-            save_path = (sess_folder.replace(npx_dir_ceph, npx_dir_local) +
-                         '/FR_matrix.parquet')
-            save_fr_matrix(session.fr_matrix, save_path)
+            save_fr_matrix(session.fr_matrix, save_dir + '/FR_matrix.parquet')
 
             # extract event-aligned responses, averages
             session = extract_all_timings(session, ops)
             get_event_aligned_responses(session, ops)
 
-            # save session
-            session.save(save_path)
+            session.save(save_dir)
+            del session
+            gc.collect()

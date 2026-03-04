@@ -3,7 +3,7 @@ Session dataclass and constructor.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 import pickle
 import pandas as pd
@@ -20,6 +20,7 @@ class Session:
     move:        dict         | None = None
     neural:      pd.DataFrame | None = None
     fr_matrix:   pd.DataFrame | None = None
+    unit_info:   pd.DataFrame | None = None
 
     # event timings
     bl_onsets:   pd.DataFrame | None = None
@@ -57,28 +58,37 @@ class Session:
     @classmethod
     def from_folder(cls, sess_folder: str) -> Session:
 
+        # parse animal and session names
+        file_parts = sess_folder.split('/')
+        animal = file_parts[-2]
+        session_name = file_parts[-1]
+
         trials = pd.read_parquet(os.path.join(sess_folder, 'trials.parquet'))
 
         if not os.path.isfile(os.path.join(sess_folder, 'neural.parquet')):
-            return cls(trials=trials)
+            return cls(trials=trials, animal=animal, name=session_name)
 
         neural = (pd.read_parquet(os.path.join(sess_folder, 'neural.parquet'))
                   .drop(columns=['brain_region', 'x', 'y', 'z']))
         daq    = pd.read_parquet(os.path.join(sess_folder, 'daq.parquet'))
         move   = pickle.load(open(os.path.join(sess_folder, 'movement.pkl'), 'rb'))
 
-        # parse animal and session names
-        file_parts = sess_folder.split('/')
-        animal = file_parts[-2]
-        session_name = file_parts[-1]
+
+
+        # unit info
+        unit_info = (neural.groupby('cluster_id')['brain_region_comb']
+                     .first()
+                     .reset_index())
 
         return cls(trials=trials, daq=daq, move=move, neural=neural,
-                   animal=animal, name=session_name)
+                   animal=animal, name=session_name, unit_info=unit_info)
 
     def save(self, save_path: str) -> None:
-        path = os.path.join(save_path, f'{self.name}_session.pkl')
+        os.makedirs(save_path, exist_ok=True)
+        path = os.path.join(save_path, 'session.pkl')
+        slimmed = replace(self, fr_matrix=None, neural=None, daq=None)
         with open(path, 'wb') as f:
-            pickle.dump(self, f)
+            pickle.dump(slimmed, f)
         print(f'Saved session to {path}')
 
     @classmethod

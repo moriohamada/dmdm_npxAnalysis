@@ -8,6 +8,7 @@ from config import PATHS, ANALYSIS_OPTIONS
 from data.stimulus import *
 from data.session import Session
 from functools import partial
+from pathlib import Path
 import h5py
 
 def extract_all_timings(session: Session = None,
@@ -124,8 +125,8 @@ def get_event_aligned_responses(
     early_tr = ((session.lick_onsets['tr_time'] > ops['rmvTimeAround']) &
                 (session.lick_onsets['tr_time'] < ops['trSplitTime']))
     late_tr = session.lick_onsets['tr_time'] > ops['trSplitTime']
-    hit = session.lick_onsets['isHit'] == 1
-    fa = session.lick_onsets['isFA'] == 1
+    hit = session.lick_onsets['is_hit'] == 1
+    fa = session.lick_onsets['is_FA'] == 1
 
     lick_conditions = {
         'earlyBlock_early_hit': e_block & early_tr & hit,
@@ -143,12 +144,18 @@ def get_event_aligned_responses(
         )
 
     # Save
-    with h5py.File(save_path / f'{session.name}_psths.h5', 'w') as f:
+    save_path = Path(save_path) / session.animal / session.name
+    save_path.mkdir(parents=True, exist_ok=True)
+    with h5py.File(save_path / 'psths.h5', 'w') as f:
         for event_type, conditions in psths.items():
             grp = f.create_group(event_type)
             mean_grp = f.create_group(f'{event_type}_mean')
             for condition, arr in conditions.items():
                 grp.create_dataset(condition, data=arr)
+                if arr.shape[0] == 0:
+                    print(f'  Warning: no events for {event_type}/{condition}')
+                    continue
+
                 mean_grp.create_dataset(condition,
                                         data=np.nanmean(arr, axis=0))  # nN x nT
         t_ax_grp = f.create_group('t_ax')

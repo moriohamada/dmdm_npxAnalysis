@@ -22,7 +22,7 @@ def get_trials_from_block_start(session: Session) -> Session:
         else:
             count += 1
         tr_from_block_switch.append(count)
-    session.trials['trInBlock'] = tr_from_block_switch
+    session.trials['tr_in_block'] = tr_from_block_switch
     return session
 
 def get_tf_outliers(session: Session,
@@ -32,7 +32,7 @@ def get_tf_outliers(session: Session,
     for tr, row in session.trials.iterrows():
         # first some basic info about the trial and lick
         block = row['hazardblock']
-        tr_in_block = row['trInBlock']
+        tr_in_block = row['tr_in_block']
         tr_outcome = row['trialoutcome']
         if row['IsFA']:
             tr_lick = row['motion_onset'] \
@@ -50,7 +50,11 @@ def get_tf_outliers(session: Session,
         bl_tf  = np.log2(tf_seq[:ch_fr:3])
         fr_t   = (row['frame_time']
                  [~np.isnan(row['frame_time'])][:ch_fr:3])
-        assert len(fr_t)==len(bl_tf)
+
+        if len(fr_t) != len(bl_tf):
+            print(
+                f'  Warning: skipping trial {tr} - fr_t/bl_tf length mismatch ({len(fr_t)} vs {len(bl_tf)})')
+            continue
 
         outliers = np.where(np.abs(bl_tf) > ops['tfOutlier']*0.25)[0]
 
@@ -90,7 +94,7 @@ def get_baseline_onset_times(session:Session) -> Session:
     session.bl_onsets['time']  = bl_onsets['rise_t'].to_numpy()
     session.bl_onsets['block'] = block_id.to_list()
     session.bl_onsets['tr_dur'] = bl_onsets['duration'].to_numpy()
-    session.bl_onsets['tr_in_block'] = session.trials['trInBlock'].to_numpy()
+    session.bl_onsets['tr_in_block'] = session.trials['tr_in_block'].to_numpy()
     return session
 
 def get_change_onset_times(session: Session) -> Session:
@@ -105,9 +109,9 @@ def get_change_onset_times(session: Session) -> Session:
             'ch_tf': row['Stim2TF'],
             'trial': tr,
             'block': row['hazardblock'],
-            'tr_in_block': row['trInBlock'],
-            'isHit': row['IsHit'],
-            'isProbe': row['IsProbe'],
+            'tr_in_block': row['tr_in_block'],
+            'is_hit': row['IsHit'],
+            'is_probe': row['IsProbe'],
         })
     session.ch_onsets = pd.DataFrame(ch_onsets)
     return session
@@ -138,12 +142,13 @@ def get_lick_onset_times(session: Session) -> Session:
         lick_onsets.append({
             'time': row['motion_onset'],
             'tr_time': row['motion_onset'] - row['Baseline_ON_rise'],
+            'trial': tr,
             'block': row['hazardblock'],
-            'tr_in_block': row['trInBlock'],
-            'isHit': row['IsHit'],
-            'isFA': row['IsFA'],
-            'isProbe': row['IsProbe'],
-            'precedingTF': lick_tf,
+            'tr_in_block': row['tr_in_block'],
+            'is_hit': row['IsHit'],
+            'is_FA': row['IsFA'],
+            'is_probe': row['IsProbe'],
+            'preceding_tf': lick_tf,
         })
     session.lick_onsets = pd.DataFrame(lick_onsets)
     return session
