@@ -4,7 +4,7 @@ import pandas as pd
 
 def causal_boxcar(data, window_bins):
     """
-    Causal (past-only) boxcar smooth along time axis (axis=1).
+    Causal (past-only) boxcar smooth along time (axis=1).
 
     Args:
         data:        2D numpy array or pandas DataFrame (n_neurons x n_bins)

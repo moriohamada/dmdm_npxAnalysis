@@ -52,7 +52,7 @@ def get_tf_outliers(session: Session,
                  [~np.isnan(row['frame_time'])][:ch_fr:3])
         assert len(fr_t)==len(bl_tf)
 
-        outliers = np.where(np.abs(bl_tf) > ops['tf_outlier']*0.25)[0]
+        outliers = np.where(np.abs(bl_tf) > ops['tfOutlier']*0.25)[0]
 
         if outliers.size == 0:
             continue
@@ -89,8 +89,8 @@ def get_baseline_onset_times(session:Session) -> Session:
     session.bl_onsets = pd.DataFrame()
     session.bl_onsets['time']  = bl_onsets['rise_t'].to_numpy()
     session.bl_onsets['block'] = block_id.to_list()
-    session.bl_onsets['trDur'] = bl_onsets['duration'].to_numpy()
-    session.bl_onsets['trInBlock'] = session.trials['trInBlock'].to_numpy()
+    session.bl_onsets['tr_dur'] = bl_onsets['duration'].to_numpy()
+    session.bl_onsets['tr_in_block'] = session.trials['trInBlock'].to_numpy()
     return session
 
 def get_change_onset_times(session: Session) -> Session:
@@ -112,7 +112,7 @@ def get_change_onset_times(session: Session) -> Session:
     session.ch_onsets = pd.DataFrame(ch_onsets)
     return session
 
-def get_lick_onset_times(session: Session):
+def get_lick_onset_times(session: Session) -> Session:
     lick_onsets = []
 
     for tr, row in session.trials.iterrows():
@@ -145,3 +145,5 @@ def get_lick_onset_times(session: Session):
             'isProbe': row['IsProbe'],
             'precedingTF': lick_tf,
         })
+    session.lick_onsets = pd.DataFrame(lick_onsets)
+    return session

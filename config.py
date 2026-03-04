@@ -5,16 +5,17 @@ PATHS = dict(
 )
 
 ANALYSIS_OPTIONS = dict(
-    sp_bin_width     = 10/1000,   # s
-    sp_smooth_width  = 50/1000,   # s; size of casual boxcar fitler
-    rmv_time_around  = 1.5,       # s; remove events with this time of other events
+    spBinWidth     = 10/1000,    # s
+    spSmoothWidth  = 50/1000,    # s; size of casual boxcar fitler
 
-    tf_outlier = 1.0,             # std deviations away from mean to consider an outlier
+    tfOutlier = 1.0,             # std deviations away from mean to consider an outlier
 
-    minTrialDur   = 2.0,          # s; minimum trial duration
-    rmvTimeAround = 1.5,          # s; remove this time around trial,
+    minTrialDur   = 2.0,         # s; minimum trial duration
+    rmvTimeAround = 1.5,         # s; remove this time around trial,
 
-    minHitsInSession = 30,
-    ignoreFirstBlockTrials = 5,
+    minHitsInSession = 30,       # trials; ignore sessions with fewer hits than this
+    ignoreFirstBlockTrials = 5,  # trials; ignroe first n trials after a new block
+
+    trSplitTime = 8,             # s; for splitting events into early vs late in trial
 )
 

@@ -12,6 +12,9 @@ import numpy as np
 
 @dataclass
 class Session:
+    animal:      str
+    name:        str
+
     trials:      pd.DataFrame
     daq:         pd.DataFrame | None = None
     move:        dict         | None = None
@@ -64,4 +67,21 @@ class Session:
         daq    = pd.read_parquet(os.path.join(sess_folder, 'daq.parquet'))
         move   = pickle.load(open(os.path.join(sess_folder, 'movement.pkl'), 'rb'))
 
-        return cls(trials=trials, daq=daq, move=move, neural=neural)
+        # parse animal and session names
+        file_parts = sess_folder.split('/')
+        animal = file_parts[-2]
+        session_name = file_parts[-1]
+
+        return cls(trials=trials, daq=daq, move=move, neural=neural,
+                   animal=animal, name=session_name)
+
+    def save(self, save_path: str) -> None:
+        path = os.path.join(save_path, f'{self.name}_session.pkl')
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+        print(f'Saved session to {path}')
+
+    @classmethod
+    def load(cls, path: str) -> Session:
+        with open(path, 'rb') as f:
+            return pickle.load(f)

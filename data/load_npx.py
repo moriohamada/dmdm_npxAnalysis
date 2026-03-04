@@ -7,6 +7,7 @@ from data.session import Session
 from data.stimulus import get_trials_from_block_start
 from data.responses import extract_all_timings, get_event_aligned_responses
 from utils.smoothing import causal_boxcar
+from utils.norm import zscore_fr
 import os
 from pathlib import Path
 import pickle
@@ -16,9 +17,9 @@ from scipy.stats import zscore
 
 
 def extract_FR_matrix(neural: pd.DataFrame,
-                      bin_size: float = ANALYSIS_OPTIONS['sp_bin_width'],
-                      smoothing: float | None = ANALYSIS_OPTIONS['sp_smooth_width'],
-                      normalize: bool = False) -> pd.DataFrame:
+                      bin_size: float = ANALYSIS_OPTIONS[ 'spBinWidth'],
+                      smoothing: float | None = ANALYSIS_OPTIONS['spSmoothWidth'],
+                      normalize: bool = True) -> pd.DataFrame:
 
     t_start = neural['spike_time'].min()
     t_end   = neural['spike_time'].max()
@@ -38,7 +39,11 @@ def extract_FR_matrix(neural: pd.DataFrame,
         fr_matrix = causal_boxcar(fr_matrix, smoothing / bin_size)
 
     if normalize:
-        fr_matrix = fr_matrix.apply(zscore, axis=1)
+        fr_matrix = pd.DataFrame(
+            zscore_fr(fr_matrix.values),
+            index=fr_matrix.index,
+            columns=fr_matrix.columns
+        )
 
     return fr_matrix
 
@@ -75,11 +80,17 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
             if not session.has_neural:
                 continue
 
-            session.fr_matrix = extract_FR_matrix(session.neural, bin_size=ops['sp_bin_width'])
+            session.fr_matrix = extract_FR_matrix(session.neural,
+                                                  bin_size=ops['spBinWidth'],
+                                                  normalize=True)
 
-            fr_save_path = sess_folder.replace(npx_dir_ceph, npx_dir_local) + '/FR_matrix.parquet'
-            save_fr_matrix(session.fr_matrix, fr_save_path)
+            save_path = (sess_folder.replace(npx_dir_ceph, npx_dir_local) +
+                         '/FR_matrix.parquet')
+            save_fr_matrix(session.fr_matrix, save_path)
 
             # extract event-aligned responses, averages
             session = extract_all_timings(session, ops)
             get_event_aligned_responses(session, ops)
+
+            # save session
+            session.save(save_path)
