@@ -119,14 +119,14 @@ def get_event_aligned_responses(
 
     # Lick times
     resp_win = (-1.5, 0.5)
-    non_trans = session.lick_onsets['tr_in_block'] > ops['ignoreFirstBlockTrials']
-    e_block = (session.lick_onsets['block'] == 'early') & non_trans
-    l_block = (session.lick_onsets['block'] == 'late') & non_trans
-    early_tr = ((session.lick_onsets['tr_time'] > ops['rmvTimeAround']) &
-                (session.lick_onsets['tr_time'] < ops['trSplitTime']))
-    late_tr = session.lick_onsets['tr_time'] > ops['trSplitTime']
-    hit = session.lick_onsets['is_hit'] == 1
-    fa = session.lick_onsets['is_FA'] == 1
+    non_trans = session.lick_times['tr_in_block'] > ops['ignoreFirstBlockTrials']
+    e_block = (session.lick_times['block'] == 'early') & non_trans
+    l_block = (session.lick_times['block'] == 'late') & non_trans
+    early_tr = ((session.lick_times['tr_time'] > ops['rmvTimeAround']) &
+                (session.lick_times['tr_time'] < ops['trSplitTime']))
+    late_tr = session.lick_times['tr_time'] > ops['trSplitTime']
+    hit = session.lick_times['is_hit'] == 1
+    fa = session.lick_times['is_FA'] == 1
 
     lick_conditions = {
         'earlyBlock_early_hit': e_block & early_tr & hit,
@@ -139,7 +139,7 @@ def get_event_aligned_responses(
 
     for key, mask in lick_conditions.items():
         psths['lick'][key], t_ax['lick'] = psth_fn(
-            event_times=session.lick_onsets.loc[mask, 'time'],
+            event_times=session.lick_times.loc[mask, 'time'],
             resp_win=resp_win
         )
 

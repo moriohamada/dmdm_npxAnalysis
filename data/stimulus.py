@@ -150,5 +150,5 @@ def get_lick_onset_times(session: Session) -> Session:
             'is_probe': row['IsProbe'],
             'preceding_tf': lick_tf,
         })
-    session.lick_onsets = pd.DataFrame(lick_onsets)
+    session.lick_times = pd.DataFrame(lick_onsets)
     return session

@@ -27,7 +27,6 @@ class Session:
     tf_pulses:   pd.DataFrame | None = None
     ch_onsets:   pd.DataFrame | None = None
     lick_times:  pd.DataFrame | None = None
-    abort_times: pd.DataFrame | None = None
 
     @property
     def has_neural(self) -> bool:
