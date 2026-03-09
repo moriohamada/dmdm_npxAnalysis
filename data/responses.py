@@ -9,7 +9,8 @@ from data.stimulus import *
 from data.session import Session
 from functools import partial
 from pathlib import Path
-import h5py
+
+
 
 def extract_all_timings(session: Session = None,
                         ops: dict = ANALYSIS_OPTIONS
