@@ -18,9 +18,8 @@ from scipy.stats import zscore
 
 
 def extract_FR_matrix(neural: pd.DataFrame,
-                      bin_size: float = ANALYSIS_OPTIONS[ 'spBinWidth'],
-                      smoothing: float | None = ANALYSIS_OPTIONS['spSmoothWidth'],
-                      normalize: bool = True) -> pd.DataFrame:
+                      bin_size: float = ANALYSIS_OPTIONS[ 'sp_bin_width'],
+                       normalize: bool = False) -> pd.DataFrame:
 
     t_start = neural['spike_time'].min()
     t_end   = neural['spike_time'].max()
@@ -36,26 +35,32 @@ def extract_FR_matrix(neural: pd.DataFrame,
                  .reindex(columns=bin_centers, fill_value=0)
                  ) / bin_size
 
-    if smoothing is not None and smoothing > 0:
-        fr_matrix = causal_boxcar(fr_matrix, smoothing / bin_size)
-
+    fr_values = fr_matrix.values
+    means = fr_values.mean(axis=1)
+    sds = fr_values.std(axis=1)
     if normalize:
         fr_matrix = pd.DataFrame(
             zscore_fr(fr_matrix.values),
             index=fr_matrix.index,
             columns=fr_matrix.columns
         )
+        return fr_matrix, means, sds, True
+    else:
+        return fr_matrix, means, sds, False
 
-    return fr_matrix
 
 
 def save_fr_matrix(fr_matrix: pd.DataFrame,
-                   save_path: str):
+                   fr_stats: pd.DataFrame|None = None,
+                   save_path: str=None) -> None:
 
     save_dir = Path(save_path).parent
     save_dir.mkdir(parents=True, exist_ok=True)
     fr_matrix = fr_matrix.astype(np.float32)
     fr_matrix.to_parquet(save_path)
+    if fr_stats is not None:
+        stats_path = Path(save_path).with_stem(Path(save_path).stem + '_FRstats')
+        fr_stats.to_parquet(stats_path)
 
 def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
                          npx_dir_local: str = PATHS['npx_dir_local'],
@@ -91,10 +96,15 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
                 session.save(save_dir)
                 continue
 
-            session.fr_matrix = extract_FR_matrix(session.neural,
-                                                  bin_size=ops['spBinWidth'],
-                                                  normalize=True)
-            save_fr_matrix(session.fr_matrix, save_dir + '/FR_matrix.parquet')
+            session.fr_matrix, mu, sd, normed = (
+                extract_FR_matrix(session.neural,
+                                  bin_size=ops['sp_bin_width'],
+                                  normalize=True))
+            session.fr_stats = pd.DataFrame({'mean': mu, 'sd': sd},
+                                            index=session.fr_matrix.index)
+            session.fr_normed = normed
+            save_fr_matrix(session.fr_matrix, session.fr_stats,
+                           save_dir + '/FR_matrix.parquet')
 
             # extract event-aligned responses, averages
             session = extract_all_timings(session, ops)
