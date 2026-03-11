@@ -20,6 +20,8 @@ class Session:
     move:        dict         | None = None
     neural:      pd.DataFrame | None = None
     fr_matrix:   pd.DataFrame | None = None
+    fr_stats:    pd.DataFrame | None = None
+    fr_normed:   bool | None = None
     unit_info:   pd.DataFrame | None = None
 
     # event timings
@@ -33,8 +35,13 @@ class Session:
         return self.neural is not None
 
     @property
-    def n_neurons(self) -> int:
-        return len(self.fr_matrix) if self.fr_matrix is not None else 0
+    def n_neurons(self) -> int | None:
+        if self.fr_matrix is not None:
+            return len(self.fr_matrix)
+        elif self.unit_info is not None:
+            return len(self.unit_info)
+        else:
+            return None
 
     @property
     def areas(self):
