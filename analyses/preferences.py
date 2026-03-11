@@ -29,7 +29,7 @@ def _calculate_preference_index(r1: np.ndarray,
                                 r2: np.ndarray,
                                 stat: str = 'mean',
                                 compute: str = 'index',
-                                n_iter: int = 1000) -> (int, float):
+                                n_iter: int = 1000):
     """
     Calculate preference index and signficance via permutation test.
     Args:
@@ -167,8 +167,9 @@ def extract_all_unit_preferences(npx_dir: str = PATHS['npx_dir_local'],
                                  ops: dict = ANALYSIS_OPTIONS):
     psth_paths = get_response_files(npx_dir)
 
-    for psth_path in psth_paths:
+    for i, psth_path in enumerate(psth_paths):
         sess_data = Session.load(psth_path.replace('psths.h5', 'session.pkl'))
+        print(f'{sess_data.animal}_{sess_data.name} ({i + 1}/{len(psth_paths)})')
         save_dir = Path(npx_dir) / sess_data.animal / sess_data.name
 
         prefs = extract_preferences(psth_path, ops)
