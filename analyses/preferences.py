@@ -1,11 +1,11 @@
 """
-Function for getting unit preferences (TF index, lick modulation, block pref?)
+Function for getting unit prefs (TF index, lick modulation, block pref?)
 """
 
 import numpy as np
 import h5py
 import pandas as pd
-from pathlib import PATH
+from pathlib import Path
 from config import ANALYSIS_OPTIONS, PATHS, PLOT_COLOURS
 from data.session import Session
 from analyses.load_responses import load_psth
@@ -109,8 +109,8 @@ def _extract_block_preference(psth_path, ops):
     block_idx, block_p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
     # also from pre-lick
     resp_win = ops['lick_bl']
-    r1 = _load_condition_resp(psth_path, 'lick', 'earlyBlock_early_fa')
-    r2 = _load_condition_resp(psth_path, 'lick', 'lateBlock_early_fa')
+    r1 = _load_condition_resp(psth_path, 'lick', 'earlyBlock_early_fa', resp_win)
+    r2 = _load_condition_resp(psth_path, 'lick', 'lateBlock_early_fa', resp_win)
     block_lick_idx, block_lick_p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
     prefs = {
         'block_idx': block_idx,
@@ -124,7 +124,7 @@ def _extract_time_preference(psth_path, ops):
     resp_win = ops['tf_context']
     r1 = _load_condition_resp(psth_path, 'tf', 'lateBlock_early_*', resp_win)
     r2 = _load_condition_resp(psth_path, 'tf', 'lateBlock_late_*', resp_win)
-    idx, p = _calculate_preference_index(r2, r1, n_iter=ops['nIter'])
+    idx, p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
     prefs = {'time_idx': idx,
              'time_p': p}
     return prefs
@@ -150,27 +150,28 @@ def _extract_lick_modulation(psth_path, ops):
 
 def extract_preferences(psth_path: str,
                         ops: dict = ANALYSIS_OPTIONS) -> pd.DataFrame:
-    """ Main runner for extract all tf preferences for a single unit"""
-    preferences = {}
+    """ Main runner for extract all tf prefs for a single unit"""
+    prefs = {}
     # tf pref - overall and by block
-    preferences.update(_extract_tf_preference(psth_path, ops))
-
+    prefs.update(_extract_tf_preference(psth_path, ops))
     # block pref (tf context - early vs late block)
+    prefs.update(_extract_block_preference(psth_path, ops))
     # time pref (tf context - early vs late in trial, late block)
+    prefs.update(_extract_time_preference(psth_path, ops))
     # lick mod
-    # pre lick activitiy
+    prefs.update(_extract_lick_modulation(psth_path, ops))
 
-    # time pref
-    return preferences
+    return pd.DataFrame(prefs)
 
-def exctract_all_unit_preferenecs(npx_dir: str = PATHS['npx_dir_local'],
-                                  pref_dir: str = PATHS['pref_dir'],
-                                  ops: dict = ANALYSIS_OPTIONS):
+def extract_all_unit_preferences(npx_dir: str = PATHS['npx_dir_local'],
+                                 ops: dict = ANALYSIS_OPTIONS):
     psth_paths = get_response_files(npx_dir)
 
     for psth_path in psth_paths:
         sess_data = Session.load(psth_path.replace('psths.h5', 'session.pkl'))
-        save_dir = str(Path(pref_dir) / sess_data.animal / sess_data.name / 'preferences')
+        save_dir = Path(npx_dir) / sess_data.animal / sess_data.name
 
         prefs = extract_preferences(psth_path, ops)
+
+        prefs.to_csv(save_dir / 'preferences.csv', index=False)
 
