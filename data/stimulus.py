@@ -56,7 +56,7 @@ def get_tf_outliers(session: Session,
                 f'  Warning: skipping trial {tr} - fr_t/bl_tf length mismatch ({len(fr_t)} vs {len(bl_tf)})')
             continue
 
-        outliers = np.where(np.abs(bl_tf) > ops['tfOutlier']*0.25)[0]
+        outliers = np.where(np.abs(bl_tf) > ops['tf_outlier']*0.25)[0]
 
         if outliers.size == 0:
             continue

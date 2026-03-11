@@ -2,7 +2,6 @@
 useful functions for navigating directories, getting paths for relevant files etc.
 """
 import os
-from pathlib import Path
 
 def get_response_files(npx_dir: str):
     """
@@ -14,8 +13,6 @@ def get_response_files(npx_dir: str):
     for subj_folder in subj_folders:
         sess_folders = [f.path for f in os.scandir(subj_folder) if f.is_dir()]
         for sess_folder in sess_folders:
-            file_parts   = sess_folder.split('/')
-            session_name = file_parts[-1]
 
             if os.path.exists(os.path.join(sess_folder, 'psths.h5')):
                 psth_paths.append(os.path.join(sess_folder, 'psths.h5'))

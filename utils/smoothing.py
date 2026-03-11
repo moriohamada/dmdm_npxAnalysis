@@ -1,34 +1,23 @@
 import numpy as np
 import pandas as pd
+from scipy.signal import lfilter
 
-
-def causal_boxcar(data, window_bins):
-    """
-    Causal (past-only) boxcar smooth along time (axis=1).
-
-    Args:
-        data:        2D numpy array or pandas DataFrame (n_neurons x n_bins)
-        window_bins: number of bins to average over (including current bin)
-
-    Returns:
-        Smoothed array/DataFrame in same format as input
-    """
+def causal_boxcar(data, window_bins, axis=-1):
     is_df = isinstance(data, pd.DataFrame)
     arr = data.values if is_df else np.asarray(data)
     window_bins = int(round(window_bins))
-    assert arr.ndim == 2, "Input must be 2D"
 
     kernel = np.ones(window_bins) / window_bins
-    smoothed = np.apply_along_axis(
-        lambda row: np.convolve(row, kernel, mode='full')[:arr.shape[1]],
-        axis=1,
-        arr=arr
-    )
+    smoothed = lfilter(kernel, 1.0, arr, axis=axis)
+
+    # replace edge bins with original values
+    edge = [slice(None)] * arr.ndim
+    edge[axis] = slice(0, window_bins - 1)
+    smoothed[tuple(edge)] = arr[tuple(edge)]
 
     if is_df:
         return pd.DataFrame(smoothed, index=data.index, columns=data.columns)
     return smoothed
-
 
 def causal_gaussian(data, sigma_bins, truncate=3.0):
     """
