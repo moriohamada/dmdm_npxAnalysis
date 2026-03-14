@@ -62,54 +62,69 @@ def save_fr_matrix(fr_matrix: pd.DataFrame,
         stats_path = Path(save_path).with_stem(Path(save_path).stem + '_FRstats')
         fr_stats.to_parquet(stats_path)
 
+def _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops):
+    """Extract FR matrix + event-aligned responses for one session."""
+    session_name = sess_folder.split('/')[-1]
+    save_dir = sess_folder.replace(npx_dir_ceph, npx_dir_local)
+
+    if os.path.exists(os.path.join(save_dir, 'psths.h5')):
+        print(f'Skipping {session_name} - already extracted')
+        return
+
+    session = Session.from_folder(sess_folder)
+    print(f'Extracting neural data from {session.animal}, {session.name}')
+
+    session = get_trials_from_block_start(session)
+
+    if not session.has_neural:
+        print('No neural data found!')
+        session.save(save_dir)
+        return
+
+    session.fr_matrix, mu, sd, normed = (
+        extract_FR_matrix(session.neural,
+                          bin_size=ops['sp_bin_width'],
+                          normalize=True))
+    session.fr_stats = pd.DataFrame({'mean': mu, 'sd': sd},
+                                    index=session.fr_matrix.index)
+    session.fr_normed = normed
+    save_fr_matrix(session.fr_matrix, session.fr_stats,
+                   save_dir + '/FR_matrix.parquet')
+
+    session = extract_all_timings(session, ops)
+    get_event_aligned_responses(session, ops)
+
+    session.save(save_dir)
+    del session
+    gc.collect()
+
+
 def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
                          npx_dir_local: str = PATHS['npx_dir_local'],
-                         ops: dict = ANALYSIS_OPTIONS):
+                         ops: dict = ANALYSIS_OPTIONS,
+                         n_workers: int = 1):
     """
     Loop through each session and:
     1) extract firing rate matrix for entire session
     2) extract event-aligned responses
     3) save averaged event-aligned responses
+
+    n_workers > 1 parallelises across sessions.
     """
+    from concurrent.futures import ProcessPoolExecutor
+    from functools import partial
 
-    subj_folders = [f.path for f in os.scandir(npx_dir_ceph) if f.is_dir()]
-    for subj_folder in subj_folders:
-        sess_folders = [f.path for f in os.scandir(subj_folder) if f.is_dir()]
+    sess_folders = []
+    for subj_folder in [f.path for f in os.scandir(npx_dir_ceph) if f.is_dir()]:
+        sess_folders.extend([f.path for f in os.scandir(subj_folder) if f.is_dir()])
+
+    if n_workers <= 1:
         for sess_folder in sess_folders:
-
-            file_parts   = sess_folder.split('/')
-            session_name = file_parts[-1]
-            save_dir     = sess_folder.replace(npx_dir_ceph, npx_dir_local)
-
-            # if os.path.exists(os.path.join(save_dir, 'session.pkl')):
-            #     print(f'Skipping {session_name} - already extracted')
-            #     continue
-
-            session = Session.from_folder(sess_folder)
-            print(f'Extracting neural data from {session.animal}, {session.name}')
-
-            # add some useful columns to trials
-            session = get_trials_from_block_start(session)
-
-            if not session.has_neural:
-                print('No neural data found!')
-                session.save(save_dir)
-                continue
-
-            session.fr_matrix, mu, sd, normed = (
-                extract_FR_matrix(session.neural,
-                                  bin_size=ops['sp_bin_width'],
-                                  normalize=True))
-            session.fr_stats = pd.DataFrame({'mean': mu, 'sd': sd},
-                                            index=session.fr_matrix.index)
-            session.fr_normed = normed
-            save_fr_matrix(session.fr_matrix, session.fr_stats,
-                           save_dir + '/FR_matrix.parquet')
-
-            # extract event-aligned responses, averages
-            session = extract_all_timings(session, ops)
-            get_event_aligned_responses(session, ops)
-
-            session.save(save_dir)
-            del session
-            gc.collect()
+            _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops)
+    else:
+        worker = partial(_process_single_session,
+                         npx_dir_ceph=npx_dir_ceph,
+                         npx_dir_local=npx_dir_local,
+                         ops=ops)
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            pool.map(worker, sess_folders)

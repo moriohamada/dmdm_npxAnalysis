@@ -76,10 +76,10 @@ class Session:
 
         neural = (pd.read_parquet(os.path.join(sess_folder, 'neural.parquet'))
                   .drop(columns=['brain_region', 'x', 'y', 'z']))
+        neural['cluster_id'] = neural['cluster_id'] + (neural['probe_id'] - 1) * 10000
         daq    = pd.read_parquet(os.path.join(sess_folder, 'daq.parquet'))
-        move   = pickle.load(open(os.path.join(sess_folder, 'movement.pkl'), 'rb'))
-
-
+        with open(os.path.join(sess_folder, 'movement.pkl'), 'rb') as f:
+            move = pickle.load(f)
 
         # unit info
         unit_info = (neural.groupby('cluster_id')['brain_region_comb']
