@@ -79,8 +79,10 @@ def _load_condition(psth_path: str,
                     ops: dict = ANALYSIS_OPTIONS):
     """Load and smooth one condition, return mu, sem, raw arr, t_ax."""
     arr, t = load_psth(psth_path, event_type, condition)
+    if arr.shape[0] == 0:
+        nT = len(t)
+        return np.zeros(nT), np.zeros(nT), np.zeros((0, nT)), t
     sm  = ops['sp_smooth_width'] / ops['sp_bin_width']
-    # smooth = gaussian_filter1d(arr, sigma=sm, axis=-1)
     smooth = causal_boxcar(arr, window_bins=sm, axis=-1)
     mu     = np.nanmean(smooth[:, unit_idx, :], axis=0)
     sem    = np.nanstd( smooth[:, unit_idx, :], axis=0) / np.sqrt(arr.shape[0])
@@ -91,7 +93,8 @@ def _load_condition(psth_path: str,
 def plot_basic_psths(psth_path: str,
                      unit_idx: int = 0,
                      save_dir: str = None,
-                     ops: dict = ANALYSIS_OPTIONS):
+                     ops: dict = ANALYSIS_OPTIONS,
+                     region: str = None):
     """
     Single-unit summary figure. Layout (2 rows x 7 cols):
       row 0: PSTHs
@@ -192,7 +195,8 @@ def plot_basic_psths(psth_path: str,
             axes[0, col].set_ylabel('')
             axes[1, col].set_ylabel('')
 
-    fig.suptitle(f'Unit {unit_idx}', fontsize=11)
+    title = f'Unit {unit_idx}' + (f' ({region})' if region else '')
+    fig.suptitle(title, fontsize=11)
 
     if save_dir is not None:
         Path(save_dir).mkdir(parents=True, exist_ok=True)
@@ -204,13 +208,16 @@ def plot_basic_psths(psth_path: str,
 def _plot_unit(unit_idx: int,
                psth_path: str,
                save_dir: str,
-               ops: dict):
+               ops: dict,
+               region: str = None):
     """Worker fn for parallelising across units."""
     try:
         plot_basic_psths(psth_path, unit_idx=unit_idx,
-                         save_dir=save_dir, ops=ops)
+                         save_dir=save_dir, ops=ops, region=region)
     except Exception as e:
         print(f'unit {unit_idx} failed: {e}')
+    finally:
+        plt.close('all')
 
 
 def plot_all_su_psths(npx_dir: str = PATHS['npx_dir_local'],
@@ -219,16 +226,20 @@ def plot_all_su_psths(npx_dir: str = PATHS['npx_dir_local'],
                       n_workers: int = 8):
     """
     Runs through all units in all sessions to generate basic single unit PSTHs.
-    Saves figures to plots_dir, mirroring the session structure in npx_dir.
-    Parallelised across units within each session.
+    Saves figures to plots_dir,
     """
     psth_paths = get_response_files(npx_dir)
 
-    for psth_path in psth_paths:
+    for i, psth_path in enumerate(psth_paths):
         sess_data = Session.load(psth_path.replace('psths.h5', 'session.pkl'))
+        print(f'{sess_data.animal}_{sess_data.name} '
+              f'({i + 1}/{len(psth_paths)}, {sess_data.n_neurons} units)')
         save_dir  = str(Path(plots_dir) / sess_data.animal / sess_data.name / 'su_psths')
-
-        worker = partial(_plot_unit, psth_path=psth_path, save_dir=save_dir, ops=ops)
+        regions = sess_data.unit_info['brain_region_comb'].values
 
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
-            pool.map(worker, range(sess_data.n_neurons))
+            futures = [pool.submit(_plot_unit, unit_idx=i, psth_path=psth_path,
+                                   save_dir=save_dir, ops=ops, region=regions[i])
+                       for i in range(sess_data.n_neurons)]
+            for f in futures:
+                f.result()

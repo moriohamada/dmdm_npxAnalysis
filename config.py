@@ -1,6 +1,7 @@
 
 PATHS = dict(
-    npx_dir_ceph  = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx',
+    npx_dir_ceph  = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
+                    '/data/npx_converted',
     npx_dir_local = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/',
     plots_dir     = '/media/morio/Data_Fast/dmdm_temporalExpectation/plots/',
     pref_dir      = '/media/morio/Data_Fast/dmdm_temporalExpectation/preferences/',
@@ -27,6 +28,17 @@ ANALYSIS_OPTIONS = dict(
     lick_pre   = (-0.4, 0),
 
     n_iter = 1000,                # default num shuffles
+    alpha  = .05,                 # default signficance threshold
+
+    # Unit filtering
+    min_fr    = 1.0,              # Hz; exclude units with mean FR below this
+    min_fr_sd = 0.5,              # Hz; exclude units with FR std below this
+
+    # Population analysis
+    n_pcs = 10,                   # number of PCs to extract
+
+    # Dynamical systems
+    lds_n_folds = 5,              # k-fold CV for LDS fitting
 
 )
 

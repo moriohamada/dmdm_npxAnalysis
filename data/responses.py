@@ -57,7 +57,8 @@ def get_event_aligned_responses(
             resp_win=resp_win
         )
 
-    # Long baseline     resp_win = (-1, 5)
+    # Long baseline
+    resp_win = (-1, 5)
     valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around'])
 
     for key, mask in {'early': e_block, 'late': l_block}.items():

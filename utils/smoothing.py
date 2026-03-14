@@ -26,9 +26,7 @@ def causal_gaussian(data, sigma_bins, truncate=3.0):
     is_df = isinstance(data, pd.DataFrame)
     arr = data.values if is_df else np.asarray(data)
 
-    assert arr.ndim == 2, "Input must be 2D (n_neurons x n_bins)"
-
-    # Build one-sided Gaussian kernel
+    # Build one-sided gaussian kernel
     half_width = int(truncate * sigma_bins)
     x = np.arange(0, half_width + 1)
     kernel = np.exp(-0.5 * (x / sigma_bins) ** 2)
