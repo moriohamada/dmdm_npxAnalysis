@@ -2,24 +2,25 @@ import numpy as np
 
 # group -> list of areas (groups can overlap)
 AREA_GROUPS = {
-    'early_visual':   ['SCs', 'LGd', 'VISp'],
+    'early_visual':   ['SCsl', 'SCdl', 'LGd', 'VISp'],
     'higher_visual':  ['LP', 'VISl', 'VISpl', 'VISa', 'VISam', 'VISrl', 'VISpm',
-                        'PPC', 'RSP'],
-    'basal_ganglia':  ['CP', 'GPe', 'SNr', 'GPi', 'LS'],
-    'frontal_cortex': ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'mPFC', 'ORB', 'MOp', 'AI'],
-    # 'olfactory':      ['MOB', 'DP', 'TTd'],
-    'thalamus':       ['LD', 'CL', 'MD', 'VM', 'PF', 'VAL', 'PO', 'VB', 'VPL',
-                        'VPM', 'MG', 'RT', 'Eth'],
-    'midbrain':       ['IC', 'MRN', 'APN', 'SCm', 'NPC'],
-    'hippocampus':    ['CA1', 'CA3', 'DG', 'POST', 'PRE', 'ProS', 'SUB', 'ENT'],
-    'cerebellum':     ['Lob4/5', 'SIM', 'CRUS1', 'CRUS2', 'CENT3', 'FN', 'IP',
-                        'DN', 'DCN', 'FL', 'PFL'],
-    # 'hypothalamus':   ['LHA'],
-    # 'medulla':        ['GRN', 'MV', 'IRN', 'SPV', 'V'],
-
-    # composite
-    'frontal_motor':  ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'mPFC', 'ORB', 'MOp', 'AI',
-                        'CP', 'GPe', 'SNr', 'GPi', 'MD', 'VAL'],
+                        'VISpor', 'RSP', 'RSPd', 'RSPv'],
+    'basal_ganglia':  ['CP', 'STR', 'ACB', 'GPe', 'GPi', 'SNr', 'SNc', 'LS'],
+    'frontal_cortex': ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'ORB', 'MOp', 'AI'],
+    # 'thalamus':       ['TH', 'LD', 'CL', 'MD', 'VM', 'PF', 'VAL', 'PO',
+    #                     'VPL', 'VPM', 'MGd', 'MGv', 'RT', 'Eth',
+    #                     'AV', 'SMT', 'PCN', 'SPF', 'PoT', 'PIL', 'ZI'],
+    # 'midbrain':       ['IC', 'MRN', 'APN', 'SCiml', 'NPC',
+    #                     'PAG', 'RN', 'VTA', 'NOT'],
+    'hippocampus':    ['HPF', 'CA1', 'CA2', 'CA3', 'DG',
+                        'POST', 'PRE', 'ProS', 'SUB',
+                        'ENTl', 'ENTm', 'PAR'],
+    'cerebellum':     ['CUL4 5', 'SIM', 'ANcr1', 'ANcr2', 'CENT',
+                        'FN', 'IP', 'DN', 'FL', 'PFL',
+                        'DEC', 'NOD', 'LING', 'CUN', 'COPY', 'CB'],
+    #
+    # 'frontal_motor':  ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'ORB', 'MOp', 'AI',
+    #                     'CP', 'ACB', 'GPe', 'GPi', 'SNr', 'SNc', 'MD', 'VAL'],
 }
 
 # all areas that appear in at least one group

@@ -6,6 +6,7 @@ from analyses.preferences import extract_all_unit_preferences
 from analyses.population import extract_pcs
 from analyses.dynamical import run_lds_analysis
 from config import PATHS, ANALYSIS_OPTIONS
+from analyses.dynamical import run_flow_analysis
 
 #%% get all event times and event-aligned responses
 
@@ -42,28 +43,61 @@ visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
 extract_pcs(npx_dir=PATHS['npx_dir_local'],
             ops=ANALYSIS_OPTIONS)
 
-#%% Dynamical systems analysis
+#%% Linear dynamical systems analysis
 
 run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
                  ops=ANALYSIS_OPTIONS,
-                 pca_key='event_all')
+                 n_workers=4)
 
-#%% Visualise LDS flow fields + trajectories
+#%% Empirical flow fields
+
+run_flow_analysis(npx_dir=PATHS['npx_dir_local'],
+                  ops=ANALYSIS_OPTIONS,
+                  n_workers=4)
+
+#%% Visualise trajectories + flow fields
 
 from pathlib import Path
 from utils.filing import get_response_files
-from analyses.dynamical import CONDITIONS
+from visualisation.dynamical import plot_empirical_flow
 
 psth_paths = get_response_files(PATHS['npx_dir_local'])
 for psth_path in psth_paths[:1]:
     sess_dir = Path(psth_path).parent
-    for lds_cond in CONDITIONS:
-        save_path = (Path(PATHS['plots_dir']) / 'LDS' / sess_dir.parent.name
-                     / sess_dir.name / f'lds_{lds_cond}.png')
-        plot_session_dynamics(sess_dir,
-                              pca_key='event_frontal_motor',
-                              lds_cond=lds_cond,
-                              ops=ANALYSIS_OPTIONS,
-                              save_path=str(save_path))
+    for event_type in ['tf', 'blOn', 'lick']:
+        save_path = (Path(PATHS['plots_dir']) / 'flow' / sess_dir.parent.name
+                     / sess_dir.name / f'flow_{event_type}.png')
+        plot_empirical_flow(sess_dir,
+                            pca_key='event_all',
+                            event_type=event_type,
+                            ops=ANALYSIS_OPTIONS,
+                            save_path=str(save_path))
 
 #%% SAE
+
+
+#%%
+
+import os
+import pickle
+import numpy as np
+
+npx_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/'
+
+all_areas = set()
+for subj in os.listdir(npx_dir):
+  subj_dir = os.path.join(npx_dir, subj)
+  if not os.path.isdir(subj_dir):
+      continue
+  for sess in os.listdir(subj_dir):
+      pkl_path = os.path.join(subj_dir, sess, 'session.pkl')
+      if not os.path.exists(pkl_path):
+          continue
+      with open(pkl_path, 'rb') as f:
+          s = pickle.load(f)
+      if s.unit_info is not None:
+          all_areas.update(s.unit_info['brain_region_comb'].values)
+
+for a in sorted(all_areas):
+  print(a)
+

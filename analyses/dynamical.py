@@ -39,6 +39,8 @@ def fit_lds(Z, U, valid):
     # only use pairs where both t and t+1 are valid, avoiding spanning trial boundaries
     consecutive = valid[:-1] & valid[1:]
     idx = np.where(consecutive)[0]
+    if len(idx) < Z.shape[0] + 1:
+        return None, None, np.nan, 0
 
     Z_curr = Z[:, idx]
     Z_next = Z[:, idx + 1]
@@ -175,20 +177,83 @@ def _get_fold_splits(session, condition, ops, n_folds):
     return folds
 
 
-def fit_session_lds(session, fr_matrix, weights, ops=ANALYSIS_OPTIONS):
+def fit_empirical_flow(Z, valid_mask, n_bins=15, grid_edges=None):
+    """
+    Estimate empirical flow field by binning state space and averaging dZ.
+
+    Z: (n_dims, T) trajectory in PC space
+    valid_mask: (T,) boolean — which bins to use
+    n_bins: bins per dimension
+    grid_edges: list of arrays, one per dimension. If None, computed from data.
+
+    Returns:
+        grid_edges: list of (n_bins+1,) arrays
+        bin_centers: list of (n_bins,) arrays
+        mean_flow: (n_bins, n_bins, ..., n_dims) mean dZ per bin
+        counts: (n_bins, n_bins, ...) number of observations per bin
+    """
+    n_dims = Z.shape[0]
+
+    # consecutive valid pairs
+    consec = valid_mask[:-1] & valid_mask[1:]
+    idx = np.where(consec)[0]
+    if len(idx) == 0:
+        return None
+
+    Z_start = Z[:, idx].T      # (n_pairs, n_dims)
+    dZ = (Z[:, idx + 1] - Z[:, idx]).T  # (n_pairs, n_dims)
+
+    # build grid
+    if grid_edges is None:
+        grid_edges = []
+        for d in range(n_dims):
+            lo, hi = np.percentile(Z_start[:, d], [2, 98])
+            grid_edges.append(np.linspace(lo, hi, n_bins + 1))
+
+    bin_centers = [(e[:-1] + e[1:]) / 2 for e in grid_edges]
+
+    # assign each point to a bin
+    bin_idx = np.zeros((len(Z_start), n_dims), dtype=int)
+    in_range = np.ones(len(Z_start), dtype=bool)
+    for d in range(n_dims):
+        bi = np.digitize(Z_start[:, d], grid_edges[d]) - 1
+        bi = np.clip(bi, 0, n_bins - 1)
+        # exclude points outside the grid
+        in_range &= (Z_start[:, d] >= grid_edges[d][0])
+        in_range &= (Z_start[:, d] <= grid_edges[d][-1])
+        bin_idx[:, d] = bi
+
+    bin_idx = bin_idx[in_range]
+    dZ = dZ[in_range]
+
+    # accumulate
+    shape = tuple([n_bins] * n_dims)
+    mean_flow = np.full(shape + (n_dims,), np.nan)
+    counts = np.zeros(shape, dtype=int)
+
+    # flatten bin indices to 1D for efficient accumulation
+    strides = np.array([n_bins ** (n_dims - 1 - d) for d in range(n_dims)])
+    flat_idx = (bin_idx * strides).sum(axis=1)
+
+    for flat_bin in np.unique(flat_idx):
+        mask = flat_idx == flat_bin
+        multi_idx = tuple((flat_bin // strides) % n_bins)
+        counts[multi_idx] = mask.sum()
+        mean_flow[multi_idx] = dZ[mask].mean(axis=0)
+
+    return grid_edges, bin_centers, mean_flow, counts
+
+
+def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS):
     """
     Fit input-driven LDS per condition for one session.
 
     Args:
         session: Session object (with trials, move)
-        fr_matrix: pd.DataFrame (nN x T)
-        weights: (nN, n_pcs) PCA weights
+        Z: (n_lds, T) PC trajectory
+        t_ax: (T,) time axis
+        U: (n_inputs, T) input vector
     """
-    t_ax = fr_matrix.columns.values
-
-    # project full session into PC space
-    Z = weights.T @ fr_matrix.values  # (n_pcs, T)
-    U = _build_input_vector(session, t_ax)
 
     n_folds = ops['lds_n_folds']
     results = {}
@@ -197,6 +262,8 @@ def fit_session_lds(session, fr_matrix, weights, ops=ANALYSIS_OPTIONS):
         # fit on all data for this condition
         full_mask = _get_condition_mask(session, t_ax, cond_name, ops)
         A, B, r2_full, n_samples = fit_lds(Z, U, full_mask)
+        if A is None:
+            continue
 
         eigenvalues = np.linalg.eigvals(A)
 
@@ -265,56 +332,151 @@ def _save_lds_results(results, save_path):
             cond.attrs['n_samples'] = res['n_samples']
 
 
-def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
-                     ops=ANALYSIS_OPTIONS,
-                     pca_key='event_all'):
-    """
-    Fit input-driven LDS for all sessions.
-    pca_key selects which PCA to use (e.g. 'event_all', 'event_V1', 'session_all').
-    Saves per-session results to <session_dir>/lds_<pca_key>.h5.
-    """
-    psth_paths = get_response_files(npx_dir)
+def _load_session_fr(sess_dir, ops):
+    """Load FR matrix, downsample, and return with session data and PCA weights."""
+    sess_dir = Path(sess_dir)
+    pca_path = sess_dir / 'pca.h5'
+    fr_path = sess_dir / 'FR_matrix.parquet'
+    if not pca_path.exists() or not fr_path.exists():
+        return None
 
-    for i, psth_path in enumerate(psth_paths):
-        sess_dir = Path(psth_path).parent
-        sess_data = Session.load(str(sess_dir / 'session.pkl'))
-        print(f'{sess_data.animal}_{sess_data.name} ({i + 1}/{len(psth_paths)})')
+    sess_data = Session.load(str(sess_dir / 'session.pkl'))
+    ds_factor = round(ops['pop_bin_width'] / ops['sp_bin_width'])
+    fr_full = load_fr_matrix(fr_path)
+    fr_full = downsample_bins(fr_full, ds_factor)
+    areas = sess_data.unit_info['brain_region_comb'].values
 
-        pca_path = sess_dir / 'pca.h5'
-        if not pca_path.exists():
-            print('    No pca.h5, skipping')
+    return sess_data, fr_full, areas, pca_path
+
+
+def _get_fr_for_key(fr_full, areas, pca_key, pca_path):
+    """Filter FR matrix and load weights for a pca_key."""
+    with h5py.File(pca_path, 'r') as f:
+        if pca_key not in f:
+            return None, None
+        weights = f[pca_key]['weights'][:]
+
+    group_name = pca_key.split('_', 1)[1]
+    if group_name == 'all':
+        mask = in_any_area(areas)
+    else:
+        mask = in_group(areas, group_name)
+    return fr_full.iloc[mask], weights
+
+
+def lds_single_session(sess_dir, ops, pca_keys):
+    """Fit LDS for one session across all pca_keys."""
+    loaded = _load_session_fr(sess_dir, ops)
+    if loaded is None:
+        return
+    sess_data, fr_full, areas, pca_path = loaded
+
+    for pca_key in pca_keys:
+        lds_path = Path(sess_dir) / f'lds_{pca_key}.h5'
+        if lds_path.exists():
             continue
 
-        with h5py.File(pca_path, 'r') as f:
-            if pca_key not in f:
-                print(f'  pca_key "{pca_key}" not found, skipping')
-                continue
-            weights = f[pca_key]['weights'][:]  # (nN, n_pcs)
-
-        fr_path = sess_dir / 'FR_matrix.parquet'
-        if not fr_path.exists():
-            print('  No FR_matrix, skipping')
+        fr_matrix, weights = _get_fr_for_key(fr_full, areas, pca_key, pca_path)
+        if fr_matrix is None:
             continue
-        fr_matrix = load_fr_matrix(fr_path)
 
-        # filter FR matrix to match the neurons used in PCA
-        areas = sess_data.unit_info['brain_region_comb'].values
-        group_name = pca_key.split('_', 1)[1]
-        if group_name == 'all':
-            mask = in_any_area(areas)
-        else:
-            mask = in_group(areas, group_name)
-        fr_matrix = fr_matrix.iloc[mask]
+        t_ax = fr_matrix.columns.values
+        n_lds = ops['lds_n_dims']
+        Z = weights[:, :n_lds].T @ fr_matrix.values
+        U = _build_input_vector(sess_data, t_ax)
+        del fr_matrix
 
-        ds_factor = round(ops['pop_bin_width'] / ops['sp_bin_width'])
-        fr_matrix = downsample_bins(fr_matrix, ds_factor)
-
-        results = fit_session_lds(sess_data, fr_matrix, weights, ops)
-
+        results = fit_session_lds(sess_data, Z, t_ax, U, ops)
         if results:
-            save_path = str(sess_dir / f'lds_{pca_key}.h5')
-            _save_lds_results(results, save_path)
+            _save_lds_results(results, str(lds_path))
             for cond_name, res in results.items():
-                print(f'  {cond_name}: R2={res["r2_full"]:.3f}, '
+                print(f'  {pca_key}/{cond_name}: R2={res["r2_full"]:.3f}, '
                       f'R2_test={np.nanmean(res["r2_test"]):.3f}, '
                       f'n={res["n_samples"]}')
+
+    del fr_full
+
+
+def flow_single_session(sess_dir, ops, pca_keys):
+    """Estimate empirical flow for one session across all pca_keys."""
+    loaded = _load_session_fr(sess_dir, ops)
+    if loaded is None:
+        return
+    sess_data, fr_full, areas, pca_path = loaded
+
+    for pca_key in pca_keys:
+        flow_path = Path(sess_dir) / f'flow_{pca_key}.h5'
+        if flow_path.exists():
+            continue
+
+        fr_matrix, weights = _get_fr_for_key(fr_full, areas, pca_key, pca_path)
+        if fr_matrix is None:
+            continue
+
+        t_ax = fr_matrix.columns.values
+        n_flow = ops['flow_n_dims']
+        Z_flow = weights[:, :n_flow].T @ fr_matrix.values
+        del fr_matrix
+
+        # shared grid from all conditions pooled
+        all_valid = np.zeros(len(t_ax), dtype=bool)
+        for cond_name in CONDITIONS:
+            all_valid |= _get_condition_mask(sess_data, t_ax, cond_name, ops)
+
+        shared_result = fit_empirical_flow(Z_flow, all_valid,
+                                            n_bins=ops['flow_n_bins'])
+        if shared_result is None:
+            continue
+        shared_edges = shared_result[0]
+
+        with h5py.File(flow_path, 'w') as f:
+            for d, edges in enumerate(shared_edges):
+                f.create_dataset(f'grid_edges/{d}', data=edges)
+                f.create_dataset(f'bin_centers/{d}',
+                                 data=(edges[:-1] + edges[1:]) / 2)
+            for cond_name in CONDITIONS:
+                cond_mask = _get_condition_mask(sess_data, t_ax, cond_name, ops)
+                result = fit_empirical_flow(Z_flow, cond_mask,
+                                             n_bins=ops['flow_n_bins'],
+                                             grid_edges=shared_edges)
+                if result is None:
+                    continue
+                _, _, mean_flow, counts = result
+                grp = f.create_group(cond_name)
+                grp.create_dataset('mean_flow', data=mean_flow)
+                grp.create_dataset('counts', data=counts)
+        print(f'  {pca_key}: flow saved')
+
+    del fr_full
+
+
+def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
+                     ops=ANALYSIS_OPTIONS,
+                     pca_keys=None,
+                     n_workers=2):
+    """Fit linear LDS for all sessions and pca_keys."""
+    from utils.rois import AREA_GROUPS
+    if pca_keys is None:
+        pca_keys = ['event_all'] + [f'event_{g}' for g in AREA_GROUPS]
+
+    sess_dirs = [str(Path(p).parent) for p in get_response_files(npx_dir)]
+    from multiprocessing import Pool
+    from functools import partial
+    with Pool(n_workers) as pool:
+        pool.map(partial(lds_single_session, ops=ops, pca_keys=pca_keys), sess_dirs)
+
+
+def run_flow_analysis(npx_dir=PATHS['npx_dir_local'],
+                      ops=ANALYSIS_OPTIONS,
+                      pca_keys=None,
+                      n_workers=4):
+    """Estimate empirical flow fields for all sessions and pca_keys."""
+    from utils.rois import AREA_GROUPS
+    if pca_keys is None:
+        pca_keys = ['event_all'] + [f'event_{g}' for g in AREA_GROUPS]
+
+    sess_dirs = [str(Path(p).parent) for p in get_response_files(npx_dir)]
+    from multiprocessing import Pool
+    from functools import partial
+    with Pool(n_workers) as pool:
+        pool.map(partial(flow_single_session, ops=ops, pca_keys=pca_keys), sess_dirs)

@@ -8,18 +8,18 @@ PATHS = dict(
 )
 
 ANALYSIS_OPTIONS = dict(
-    sp_bin_width     =10 / 1000,    # s
-    sp_smooth_width  =50 / 1000,    # s; size of casual boxcar fitler
+    sp_bin_width     =10 / 1000,      # s
+    sp_smooth_width  =50 / 1000,      # s; size of casual boxcar fitler
 
-    tf_outlier = 1.0,             # std deviations away from mean to consider an outlier
+    tf_outlier = 1.0,                 # std deviations away from mean to consider an outlier
 
-    min_trial_dur   = 2.0,         # s; minimum trial duration
-    rmv_time_around = 1.5,         # s; remove this time around trial,
+    min_trial_dur   = 2.0,            # s; minimum trial duration
+    rmv_time_around = 1.5,            # s; remove this time around trial,
 
-    min_hits_in_session = 30,       # trials; ignore sessions with fewer hits than this
-    ignore_first_trials_in_block = 5,  # trials; ignroe first n trials after a new block
+    min_hits_in_session = 30,         # trials; ignore sessions with fewer hits than this
+    ignore_first_trials_in_block = 5, # trials; ignroe first n trials after a new block
 
-    tr_split_time = 8,             # s; for splitting events into early vs late in trial
+    tr_split_time = 8,                # s; for splitting events into early vs late in trial
 
     # Response timings
     tf_resp_win = (0.1, 0.5),
@@ -39,7 +39,10 @@ ANALYSIS_OPTIONS = dict(
     n_pcs = 10,                   # number of PCs to extract
 
     # Dynamical systems
+    lds_n_dims = 5,               # number of PCs for linear LDS
     lds_n_folds = 5,              # k-fold CV for LDS fitting
+    flow_n_dims = 2,              # number of PCs for empirical flow field
+    flow_n_bins = 15,             # bins per dimension for flow field
 
 )
 

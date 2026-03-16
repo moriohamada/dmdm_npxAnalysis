@@ -199,7 +199,8 @@ def plot_session_dynamics(sess_dir,
         for ax in group:
             ax.set_xlim(shared_x)
             ax.set_ylim(shared_y)
-            plot_flow_field(A, ax, grid_range=grid_range)
+            if A is not None:
+                plot_flow_field(A, ax, grid_range=grid_range)
 
     for ax in axes.flat:
         ax.set_xlabel('PC1')
@@ -207,6 +208,142 @@ def plot_session_dynamics(sess_dir,
 
     fig.suptitle(f'{sess_data.animal}_{sess_data.name} (pca={pca_key}, lds={lds_cond})',
                  fontsize=11)
+    fig.tight_layout()
+
+    if save_path is not None:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
+
+    return fig
+
+
+def plot_empirical_flow(sess_dir, pca_key='event_all',
+                        event_type='tf',
+                        ops=ANALYSIS_OPTIONS,
+                        save_path=None):
+    """
+    Plot empirical flow fields per condition with event trajectories overlaid.
+    One column per condition (earlyBlock_early, lateBlock_early, lateBlock_late).
+    """
+    from analyses.dynamical import CONDITIONS
+
+    sess_data = Session.load(str(sess_dir / 'session.pkl'))
+    areas = sess_data.unit_info['brain_region_comb'].values
+    area_mask = _get_area_mask(areas, pca_key)
+
+    with h5py.File(sess_dir / 'pca.h5', 'r') as f:
+        weights = f[pca_key]['weights'][:]
+
+    flow_path = sess_dir / f'flow_{pca_key}.h5'
+    if not flow_path.exists():
+        print(f'  No flow file: {flow_path}')
+        return None
+
+    # load flow data
+    cond_names = list(CONDITIONS.keys())
+    with h5py.File(flow_path, 'r') as f:
+        bin_centers = [f[f'bin_centers/{d}'][:] for d in f['bin_centers']]
+        flows = {}
+        counts = {}
+        for cond in cond_names:
+            if cond in f:
+                flows[cond] = f[cond]['mean_flow'][:]
+                counts[cond] = f[cond]['counts'][:]
+
+    if not flows:
+        return None
+
+    # load mean PSTHs for overlay
+    means = {}
+    t_axes = {}
+    with h5py.File(str(sess_dir / 'psths.h5'), 'r') as f:
+        mean_key = f'{event_type}_mean'
+        if mean_key in f and f't_ax/{event_type}' in f:
+            t_axes[event_type] = f[f't_ax/{event_type}'][:]
+            for cond in f[mean_key]:
+                data = f[mean_key][cond][:]
+                if area_mask is not None:
+                    data = data[area_mask]
+                means[(event_type, cond)] = data
+
+    sigma = _smooth_sigma(ops, 5)
+    n_conds = len(cond_names)
+    fig, axes = plt.subplots(1, n_conds, figsize=(6 * n_conds, 6))
+    if n_conds == 1:
+        axes = [axes]
+
+    c_block = PLOT_COLOURS['block']
+    c_tf = PLOT_COLOURS['tf']
+
+    for col, cond_name in enumerate(cond_names):
+        ax = axes[col]
+
+        # plot flow field
+        if cond_name in flows:
+            flow = flows[cond_name]
+            count = counts[cond_name]
+            C0, C1 = np.meshgrid(bin_centers[0], bin_centers[1], indexing='ij')
+            U = flow[:, :, 0]
+            V = flow[:, :, 1]
+            # only show bins with enough data
+            valid = count >= 5
+            ax.quiver(C0[valid], C1[valid], U[valid], V[valid],
+                      color='k', alpha=0.4, scale=None)
+
+        # overlay trajectories for this event type
+        if event_type == 'tf':
+            for pol, color in c_tf.items():
+                key = (event_type, f'{cond_name}_{pol}')
+                if key in means:
+                    z = weights.T @ means[key]
+                    traj = z[:2]
+                    t = t_axes[event_type]
+                    plot_trajectory(traj, t, ax, color=color,
+                                    label=pol, smooth_sigma=sigma)
+
+        elif event_type == 'blOn':
+            for block, color in c_block.items():
+                key = (event_type, block)
+                if key in means:
+                    z = weights.T @ means[key]
+                    traj = z[:2]
+                    t = t_axes[event_type]
+                    plot_trajectory(traj, t, ax, color=color,
+                                    label=block, smooth_sigma=sigma)
+
+        elif event_type == 'lick':
+            for outcome in ['fa', 'hit']:
+                key = (event_type, f'{cond_name}_{outcome}')
+                if key in means:
+                    block = 'early' if cond_name.startswith('early') else 'late'
+                    color = c_block[block]
+                    z = weights.T @ means[key]
+                    traj = z[:2]
+                    t = t_axes[event_type]
+                    ls = '--' if outcome == 'hit' else '-'
+                    plot_trajectory(traj, t, ax, color=color,
+                                    label=f'{outcome}', smooth_sigma=sigma)
+
+        ax.set_title(cond_name)
+        ax.set_xlabel('PC1')
+        ax.set_ylabel('PC2')
+        ax.legend(fontsize=7)
+        ax.set_aspect('equal')
+
+    # share axes
+    xlims = [ax.get_xlim() for ax in axes]
+    ylims = [ax.get_ylim() for ax in axes]
+    shared_x = (min(lo for lo, _ in xlims), max(hi for _, hi in xlims))
+    shared_y = (min(lo for lo, _ in ylims), max(hi for _, hi in ylims))
+    for ax in axes:
+        ax.set_xlim(shared_x)
+        ax.set_ylim(shared_y)
+
+    fig.suptitle(f'{sess_data.animal}_{sess_data.name} — {event_type} '
+                 f'(pca={pca_key})', fontsize=11)
     fig.tight_layout()
 
     if save_path is not None:
