@@ -5,6 +5,7 @@ import numpy as np
 import h5py
 # from scipy.ndimage import gaussian_filter1d
 from utils.smoothing import causal_boxcar
+import warnings
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -212,8 +213,10 @@ def _plot_unit(unit_idx: int,
                region: str = None):
     """Worker fn for parallelising across units."""
     try:
-        plot_basic_psths(psth_path, unit_idx=unit_idx,
-                         save_dir=save_dir, ops=ops, region=region)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+            plot_basic_psths(psth_path, unit_idx=unit_idx,
+                             save_dir=save_dir, ops=ops, region=region)
     except Exception as e:
         print(f'unit {unit_idx} failed: {e}')
     finally:

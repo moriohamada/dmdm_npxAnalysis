@@ -2,6 +2,14 @@
 useful functions for navigating directories, getting paths for relevant files etc.
 """
 import os
+import pandas as pd
+import pyarrow.parquet as pq
+
+
+def load_fr_matrix(path) -> pd.DataFrame:
+    """Load large FR_matrix parquet files"""
+    table = pq.read_table(str(path), thrift_string_size_limit=1000000000)
+    return table.to_pandas()
 
 def get_response_files(npx_dir: str):
     """

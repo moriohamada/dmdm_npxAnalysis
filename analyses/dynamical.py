@@ -17,7 +17,8 @@ from pathlib import Path
 
 from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
-from utils.filing import get_response_files
+from utils.filing import get_response_files, load_fr_matrix
+from utils.rois import in_any_area, in_group
 
 CONDITIONS = {
     'earlyBlock_early': dict(block='early', time='early'),
@@ -28,7 +29,7 @@ CONDITIONS = {
 
 def fit_lds(Z, U, valid):
     """
-    Fit LDS w least-squares.
+    Fit LDS w least-squares: z(t+1) = Az(t) + Bu(t)
 
     Z: (n_pcs, T) state trajectory in PC space
     U: (n_inputs, T) input (log2 TF)
@@ -44,7 +45,7 @@ def fit_lds(Z, U, valid):
 
     # solve Z_next = [A B] @ [Z_curr; U_curr] for [A B]
     predictors = np.vstack([Z_curr, U_curr])
-    M, _, _, _ = np.linalg.lstsq(predictors.T, Z_next.T, rcond=None)
+    M, _, _, _ = np.linalg.lstsq(predictors.T, Z_next.T)
     M = M.T
 
     n_pcs = Z.shape[0]
@@ -89,7 +90,7 @@ def _build_input_vector(session, t_ax):
 
         # zero-order hold: assign each bin the last stimulus value <= bin time
         insert_idx = np.searchsorted(ft_20hz, t_ax[bin_idx], side='right') - 1
-        insert_idx = np.clip(insert_idx, 0, len(tf_20hz - 1)
+        insert_idx = np.clip(insert_idx, 0, len(tf_20hz - 1))
         U[0, bin_idx] = np.log2(tf_20hz[insert_idx])
 
     return U
@@ -280,7 +281,7 @@ def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
 
         pca_path = sess_dir / 'pca.h5'
         if not pca_path.exists():
-            print('  No pca.h5, skipping')
+            print('    No pca.h5, skipping')
             continue
 
         with h5py.File(pca_path, 'r') as f:
@@ -293,7 +294,16 @@ def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
         if not fr_path.exists():
             print('  No FR_matrix, skipping')
             continue
-        fr_matrix = pd.read_parquet(fr_path)
+        fr_matrix = load_fr_matrix(fr_path)
+
+        # filter FR matrix to match the neurons used in PCA
+        areas = sess_data.unit_info['brain_region_comb'].values
+        group_name = pca_key.split('_', 1)[1]
+        if group_name == 'all':
+            mask = in_any_area(areas)
+        else:
+            mask = in_group(areas, group_name)
+        fr_matrix = fr_matrix.iloc[mask]
 
         results = fit_session_lds(sess_data, fr_matrix, weights, ops)
 
@@ -301,6 +311,6 @@ def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
             save_path = str(sess_dir / f'lds_{pca_key}.h5')
             _save_lds_results(results, save_path)
             for cond_name, res in results.items():
-                print(f'  {cond_name}: R²={res["r2_full"]:.3f}, '
+                print(f'  {cond_name}: R2={res["r2_full"]:.3f}, '
                       f'R2_test={np.nanmean(res["r2_test"]):.3f}, '
                       f'n={res["n_samples"]}')

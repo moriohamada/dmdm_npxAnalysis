@@ -59,7 +59,7 @@ def save_fr_matrix(fr_matrix: pd.DataFrame,
     fr_matrix = fr_matrix.astype(np.float32)
     fr_matrix.to_parquet(save_path)
     if fr_stats is not None:
-        stats_path = Path(save_path).with_stem(Path(save_path).stem + '_FRstats')
+        stats_path = Path(save_path).parent / 'FR_stats.parquet'
         fr_stats.to_parquet(stats_path)
 
 def _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops):

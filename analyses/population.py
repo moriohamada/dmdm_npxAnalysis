@@ -10,9 +10,10 @@ from sklearn.decomposition import PCA
 from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
 from analyses.load_responses import load_psth_mean
-from utils.filing import get_response_files
+from utils.filing import get_response_files, load_fr_matrix
+from utils.rois import AREA_GROUPS, in_any_area, in_group
 
-# default event selection: event_type -> list of conditions
+# default event selection: event_type: list of conditions
 DEFAULT_EVENT_SELECTION = {
     'tf':   ['earlyBlock_early_pos', 'earlyBlock_early_neg',
              'lateBlock_early_pos',  'lateBlock_early_neg',
@@ -20,7 +21,7 @@ DEFAULT_EVENT_SELECTION = {
     'lick': ['earlyBlock_early_fa', 'lateBlock_early_fa', 'lateBlock_late_fa'],
 }
 
-# event type -> conditions to project PC weights onto
+# event type: conditions to project PC weights onto
 DEFAULT_PROJECTION_EVENTS = {
     'tf':   ['earlyBlock_early_pos', 'earlyBlock_early_neg',
              'lateBlock_early_pos',  'lateBlock_early_neg',
@@ -46,16 +47,15 @@ def _run_pca(X: np.ndarray, n_components: int = 10):
     return pca.explained_variance_ratio_, weights
 
 
-def _project_events(psth_path: str, weights: np.ndarray,
+def _project_events(psth_path: str,
+                    weights: np.ndarray,
                     projection_events: dict[str, list[str]] = DEFAULT_PROJECTION_EVENTS,
-                    neuron_mask: np.ndarray = None):
+                    area_mask: np.ndarray = None):
     """
     Project mean PSTHs through PC weights for specified event/condition pairs.
-    Conditions support wildcards (e.g. 'early_hit_tf*').
     Returns dict of {event_type/condition: nPC x nT} and corresponding t_ax dict.
     """
     import fnmatch
-    W = weights if neuron_mask is None else weights[neuron_mask]
     projections = {}
     t_axes = {}
 
@@ -76,9 +76,9 @@ def _project_events(psth_path: str, weights: np.ndarray,
 
                 for cond in matched:
                     mean_resp = f[f'{mean_key}/{cond}'][:]  # nN x nT
-                    if neuron_mask is not None:
-                        mean_resp = mean_resp[neuron_mask]
-                    projections[f'{et}/{cond}'] = W.T @ mean_resp  # nPC x nT
+                    if area_mask is not None:
+                        mean_resp = mean_resp[area_mask]
+                    projections[f'{et}/{cond}'] = weights.T @ mean_resp  # nPC x nT
 
     return projections, t_axes
 
@@ -102,10 +102,11 @@ def _extract_trial_bins(fr_matrix: pd.DataFrame,
 
 
 def _build_concat_matrix(psth_path: str,
-                         event_selection: dict[str, list[str]]):
+                         event_selection: dict[str, list[str]],
+                         unit_mask: np.ndarray = None):
     """
     Load mean PSTHs for selected event/condition pairs and concatenate.
-    Uses load_psth_mean for each (event_type, condition).
+    Uses load_psth_mean for each (event_type, condition), then filters to unit_mask.
     Returns (nN x nConditions*nT) matrix and list of condition labels.
     """
     blocks = []
@@ -113,7 +114,11 @@ def _build_concat_matrix(psth_path: str,
     for event_type, conditions in event_selection.items():
         for cond in conditions:
             mean, _, _ = load_psth_mean(psth_path, event_type=event_type,
-                                        condition=cond, baseline_subtract=True)
+                                        condition=cond, baseline_subtract=False)
+            if mean is None:
+                continue
+            if unit_mask is not None:
+                mean = mean[unit_mask]
             if mean.shape[0] == 0:
                 continue
             blocks.append(mean)  # nN x nT
@@ -125,63 +130,56 @@ def _build_concat_matrix(psth_path: str,
 
 
 def pca_by_session(psth_path: str,
-                   sess_data: Session,
+                   areas: np.ndarray,
                    event_selection: dict[str, list[str]] = None,
                    n_components: int = 10,
-                   fr_matrix: np.ndarray = None,
-                   X_event: np.ndarray = None,
-                   cond_labels: list[str] = None):
+                   fr_matrix: np.ndarray = None):
     """
-    Run PCA on a single session:
-    - event-aligned mean PSTHs (all units + per area)
-    - whole session FR matrix (all units + per area), if provided
-    Returns dict of results keyed by analysis name.
+    Run PCA for each area group defined in AREA_GROUPS, plus 'all' (any known area).
+    For event-aligned and (optionally) whole-session FR matrix.
+    areas: brain_region_comb values for all units in the session (unfiltered).
+    Returns dict of results keyed by e.g. 'event_all', 'event_thalamus', 'session_all'.
     """
     if event_selection is None:
         event_selection = DEFAULT_EVENT_SELECTION
 
     results = {}
-    areas = sess_data.unit_info['brain_region_comb'].values
-    unique_areas = np.unique(areas)
 
-    # Event-aligned PCA
-    if X_event is None:
-        X_event, cond_labels = _build_concat_matrix(psth_path, event_selection)
+    for group_name in ['all', *AREA_GROUPS]:
+        mask = in_any_area(areas) if group_name == 'all' else in_group(areas, group_name)
+        if mask.sum() < 2:
+            continue
 
-    if X_event is not None:
-        var_exp, weights = _run_pca(X_event, n_components)
-        projections, t_axes = _project_events(psth_path, weights)
-        results['event_all'] = dict(var_explained=var_exp, weights=weights,
-                                    projections=projections, t_axes=t_axes)
+        # event-aligned PCA
+        X_ev, _ = _build_concat_matrix(psth_path, event_selection, unit_mask=mask)
+        if X_ev is not None:
+            var_exp, weights = _run_pca(X_ev, n_components)
+            projections, t_axes = _project_events(psth_path, weights, area_mask=mask)
+            results[f'event_{group_name}'] = dict(var_explained=var_exp, weights=weights,
+                                                   projections=projections, t_axes=t_axes)
 
-        for area in unique_areas:
-            mask = areas == area
-            if mask.sum() < n_components:
-                continue
-            var_exp, weights = _run_pca(X_event[mask], n_components)
-            projections, t_axes = _project_events(psth_path, weights,
-                                                      neuron_mask=mask)
-            results[f'event_{area}'] = dict(var_explained=var_exp, weights=weights,
-                                            projections=projections, t_axes=t_axes)
-
-    # whole-session PCA
-    if fr_matrix is not None:
-        var_exp, weights = _run_pca(fr_matrix, n_components)
-        projections, t_axes = _project_events(psth_path, weights)
-        results['session_all'] = dict(var_explained=var_exp, weights=weights,
-                                      projections=projections, t_axes=t_axes)
-
-        for area in unique_areas:
-            mask = areas == area
-            if mask.sum() < n_components:
-                continue
-            var_exp, weights = _run_pca(fr_matrix[mask], n_components)
-            projections, t_axes = _project_events(psth_path, weights,
-                                                      neuron_mask=mask)
-            results[f'session_{area}'] = dict(var_explained=var_exp, weights=weights,
-                                              projections=projections, t_axes=t_axes)
+        # whole-session PCA
+        if fr_matrix is not None:
+            fr_sub = fr_matrix[mask]
+            if fr_sub.shape[0] >= 2:
+                var_exp, weights = _run_pca(fr_sub, n_components)
+                projections, t_axes = _project_events(psth_path, weights, area_mask=mask)
+                results[f'session_{group_name}'] = dict(var_explained=var_exp, weights=weights,
+                                                         projections=projections, t_axes=t_axes)
 
     return results
+
+
+def print_pca_contents(pca_path: str):
+    """Print keys and shapes in a pca.h5 file."""
+    with h5py.File(pca_path, 'r') as f:
+        for name in f:
+            grp = f[name]
+            n_neurons, n_pcs = grp['weights'].shape
+            var = grp['var_explained'][:3]
+            proj_keys = list(grp['projections'].keys()) if 'projections' in grp else []
+            print(f'{name}: {n_neurons} neurons, {n_pcs} PCs, '
+                  f'top3 var={var.round(3)}, {len(proj_keys)} projections')
 
 
 def _save_pca_results(results: dict, save_path: str):
@@ -203,8 +201,7 @@ def _save_pca_results(results: dict, save_path: str):
 def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
                 ops: dict = ANALYSIS_OPTIONS,
                 event_selection: dict[str, list[str]] = None,
-                n_components: int = 10,
-                include_whole_session: bool = False):
+                 include_whole_session: bool = True):
     """
     Extract PCs in several ways:
     1) event_aligned, all units, per session
@@ -214,8 +211,8 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
     5) event_aligned, all units, combined across sessions
     6) event_aligned, by area, combined across sessions
 
-    Saves per-session results to <session_dir>/pca.h5 and combined results
-    to <npx_dir>/pca_combined.h5. HDF5 layout:
+    Saves results to <session_dir>/pca.h5 and combined results
+    to <npx_dir>/pca_combined.h5. hdf5 layout:
 
     pca.h5
     --- <analysis>                      e.g. event_all, event_V1, session_all
@@ -234,51 +231,62 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
     combined_blocks = {}  # area_key -> list of X matrices
     combined_labels = None
 
+    n_components = ops['n_pcs']
+
     for i, psth_path in enumerate(psth_paths):
         sess_data = Session.load(psth_path.replace('psths.h5', 'session.pkl'))
         print(f'{sess_data.animal}_{sess_data.name} ({i + 1}/{len(psth_paths)})')
         save_dir = Path(npx_dir) / sess_data.animal / sess_data.name
+        #
+        # if (save_dir / 'pca.h5').exists():
+        #     print(f'  pca.h5 already exists, skipping...')
+        #     continue
 
-        # load event-aligned data (reuse for per-session PCA + accumulation)
-        X_ev, cond_labels = _build_concat_matrix(psth_path, event_selection)
+        areas = sess_data.unit_info['brain_region_comb'].values
+        if not in_any_area(areas).any():
+            continue
 
         # load whole-session FR matrix (trimmed to trial bins)
         fr_matrix = None
         if include_whole_session:
             fr_path = save_dir / 'FR_matrix.parquet'
             if fr_path.exists():
-                fr_df = pd.read_parquet(fr_path)
+                fr_df = load_fr_matrix(fr_path)
                 fr_matrix = _extract_trial_bins(fr_df, sess_data)
+                del fr_df
 
-        # per-session PCA
-        results = pca_by_session(psth_path, sess_data, event_selection,
-                                 n_components, fr_matrix, X_ev, cond_labels)
+        # per-session PCA (loops through all area groups internally)
+        results = pca_by_session(psth_path, areas, event_selection,
+                                 n_components, fr_matrix)
         if results:
             _save_pca_results(results, str(save_dir / 'pca.h5'))
 
-        # accumulate for combined analysis
-        if X_ev is not None:
-            if combined_labels is None:
-                combined_labels = cond_labels
-            areas = sess_data.unit_info['brain_region_comb'].values
-            combined_blocks.setdefault('all', []).append(X_ev)
-            for area in np.unique(areas):
-                mask = areas == area
-                combined_blocks.setdefault(area, []).append(X_ev[mask])
+        # accumulate for combined cross-session analysis
+        for group_name in ['all', *AREA_GROUPS]:
+            mask = in_any_area(areas) if group_name == 'all' else in_group(areas, group_name)
+            if mask.sum() < 2:
+                continue
+            X_ev, cond_labels = _build_concat_matrix(psth_path, event_selection,
+                                                      unit_mask=mask)
+            if X_ev is not None:
+                combined_blocks.setdefault(group_name, []).append(X_ev)
+                if combined_labels is None:
+                    combined_labels = cond_labels
 
     # Combined PCA across all sessions
-    combined_results = {}
-    for key, blocks in combined_blocks.items():
-        X = np.concatenate(blocks, axis=0)  # stack neurons across sessions
-        if X.shape[0] < n_components:
-            continue
-        comps, var_exp, scores = _run_pca(X, n_components)
-        name = 'event_combined_all' if key == 'all' else f'event_combined_{key}'
-        combined_results[name] = dict(components=comps, var_explained=var_exp,
-                                      scores=scores, condition_labels=combined_labels)
-
-    if combined_results:
-        _save_pca_results(combined_results, str(Path(npx_dir) / 'pca_combined.h5'))
+    combined_save_path = str(Path(npx_dir) / 'pca_combined.h5')
+    with h5py.File(combined_save_path, 'w') as f:
+        for key, blocks in combined_blocks.items():
+            X = np.concatenate(blocks, axis=0)
+            if X.shape[0] < n_components:
+                continue
+            var_exp, weights = _run_pca(X, n_components)
+            grp = f.create_group(f'event_combined_{key}')
+            grp.create_dataset('var_explained', data=var_exp)
+            grp.create_dataset('weights', data=weights)
+            if combined_labels is not None:
+                grp.create_dataset('condition_labels',
+                                   data=np.array(combined_labels, dtype='S'))
 
 
 def extract_coding_dimensions():

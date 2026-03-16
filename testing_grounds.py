@@ -34,6 +34,7 @@ visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
                           sig_flag='both',
                           alpha=.05)
 
+#%% Fit GLMs to single units
 
 
 #%% PCA

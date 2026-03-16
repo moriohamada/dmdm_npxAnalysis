@@ -55,7 +55,8 @@ def load_psth_mean(filepath: str,
     """
     arr, t_ax = load_psth(filepath=filepath, event_type=event_type,
                           condition=condition, baseline_subtract=baseline_subtract)
-
+    if not arr.size>0:
+        return None, None, t_ax
     mean = np.nanmean(arr, axis=0)
     sem = np.nanstd(arr, axis=0) / np.sqrt(arr.shape[0])
 

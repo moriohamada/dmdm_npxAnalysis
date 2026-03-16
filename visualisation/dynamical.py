@@ -211,7 +211,8 @@ def plot_session_dynamics(sess_dir, pca_key='event_all',
     import pandas as pd
 
     sess_data = Session.load(str(sess_dir / 'session.pkl'))
-    fr_matrix = pd.read_parquet(sess_dir / 'FR_matrix.parquet')
+    from utils.filing import load_fr_matrix
+    fr_matrix = load_fr_matrix(sess_dir / 'FR_matrix.parquet')
     psth_path = str(sess_dir / 'psths.h5')
 
     weights, A, basis = _load_weights_and_basis(
