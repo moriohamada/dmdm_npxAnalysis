@@ -1,5 +1,5 @@
 """
-Visualisation for LDS results: flow fields and projected trajectories.
+Visualisation for projected trajectories in PC space.
 """
 import numpy as np
 import h5py
@@ -10,54 +10,29 @@ sns.set_style("whitegrid")
 
 from config import ANALYSIS_OPTIONS, PATHS, PLOT_COLOURS
 from data.session import Session
-from analyses.load_responses import load_psth_mean
-from analyses.dynamical import CONDITIONS, _get_condition_mask, _build_input_vector
-from utils.filing import get_response_files
+from utils.rois import in_any_area, in_group
 
 
-def get_dynamics_plane(A, Z_valid, method='flow'):
-    """
-    Find 2D basis for visualising dynamics.
-
-    Args:
-        A: (n_pcs, n_pcs) dynamics matrix
-        Z_valid: (n_pcs, T_valid) PC trajectories (only valid/masked bins)
-        method:
-            'pc'   — just use PC dimensions 1 and 2
-            'flow' — PCA on the flow vectors dx = (A-I)x; finds the plane
-                     where state is changing most, which is usually more
-                     informative than raw variance
-    Returns:
-        basis: (n_pcs, 2) orthonormal column vectors spanning the plane
-    """
-    n_pcs = A.shape[0]
-    if method == 'pc':
-        basis = np.eye(n_pcs, 2)
-    elif method == 'flow':
-        flow = (A - np.eye(n_pcs)) @ Z_valid
-        U, _, _ = np.linalg.svd(flow, full_matrices=False)
-        basis = U[:, :2]
-    else:
-        raise ValueError(f"Unknown method: {method}")
-    return basis
+def _get_area_mask(areas, pca_key):
+    """Return boolean mask for the neurons used by a given pca_key."""
+    group_name = pca_key.split('_', 1)[1]
+    if group_name == 'all':
+        return in_any_area(areas)
+    return in_group(areas, group_name)
 
 
-def plot_flow_field(A, basis, ax,
-                    grid_range=(-3, 3), n_grid=15,
+def _smooth_sigma(ops, multiplier):
+    """Smoothing sigma in bins for trajectory plotting."""
+    return multiplier * ops['sp_smooth_width'] / ops['sp_bin_width']
+
+
+def plot_flow_field(A, ax, grid_range=(-3, 3), n_grid=15,
                     color='k', alpha=0.4):
     """
-    Plot 2D quiver flow field for dynamics matrix A, projected onto
-    the given 2D basis.
-
-    For each point p on a grid in the 2D plane, computes the flow
-    dp = (A-I)x where x is the lift of p back to n_pcs space,
-    then projects the flow back to 2D.
+    Plot flow field for dynamics matrix A in PC1/PC2 space.
+    Uses the top-left 2x2 block of (A - I).
     """
-    n_pcs = A.shape[0]
-    A_eff = A - np.eye(n_pcs)
-
-    # project A into the 2D plane: dp_2d = basis.T @ A_eff @ basis @ p_2d
-    A_2d = basis.T @ A_eff @ basis
+    A_2d = (A - np.eye(A.shape[0]))[:2, :2]
 
     g = np.linspace(grid_range[0], grid_range[1], n_grid)
     P1, P2 = np.meshgrid(g, g)
@@ -68,202 +43,175 @@ def plot_flow_field(A, basis, ax,
     ax.set_aspect('equal')
 
 
-def project_to_plane(mean_psth, weights, basis):
+def project_to_pc12(mean_psth, weights, area_mask=None):
     """
-    Project a mean PSTH (nN x nT) through PCA weights and onto 2D plane.
-    Returns (2, nT) trajectory in the visualisation plane.
+    Project mean PSTH (nN x nT) into PC1/PC2 space.
+    Returns (2, nT) or None.
     """
-    z = weights.T @ mean_psth   # (n_pcs, nT)
-    return basis.T @ z           # (2, nT)
+    if mean_psth is None:
+        return None
+    if area_mask is not None:
+        mean_psth = mean_psth[area_mask]
+    z = weights.T @ mean_psth  # (n_pcs, nT)
+    return z[:2]               # (2, nT)
 
 
 def plot_trajectory(traj_2d, t_ax, ax,
                     color='k', label=None, lw=1.5,
-                    marker_start=True):
+                    smooth_sigma=0):
     """
-    Plot a 2D trajectory with optional start marker.
-    traj_2d: (2, nT)
+    Plot a 2D trajectory with start marker (circle) and t=0 marker (square).
+    smooth_sigma in bins (0 = no smoothing, causal).
     """
+    if smooth_sigma > 0:
+        from utils.smoothing import causal_gaussian
+        traj_2d = causal_gaussian(traj_2d, sigma_bins=smooth_sigma)
     ax.plot(traj_2d[0], traj_2d[1], color=color, lw=lw, label=label)
-    if marker_start:
-        ax.plot(traj_2d[0, 0], traj_2d[1, 0], 'o', color=color, ms=6)
+    ax.plot(traj_2d[0, 0], traj_2d[1, 0], 'o', color=color, ms=6)
+    t0_idx = np.argmin(np.abs(t_ax))
+    ax.plot(traj_2d[0, t0_idx], traj_2d[1, t0_idx], 's', color=color, ms=5)
 
 
-def _load_weights_and_basis(sess_dir, pca_key, lds_cond, fr_matrix, session,
-                            ops, plane_method='flow'):
-    """
-    Load PCA weights and compute the 2D visualisation plane from
-    a fitted LDS condition.
-    """
-    with h5py.File(sess_dir / 'pca.h5', 'r') as f:
-        weights = f[pca_key]['weights'][:]
-
-    with h5py.File(sess_dir / f'lds_{pca_key}.h5', 'r') as f:
-        A = f[lds_cond]['A'][:]
-
-    # get valid bins for this condition to compute the flow plane
-    t_ax = fr_matrix.columns.values
-    Z = weights.T @ fr_matrix.values
-    mask = _get_condition_mask(session, t_ax, lds_cond, ops)
-    Z_valid = Z[:, mask]
-
-    basis = get_dynamics_plane(A, Z_valid, method=plane_method)
-    return weights, A, basis
-
-
-def plot_baseline_trajectories(psth_path, weights, basis, ax):
-    """Baseline onset: early vs late block."""
-    c = PLOT_COLOURS['block']
-    for block, color in c.items():
-        mean, _, t = load_psth_mean(psth_path, 'blOn', block,
-                                    baseline_subtract=True)
-        traj = project_to_plane(mean, weights, basis)
-        plot_trajectory(traj, t, ax, color=color, label=f'{block} block')
-    ax.set_title('Baseline onset')
-    ax.legend(fontsize=7)
-
-
-def plot_tf_trajectories(psth_path, weights, basis, ax,
-                         block_label='lateBlock_early'):
-    """
-    TF pulses for one block/time condition, pos vs neg.
-    block_label: e.g. 'earlyBlock_early', 'lateBlock_early', 'lateBlock_late'
-    """
-    c = PLOT_COLOURS['tf']
-    for pol, color in c.items():
-        cond = f'{block_label}_{pol}'
-        mean, _, t = load_psth_mean(psth_path, 'tf', cond,
-                                    baseline_subtract=True)
-        traj = project_to_plane(mean, weights, basis)
-        plot_trajectory(traj, t, ax, color=color, label=pol)
-    ax.set_title(f'TF: {block_label}')
-    ax.legend(fontsize=7)
-
-
-def plot_lick_trajectories(psth_path, weights, basis, ax,
-                           outcome='fa'):
-    """
-    Lick-aligned trajectories split by block, for hits or FAs.
-    """
-    c = PLOT_COLOURS['block']
-    line_styles = {
-        'earlyBlock_early': '-',
-        'lateBlock_early': '-',
-        'lateBlock_late': '--',
-    }
-    for cond_key, ls in line_styles.items():
-        block = 'early' if cond_key.startswith('early') else 'late'
-        color = c[block]
-        cond = f'{cond_key}_{outcome}'
-        try:
-            mean, _, t = load_psth_mean(psth_path, 'lick', cond,
-                                        baseline_subtract=True)
-        except (KeyError, ValueError):
-            continue
-        traj = project_to_plane(mean, weights, basis)
-        plot_trajectory(traj, t, ax, color=color, label=cond_key, lw=1.5)
-        ax.plot(traj[0], traj[1], color=color, lw=1.5, ls=ls)
-    ax.set_title(f'Lick ({outcome})')
-    ax.legend(fontsize=7)
-
-
-def plot_change_trajectories(psth_path, weights, basis, ax,
-                             block='late', outcome='hit'):
-    """
-    Change-onset trajectories coloured by change TF magnitude.
-    Splits into large vs small based on median TF value.
-    """
-    # find available change conditions for this block/outcome
-    with h5py.File(psth_path, 'r') as f:
-        ch_conds = sorted(f['ch'].keys())
-
-    prefix = f'{block}_{outcome}_tf'
-    matching = [c for c in ch_conds if c.startswith(prefix)]
-    if not matching:
-        return
-
-    tf_vals = sorted([float(c.split('_tf')[-1]) for c in matching])
-    cmap = plt.cm.get_cmap(PLOT_COLOURS['ch_tf_cmap'])
-    colors = cmap(np.linspace(0.15, 0.85, len(tf_vals)))
-
-    for tf_val, color in zip(tf_vals, colors):
-        cond = f'{prefix}{tf_val}'
-        mean, _, t = load_psth_mean(psth_path, 'ch', cond,
-                                    baseline_subtract=True)
-        traj = project_to_plane(mean, weights, basis)
-        plot_trajectory(traj, t, ax, color=color, label=f'tf={tf_val}')
-    ax.set_title(f'Change ({block} block, {outcome})')
-    ax.legend(fontsize=6)
-
-
-def plot_session_dynamics(sess_dir, pca_key='event_all',
+def plot_session_dynamics(sess_dir,
+                          pca_key='event_all',
                           lds_cond='lateBlock_early',
-                          plane_method='flow',
                           ops=ANALYSIS_OPTIONS,
                           save_path=None):
     """
-    Summary figure for one session: flow fields + trajectory overlays.
+    Summary figure for one session: mean PSTH trajectories in PC1/PC2 space.
 
     Layout (2 rows x 4 cols):
-        row 0: flow field with baseline / TF (x3 conditions)
-        row 1: flow field with lick FA / lick hit / change hit / change miss
+        row 0: baseline onset / TF (x3 block/time conditions)
+        row 1: lick FA / lick hit / change hit / change miss
     """
-    import pandas as pd
-
     sess_data = Session.load(str(sess_dir / 'session.pkl'))
-    from utils.filing import load_fr_matrix
-    fr_matrix = load_fr_matrix(sess_dir / 'FR_matrix.parquet')
-    psth_path = str(sess_dir / 'psths.h5')
 
-    weights, A, basis = _load_weights_and_basis(
-        sess_dir, pca_key, lds_cond, fr_matrix, sess_data, ops, plane_method)
+    areas = sess_data.unit_info['brain_region_comb'].values
+    area_mask = _get_area_mask(areas, pca_key)
 
-    # figure out grid range from actual data
-    t_ax = fr_matrix.columns.values
-    Z = weights.T @ fr_matrix.values
-    proj = basis.T @ Z
-    pad = 0.5
-    grid_range = (proj.min() - pad, proj.max() + pad)
+    with h5py.File(sess_dir / 'pca.h5', 'r') as f:
+        weights = f[pca_key]['weights'][:]
+    lds_path = sess_dir / f'lds_{pca_key}.h5'
+    A = None
+    if lds_path.exists():
+        with h5py.File(lds_path, 'r') as f:
+            if lds_cond in f:
+                A = f[lds_cond]['A'][:]
+
+    # load all mean PSTHs in one file open
+    means = {}
+    t_axes = {}
+    with h5py.File(str(sess_dir / 'psths.h5'), 'r') as f:
+        for key in f:
+            if not key.endswith('_mean'):
+                continue
+            et = key.replace('_mean', '')
+            if f't_ax/{et}' in f:
+                t_axes[et] = f[f't_ax/{et}'][:]
+            for cond in f[key]:
+                data = f[key][cond][:]
+                if area_mask is not None:
+                    data = data[area_mask]
+                # baseline subtract
+                t = t_axes.get(et)
+                if t is not None:
+                    bl = t < 0
+                    if bl.any():
+                        data = data - np.nanmean(data[:, bl], axis=1, keepdims=True)
+                means[(et, cond)] = data
+
+    def get_traj(event_type, condition):
+        key = (event_type, condition)
+        if key not in means:
+            return None, None
+        z = weights.T @ means[key]
+        return z[:2], t_axes[event_type]
+
+    sigma_short = _smooth_sigma(ops, 5)
+    sigma_long = _smooth_sigma(ops, 5)
 
     fig, axes = plt.subplots(2, 4, figsize=(20, 10))
 
-    # row 0: baseline + 3 TF conditions
-    plot_flow_field(A, basis, axes[0, 0], grid_range=grid_range)
-    plot_baseline_trajectories(psth_path, weights, basis, axes[0, 0])
+    # row 0: baseline onset + 3 TF conditions
+    c_block = PLOT_COLOURS['block']
+    for block, color in c_block.items():
+        traj, t = get_traj('blOn', block)
+        if traj is not None:
+            plot_trajectory(traj, t, axes[0, 0], color=color,
+                            label=f'{block} block', smooth_sigma=sigma_short)
+    axes[0, 0].set_title('Baseline onset')
+    axes[0, 0].legend(fontsize=7)
 
+    c_tf = PLOT_COLOURS['tf']
     for col, bl in enumerate(['earlyBlock_early', 'lateBlock_early',
                                'lateBlock_late'], start=1):
-        plot_flow_field(A, basis, axes[0, col], grid_range=grid_range)
-        plot_tf_trajectories(psth_path, weights, basis, axes[0, col],
-                             block_label=bl)
+        for pol, color in c_tf.items():
+            traj, t = get_traj('tf', f'{bl}_{pol}')
+            if traj is not None:
+                plot_trajectory(traj, t, axes[0, col], color=color,
+                                label=pol, smooth_sigma=sigma_short)
+        axes[0, col].set_title(f'TF: {bl}')
+        axes[0, col].legend(fontsize=7)
 
     # row 1: lick FA, lick hit, change hit, change miss
-    plot_flow_field(A, basis, axes[1, 0], grid_range=grid_range)
-    plot_lick_trajectories(psth_path, weights, basis, axes[1, 0], outcome='fa')
+    for outcome_idx, outcome in enumerate(['fa', 'hit']):
+        ax = axes[1, outcome_idx]
+        for cond_key in ['earlyBlock_early', 'lateBlock_early', 'lateBlock_late']:
+            block = 'early' if cond_key.startswith('early') else 'late'
+            color = c_block[block]
+            traj, t = get_traj('lick', f'{cond_key}_{outcome}')
+            if traj is not None:
+                plot_trajectory(traj, t, ax, color=color, label=cond_key,
+                                lw=1.5, smooth_sigma=sigma_long)
+        ax.set_title(f'Lick ({outcome})')
+        ax.legend(fontsize=7)
 
-    plot_flow_field(A, basis, axes[1, 1], grid_range=grid_range)
-    plot_lick_trajectories(psth_path, weights, basis, axes[1, 1], outcome='hit')
+    # change hit / change miss
+    ch_conds = [c for et, c in means if et == 'ch']
+    for ch_idx, outcome in enumerate(['hit', 'miss']):
+        ax = axes[1, ch_idx + 2]
+        prefix = f'late_{outcome}_tf'
+        matching = sorted([c for c in ch_conds if c.startswith(prefix)])
+        if not matching:
+            continue
 
-    plot_flow_field(A, basis, axes[1, 2], grid_range=grid_range)
-    plot_change_trajectories(psth_path, weights, basis, axes[1, 2],
-                             block='late', outcome='hit')
+        tf_vals = sorted([float(c.split('_tf')[-1]) for c in matching])
+        cmap = plt.cm.get_cmap(PLOT_COLOURS['ch_tf_cmap'])
+        colors = cmap(np.linspace(0.15, 0.85, len(tf_vals)))
 
-    plot_flow_field(A, basis, axes[1, 3], grid_range=grid_range)
-    plot_change_trajectories(psth_path, weights, basis, axes[1, 3],
-                             block='late', outcome='miss')
+        for tf_val, color in zip(tf_vals, colors):
+            traj, t = get_traj('ch', f'{prefix}{tf_val}')
+            if traj is not None:
+                plot_trajectory(traj, t, ax, color=color,
+                                label=f'tf={tf_val}', smooth_sigma=sigma_long)
+        ax.set_title(f'Change (late block, {outcome})')
+        ax.legend(fontsize=6)
+
+    # share axis limits within event groups, then add flow fields
+    axis_groups = [axes[0, :], axes[1, :2], axes[1, 2:]]
+    for group in axis_groups:
+        xlims = [ax.get_xlim() for ax in group]
+        ylims = [ax.get_ylim() for ax in group]
+        shared_x = (min(lo for lo, _ in xlims), max(hi for _, hi in xlims))
+        shared_y = (min(lo for lo, _ in ylims), max(hi for _, hi in ylims))
+        grid_range = (min(shared_x[0], shared_y[0]),
+                      max(shared_x[1], shared_y[1]))
+        for ax in group:
+            ax.set_xlim(shared_x)
+            ax.set_ylim(shared_y)
+            plot_flow_field(A, ax, grid_range=grid_range)
 
     for ax in axes.flat:
-        ax.set_xlabel('Dynamics dim 1')
-        ax.set_ylabel('Dynamics dim 2')
+        ax.set_xlabel('PC1')
+        ax.set_ylabel('PC2')
 
-    fig.suptitle(f'{sess_data.animal}_{sess_data.name}  '
-                 f'(pca={pca_key}, lds={lds_cond}, plane={plane_method})',
+    fig.suptitle(f'{sess_data.animal}_{sess_data.name} (pca={pca_key}, lds={lds_cond})',
                  fontsize=11)
     fig.tight_layout()
 
     if save_path is not None:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
     else:
         plt.show()

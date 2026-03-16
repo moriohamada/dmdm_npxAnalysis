@@ -19,6 +19,7 @@ from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
 from utils.filing import get_response_files, load_fr_matrix
 from utils.rois import in_any_area, in_group
+from utils.smoothing import downsample_bins
 
 CONDITIONS = {
     'earlyBlock_early': dict(block='early', time='early'),
@@ -304,6 +305,9 @@ def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
         else:
             mask = in_group(areas, group_name)
         fr_matrix = fr_matrix.iloc[mask]
+
+        ds_factor = round(ops['pop_bin_width'] / ops['sp_bin_width'])
+        fr_matrix = downsample_bins(fr_matrix, ds_factor)
 
         results = fit_session_lds(sess_data, fr_matrix, weights, ops)
 

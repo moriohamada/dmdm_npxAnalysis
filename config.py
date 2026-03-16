@@ -35,6 +35,7 @@ ANALYSIS_OPTIONS = dict(
     min_fr_sd = 0.5,              # Hz; exclude units with FR std below this
 
     # Population analysis
+    pop_bin_width = 50 / 1000,    # s; bin width for population analyses - for limiting ram load
     n_pcs = 10,                   # number of PCs to extract
 
     # Dynamical systems

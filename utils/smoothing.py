@@ -2,6 +2,37 @@ import numpy as np
 import pandas as pd
 from scipy.signal import lfilter
 
+
+def downsample_bins(data, factor, axis=-1):
+    """
+    Downsample by averaging groups of `factor` adjacent bins along axis.
+    Truncates any remainder bins at the end.
+    Works on ndarrays and DataFrames (downsamples columns for DataFrames).
+    """
+    factor = int(round(factor))
+    if factor <= 1:
+        return data
+
+    is_df = isinstance(data, pd.DataFrame)
+    if is_df:
+        arr = data.values
+        cols = data.columns.values
+        n_keep = (len(cols) // factor) * factor
+        new_cols = cols[:n_keep].reshape(-1, factor).mean(axis=1)
+        new_vals = arr[:, :n_keep].reshape(arr.shape[0], -1, factor).mean(axis=2)
+        return pd.DataFrame(new_vals, index=data.index, columns=new_cols)
+
+    arr = np.asarray(data)
+    n = arr.shape[axis]
+    n_keep = (n // factor) * factor
+    slc = [slice(None)] * arr.ndim
+    slc[axis] = slice(0, n_keep)
+    trimmed = arr[tuple(slc)]
+    new_shape = list(trimmed.shape)
+    new_shape[axis] = n_keep // factor
+    new_shape.insert(axis + 1, factor)
+    return trimmed.reshape(new_shape).mean(axis=axis + 1)
+
 def causal_boxcar(data, window_bins, axis=-1):
     is_df = isinstance(data, pd.DataFrame)
     arr = data.values if is_df else np.asarray(data)

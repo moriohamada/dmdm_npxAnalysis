@@ -52,17 +52,18 @@ run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
 
 from pathlib import Path
 from utils.filing import get_response_files
+from analyses.dynamical import CONDITIONS
 
 psth_paths = get_response_files(PATHS['npx_dir_local'])
-for psth_path in psth_paths:
+for psth_path in psth_paths[:1]:
     sess_dir = Path(psth_path).parent
-    save_path = (Path(PATHS['plots_dir']) / sess_dir.parent.name
-                 / sess_dir.name / 'lds_dynamics.png')
-    plot_session_dynamics(sess_dir,
-                          pca_key='event_all',
-                          lds_cond='lateBlock_early',
-                          plane_method='flow',
-                          ops=ANALYSIS_OPTIONS,
-                          save_path=str(save_path))
+    for lds_cond in CONDITIONS:
+        save_path = (Path(PATHS['plots_dir']) / 'LDS' / sess_dir.parent.name
+                     / sess_dir.name / f'lds_{lds_cond}.png')
+        plot_session_dynamics(sess_dir,
+                              pca_key='event_frontal_motor',
+                              lds_cond=lds_cond,
+                              ops=ANALYSIS_OPTIONS,
+                              save_path=str(save_path))
 
 #%% SAE
