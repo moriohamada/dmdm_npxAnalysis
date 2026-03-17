@@ -10,16 +10,18 @@ Fit x_{t+1} = Ax_t + Bu_t, where:
 Fit separately per condition (earlyBlock_early, lateBlock_early, lateBlock_late)
 on baseline period only, excluding time bins near licks and transition trials.
 """
+import gc
 import numpy as np
 import pandas as pd
 import h5py
 from pathlib import Path
 
+from scipy.stats import wilcoxon
 from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
-from utils.filing import get_response_files, load_fr_matrix
+from utils.filing import get_response_files
 from utils.rois import in_any_area, in_group
-from utils.smoothing import downsample_bins
+from utils.downsampling import downsample_bins
 
 CONDITIONS = {
     'earlyBlock_early': dict(block='early', time='early'),
@@ -75,14 +77,16 @@ def _build_input_vector(session, t_ax):
         tf_raw = np.array(row['TF'])
         ft_raw = np.array(row['frame_time'])
 
-        # remove zero/nan entries, subsample ::3 to get 20Hz update rate
-        nonzero = tf_raw != 0
-        valid_ft = ~np.isnan(ft_raw)
-        keep = nonzero & valid_ft
-        tf_20hz = tf_raw[keep][::3]
-        ft_20hz = ft_raw[keep][::3]
+        # clean following stimulus.py: remove TF zeros, truncate to change frame,
+        # remove frame_time NaNs, subsample ::3 for 20Hz
+        tf_seq = tf_raw[tf_raw.nonzero()]
+        ch_fr = round(row['stimT'] * 60)
+        tf_20hz = np.log2(tf_seq[:ch_fr:3])
+        ft_20hz = ft_raw[~np.isnan(ft_raw)][:ch_fr:3]
 
-        if len(ft_20hz) == 0:
+        if len(tf_20hz) == 0 or len(ft_20hz) == 0:
+            continue
+        if len(tf_20hz) != len(ft_20hz):
             continue
 
         # find which FR bins fall within this trial's stimulus period
@@ -93,8 +97,8 @@ def _build_input_vector(session, t_ax):
 
         # zero-order hold: assign each bin the last stimulus value <= bin time
         insert_idx = np.searchsorted(ft_20hz, t_ax[bin_idx], side='right') - 1
-        insert_idx = np.clip(insert_idx, 0, len(tf_20hz - 1))
-        U[0, bin_idx] = np.log2(tf_20hz[insert_idx])
+        insert_idx = np.clip(insert_idx, 0, len(tf_20hz) - 1)
+        U[0, bin_idx] = tf_20hz[insert_idx]
 
     return U
 
@@ -135,7 +139,8 @@ def _get_condition_mask(session, t_ax, condition, ops, trial_indices=None):
 
         if cond['time'] == 'early':
             tr_time_end = bl_on + ops['tr_split_time']
-        else:  # late — go until trial end
+        else:  # late — start at split time, go until trial end
+            tr_time_start = bl_on + ops['tr_split_time']
             tr_time_end = np.nanmax([row['Baseline_ON_fall'],
                                      row['Change_ON_fall']])
 
@@ -177,7 +182,7 @@ def _get_fold_splits(session, condition, ops, n_folds):
     return folds
 
 
-def fit_empirical_flow(Z, valid_mask, n_bins=15, grid_edges=None):
+def fit_empirical_flow(Z, valid_mask, n_bins=15, grid_edges=None, min_count=5000):
     """
     Estimate empirical flow field by binning state space and averaging dZ.
 
@@ -207,7 +212,7 @@ def fit_empirical_flow(Z, valid_mask, n_bins=15, grid_edges=None):
     if grid_edges is None:
         grid_edges = []
         for d in range(n_dims):
-            lo, hi = np.percentile(Z_start[:, d], [2, 98])
+            lo, hi = np.percentile(Z_start[:, d], [2.5, 97.5])
             grid_edges.append(np.linspace(lo, hi, n_bins + 1))
 
     bin_centers = [(e[:-1] + e[1:]) / 2 for e in grid_edges]
@@ -238,24 +243,70 @@ def fit_empirical_flow(Z, valid_mask, n_bins=15, grid_edges=None):
     for flat_bin in np.unique(flat_idx):
         mask = flat_idx == flat_bin
         multi_idx = tuple((flat_bin // strides) % n_bins)
-        counts[multi_idx] = mask.sum()
-        mean_flow[multi_idx] = dZ[mask].mean(axis=0)
+        n = mask.sum()
+        counts[multi_idx] = n
+        if n >= min_count:
+            mean_flow[multi_idx] = dZ[mask].mean(axis=0)
 
     return grid_edges, bin_centers, mean_flow, counts
 
 
-def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS):
+def _flow_r2(Z, valid_mask, grid_edges, mean_flow, n_bins):
+    """
+    Compute R2 of flow field predictions on held-out data.
+    Null model is dZ=0, so R2 > 0 means the flow field is informative.
+    """
+    n_dims = Z.shape[0]
+    consec = valid_mask[:-1] & valid_mask[1:]
+    idx = np.where(consec)[0]
+    if len(idx) == 0:
+        return np.nan
+
+    Z_start = Z[:, idx].T
+    dZ = (Z[:, idx + 1] - Z[:, idx]).T
+
+    strides = np.array([n_bins ** (n_dims - 1 - d) for d in range(n_dims)])
+    bin_idx = np.zeros((len(Z_start), n_dims), dtype=int)
+    in_range = np.ones(len(Z_start), dtype=bool)
+    for d in range(n_dims):
+        bi = np.digitize(Z_start[:, d], grid_edges[d]) - 1
+        bi = np.clip(bi, 0, n_bins - 1)
+        in_range &= (Z_start[:, d] >= grid_edges[d][0])
+        in_range &= (Z_start[:, d] <= grid_edges[d][-1])
+        bin_idx[:, d] = bi
+
+    bin_idx = bin_idx[in_range]
+    dZ = dZ[in_range]
+    if len(dZ) == 0:
+        return np.nan
+
+    flat_idx = (bin_idx * strides).sum(axis=1)
+    dZ_pred = np.zeros_like(dZ)
+    for i, fi in enumerate(flat_idx):
+        multi_idx = tuple((fi // strides) % n_bins)
+        flow_val = mean_flow[multi_idx]
+        if not np.any(np.isnan(flow_val)):
+            dZ_pred[i] = flow_val
+
+    ss_res = np.sum((dZ - dZ_pred) ** 2)
+    ss_tot = np.sum(dZ ** 2)  # null is dZ=0
+    if ss_tot == 0:
+        return np.nan
+    return 1 - ss_res / ss_tot
+
+
+def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS,
+                    compute_cv_r2=False):
     """
     Fit input-driven LDS per condition for one session.
 
-    Args:
+    args:
         session: Session object (with trials, move)
         Z: (n_lds, T) PC trajectory
         t_ax: (T,) time axis
         U: (n_inputs, T) input vector
+        compute_cv_r2: if True, compute R2 vs identity-A null and cross-block R2
     """
-
-    n_folds = ops['lds_n_folds']
     results = {}
 
     for cond_name in CONDITIONS:
@@ -267,42 +318,69 @@ def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS):
 
         eigenvalues = np.linalg.eigvals(A)
 
-        # cross-validation
-        folds = _get_fold_splits(session, cond_name, ops, n_folds)
-        r2_train = np.full(n_folds, np.nan)
-        r2_test = np.full(n_folds, np.nan)
-
-        for k, (train_trials, test_trials) in enumerate(folds):
-            train_mask = _get_condition_mask(session, t_ax, cond_name, ops,
-                                             trial_indices=train_trials)
-            test_mask = _get_condition_mask(session, t_ax, cond_name, ops,
-                                            trial_indices=test_trials)
-
-            A_k, B_k, r2_tr, _ = fit_lds(Z, U, train_mask)
-            if A_k is None:
-                continue
-            r2_train[k] = r2_tr
-
-            # test R2
-            consec = test_mask[:-1] & test_mask[1:]
-            idx = np.where(consec)[0]
-            if len(idx) == 0:
-                continue
-
-            Z_pred = A_k @ Z[:, idx] + B_k @ U[:, idx]
-            Z_actual = Z[:, idx + 1]
-            ss_res = np.sum((Z_actual - Z_pred) ** 2)
-            ss_tot = np.sum((Z_actual - Z_actual.mean(axis=1, keepdims=True)) ** 2)
-            r2_test[k] = 1 - ss_res / ss_tot
-
-        results[cond_name] = dict(
+        res = dict(
             A=A, B=B,
             eigenvalues=eigenvalues,
             r2_full=r2_full,
-            r2_train=r2_train,
-            r2_test=r2_test,
             n_samples=n_samples,
         )
+
+        if compute_cv_r2:
+            # null model: A=I, refit B on full data
+            consec = full_mask[:-1] & full_mask[1:]
+            idx = np.where(consec)[0]
+            dZ = Z[:, idx + 1] - Z[:, idx]
+            B_null, _, _, _ = np.linalg.lstsq(U[:, idx].T, dZ.T)
+            B_null = B_null.T
+
+            Z_actual = Z[:, idx + 1]
+            ss_tot = np.sum((Z_actual - Z_actual.mean(axis=1, keepdims=True)) ** 2)
+            Z_pred_null = Z[:, idx] + B_null @ U[:, idx]
+            r2_null = 1 - np.sum((Z_actual - Z_pred_null) ** 2) / ss_tot
+
+            res.update(r2_null=r2_null, delta_r2=r2_full - r2_null)
+
+        results[cond_name] = res
+
+    # cross-block prediction on held-out data
+    eB_key, lB_key = 'earlyBlock_early', 'lateBlock_early'
+    if compute_cv_r2 and eB_key in results and lB_key in results:
+        A_eB_full, B_eB_full = results[eB_key]['A'], results[eB_key]['B']
+        A_lB_full, B_lB_full = results[lB_key]['A'], results[lB_key]['B']
+        n_folds = ops['lds_n_folds']
+
+        for cond_key, A_cross, B_cross in [(eB_key, A_lB_full, B_lB_full),
+                                            (lB_key, A_eB_full, B_eB_full)]:
+            folds = _get_fold_splits(session, cond_key, ops, n_folds)
+            r2_within = np.full(n_folds, np.nan)
+            r2_cross = np.full(n_folds, np.nan)
+
+            for k, (train_trials, test_trials) in enumerate(folds):
+                train_mask = _get_condition_mask(session, t_ax, cond_key, ops,
+                                                 trial_indices=train_trials)
+                test_mask = _get_condition_mask(session, t_ax, cond_key, ops,
+                                                trial_indices=test_trials)
+                A_k, B_k, _, _ = fit_lds(Z, U, train_mask)
+                if A_k is None:
+                    continue
+
+                consec = test_mask[:-1] & test_mask[1:]
+                idx = np.where(consec)[0]
+                if len(idx) == 0:
+                    continue
+
+                Z_actual = Z[:, idx + 1]
+                ss_tot = np.sum((Z_actual - Z_actual.mean(axis=1, keepdims=True)) ** 2)
+
+                Z_pred_w = A_k @ Z[:, idx] + B_k @ U[:, idx]
+                r2_within[k] = 1 - np.sum((Z_actual - Z_pred_w) ** 2) / ss_tot
+
+                Z_pred_c = A_cross @ Z[:, idx] + B_cross @ U[:, idx]
+                r2_cross[k] = 1 - np.sum((Z_actual - Z_pred_c) ** 2) / ss_tot
+
+            results[cond_key]['r2_within_cv'] = r2_within
+            results[cond_key]['r2_cross_cv'] = r2_cross
+            results[cond_key]['delta_cross'] = r2_within - r2_cross
 
     return results
 
@@ -327,30 +405,36 @@ def _save_lds_results(results, save_path):
             cond.create_dataset('eigenvalues_imag',
                                 data=res['eigenvalues'].imag)
             cond.create_dataset('r2_full', data=res['r2_full'])
-            cond.create_dataset('r2_train', data=res['r2_train'])
-            cond.create_dataset('r2_test', data=res['r2_test'])
             cond.attrs['n_samples'] = res['n_samples']
+            if 'r2_null' in res:
+                cond.attrs['r2_null'] = res['r2_null']
+                cond.attrs['delta_r2'] = res['delta_r2']
+            if 'r2_within_cv' in res:
+                cond.create_dataset('r2_within_cv', data=res['r2_within_cv'])
+                cond.create_dataset('r2_cross_cv', data=res['r2_cross_cv'])
+                cond.create_dataset('delta_cross', data=res['delta_cross'])
 
 
 def _load_session_fr(sess_dir, ops):
-    """Load FR matrix, downsample, and return with session data and PCA weights."""
+    """load downsampled FR matrix and return with session data."""
+    import pandas as pd
     sess_dir = Path(sess_dir)
     pca_path = sess_dir / 'pca.h5'
-    fr_path = sess_dir / 'FR_matrix.parquet'
-    if not pca_path.exists() or not fr_path.exists():
+    fr_path = sess_dir / 'FR_matrix_ds.parquet'
+    if not pca_path.exists():
+        print(f'    PCA data not found in {sess_dir}!')
         return None
-
+    if not fr_path.exists():
+        print(f'    Downsampled FR data not found in {sess_dir}!')
+        return None
     sess_data = Session.load(str(sess_dir / 'session.pkl'))
-    ds_factor = round(ops['pop_bin_width'] / ops['sp_bin_width'])
-    fr_full = load_fr_matrix(fr_path)
-    fr_full = downsample_bins(fr_full, ds_factor)
+    fr_full = pd.read_parquet(fr_path)
     areas = sess_data.unit_info['brain_region_comb'].values
 
     return sess_data, fr_full, areas, pca_path
 
 
 def _get_fr_for_key(fr_full, areas, pca_key, pca_path):
-    """Filter FR matrix and load weights for a pca_key."""
     with h5py.File(pca_path, 'r') as f:
         if pca_key not in f:
             return None, None
@@ -361,20 +445,27 @@ def _get_fr_for_key(fr_full, areas, pca_key, pca_path):
         mask = in_any_area(areas)
     else:
         mask = in_group(areas, group_name)
-    return fr_full.iloc[mask], weights
+    fr_filtered = fr_full.iloc[mask]
+    if fr_filtered.shape[0] != weights.shape[0]:
+        print(f'    WARNING: {pca_key} unit count mismatch '
+              f'(FR={fr_filtered.shape[0]}, pca weights={weights.shape[0]}) '
+              f'— pca.h5 may be stale, re-run extract_pcs()')
+        return None, None
+    return fr_filtered, weights
 
 
-def lds_single_session(sess_dir, ops, pca_keys):
+def lds_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
     """Fit LDS for one session across all pca_keys."""
+    print(sess_dir)
     loaded = _load_session_fr(sess_dir, ops)
     if loaded is None:
         return
     sess_data, fr_full, areas, pca_path = loaded
-
+    del loaded; gc.collect()
     for pca_key in pca_keys:
         lds_path = Path(sess_dir) / f'lds_{pca_key}.h5'
-        if lds_path.exists():
-            continue
+        # if lds_path.exists():
+        #     continue
 
         fr_matrix, weights = _get_fr_for_key(fr_full, areas, pca_key, pca_path)
         if fr_matrix is None:
@@ -384,30 +475,39 @@ def lds_single_session(sess_dir, ops, pca_keys):
         n_lds = ops['lds_n_dims']
         Z = weights[:, :n_lds].T @ fr_matrix.values
         U = _build_input_vector(sess_data, t_ax)
-        del fr_matrix
+        del fr_matrix; gc.collect()
 
-        results = fit_session_lds(sess_data, Z, t_ax, U, ops)
+        results = fit_session_lds(sess_data, Z, t_ax, U, ops,
+                                  compute_cv_r2=compute_cv_r2)
         if results:
             _save_lds_results(results, str(lds_path))
             for cond_name, res in results.items():
-                print(f'  {pca_key}/{cond_name}: R2={res["r2_full"]:.3f}, '
-                      f'R2_test={np.nanmean(res["r2_test"]):.3f}, '
-                      f'n={res["n_samples"]}')
+                msg = (f'  {pca_key}/{cond_name}: '
+                       f'R2={res["r2_full"]:.3f}, n={res["n_samples"]}')
+                if 'r2_null' in res:
+                    msg += f', R2_null={res["r2_null"]:.3f}, dR2={res["delta_r2"]:.3f}'
+                if 'delta_cross' in res:
+                    msg += (f', R2_within_cv={np.nanmean(res["r2_within_cv"]):.3f}'
+                            f', R2_cross_cv={np.nanmean(res["r2_cross_cv"]):.3f}'
+                            f', dR2_cross={np.nanmean(res["delta_cross"]):.3f}')
+                print(msg)
 
-    del fr_full
+    del fr_full; gc.collect()
 
 
-def flow_single_session(sess_dir, ops, pca_keys):
+def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
     """Estimate empirical flow for one session across all pca_keys."""
     loaded = _load_session_fr(sess_dir, ops)
     if loaded is None:
         return
     sess_data, fr_full, areas, pca_path = loaded
+    n_folds = ops['lds_n_folds']
+    n_bins = ops['flow_n_bins']
 
     for pca_key in pca_keys:
         flow_path = Path(sess_dir) / f'flow_{pca_key}.h5'
-        if flow_path.exists():
-            continue
+        # if flow_path.exists():
+        #     continue
 
         fr_matrix, weights = _get_fr_for_key(fr_full, areas, pca_key, pca_path)
         if fr_matrix is None:
@@ -416,15 +516,16 @@ def flow_single_session(sess_dir, ops, pca_keys):
         t_ax = fr_matrix.columns.values
         n_flow = ops['flow_n_dims']
         Z_flow = weights[:, :n_flow].T @ fr_matrix.values
-        del fr_matrix
+        del fr_matrix; gc.collect()
 
         # shared grid from all conditions pooled
         all_valid = np.zeros(len(t_ax), dtype=bool)
         for cond_name in CONDITIONS:
             all_valid |= _get_condition_mask(sess_data, t_ax, cond_name, ops)
 
-        shared_result = fit_empirical_flow(Z_flow, all_valid,
-                                            n_bins=ops['flow_n_bins'])
+        min_count = ops['flow_min_count']
+        shared_result = fit_empirical_flow(Z_flow, all_valid, n_bins=n_bins,
+                                            min_count=min_count)
         if shared_result is None:
             continue
         shared_edges = shared_result[0]
@@ -434,49 +535,105 @@ def flow_single_session(sess_dir, ops, pca_keys):
                 f.create_dataset(f'grid_edges/{d}', data=edges)
                 f.create_dataset(f'bin_centers/{d}',
                                  data=(edges[:-1] + edges[1:]) / 2)
+
             for cond_name in CONDITIONS:
                 cond_mask = _get_condition_mask(sess_data, t_ax, cond_name, ops)
                 result = fit_empirical_flow(Z_flow, cond_mask,
-                                             n_bins=ops['flow_n_bins'],
-                                             grid_edges=shared_edges)
+                                             n_bins=n_bins,
+                                             grid_edges=shared_edges,
+                                             min_count=min_count)
                 if result is None:
                     continue
                 _, _, mean_flow, counts = result
                 grp = f.create_group(cond_name)
                 grp.create_dataset('mean_flow', data=mean_flow)
                 grp.create_dataset('counts', data=counts)
-        print(f'  {pca_key}: flow saved')
 
-    del fr_full
+                if compute_cv_r2:
+                    folds = _get_fold_splits(sess_data, cond_name, ops, n_folds)
+                    cv_min_count = max(1, int(min_count * (n_folds - 1) / n_folds))
+                    r2_cv = np.full(n_folds, np.nan)
+                    for k, (train_trials, test_trials) in enumerate(folds):
+                        train_mask = _get_condition_mask(
+                            sess_data, t_ax, cond_name, ops,
+                            trial_indices=train_trials)
+                        test_mask = _get_condition_mask(
+                            sess_data, t_ax, cond_name, ops,
+                            trial_indices=test_trials)
+
+                        train_result = fit_empirical_flow(
+                            Z_flow, train_mask, n_bins=n_bins,
+                            grid_edges=shared_edges,
+                            min_count=cv_min_count)
+                        if train_result is None:
+                            continue
+                        _, _, train_flow, _ = train_result
+                        r2_cv[k] = _flow_r2(Z_flow, test_mask, shared_edges,
+                                            train_flow, n_bins)
+
+                    valid_folds = ~np.isnan(r2_cv)
+                    if valid_folds.sum() >= 3:
+                        stat, pval = wilcoxon(r2_cv[valid_folds],
+                                              alternative='greater')
+                    else:
+                        stat, pval = np.nan, np.nan
+
+                    grp.create_dataset('r2_cv', data=r2_cv)
+                    grp.attrs['wilcoxon_stat'] = stat
+                    grp.attrs['wilcoxon_p'] = pval
+
+        print(f'{sess_data.animal}, {sess_data.name}')
+        print(f'  {pca_key}: flow saved')
+        if compute_cv_r2:
+            with h5py.File(flow_path, 'r') as f:
+                for cond_name in CONDITIONS:
+                    if cond_name in f and 'r2_cv' in f[cond_name]:
+                        pval = f[cond_name].attrs.get('wilcoxon_p', np.nan)
+                        r2m = np.nanmean(f[cond_name]['r2_cv'][:])
+                        print(f'    {cond_name}: R2_cv={r2m:.3f}, p={pval:.4f}')
+
+    del fr_full; gc.collect()
 
 
 def run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
                      ops=ANALYSIS_OPTIONS,
                      pca_keys=None,
-                     n_workers=2):
+                     n_workers=1,
+                     compute_cv_r2=False):
     """Fit linear LDS for all sessions and pca_keys."""
     from utils.rois import AREA_GROUPS
     if pca_keys is None:
         pca_keys = ['event_all'] + [f'event_{g}' for g in AREA_GROUPS]
 
     sess_dirs = [str(Path(p).parent) for p in get_response_files(npx_dir)]
-    from multiprocessing import Pool
-    from functools import partial
-    with Pool(n_workers) as pool:
-        pool.map(partial(lds_single_session, ops=ops, pca_keys=pca_keys), sess_dirs)
+    if n_workers is None or n_workers <= 1:
+        for sd in sess_dirs:
+            lds_single_session(sd, ops, pca_keys, compute_cv_r2=compute_cv_r2)
+    else:
+        from multiprocessing import Pool
+        from functools import partial
+        with Pool(n_workers) as pool:
+            pool.map(partial(lds_single_session, ops=ops, pca_keys=pca_keys,
+                             compute_cv_r2=compute_cv_r2), sess_dirs)
 
 
 def run_flow_analysis(npx_dir=PATHS['npx_dir_local'],
                       ops=ANALYSIS_OPTIONS,
                       pca_keys=None,
-                      n_workers=4):
+                      n_workers=1,
+                      compute_cv_r2=False):
     """Estimate empirical flow fields for all sessions and pca_keys."""
     from utils.rois import AREA_GROUPS
     if pca_keys is None:
         pca_keys = ['event_all'] + [f'event_{g}' for g in AREA_GROUPS]
 
     sess_dirs = [str(Path(p).parent) for p in get_response_files(npx_dir)]
-    from multiprocessing import Pool
-    from functools import partial
-    with Pool(n_workers) as pool:
-        pool.map(partial(flow_single_session, ops=ops, pca_keys=pca_keys), sess_dirs)
+    if n_workers is None or n_workers <= 1:
+        for sd in sess_dirs:
+            flow_single_session(sd, ops, pca_keys, compute_cv_r2=compute_cv_r2)
+    else:
+        from multiprocessing import Pool
+        from functools import partial
+        with Pool(n_workers) as pool:
+            pool.map(partial(flow_single_session, ops=ops, pca_keys=pca_keys,
+                             compute_cv_r2=compute_cv_r2), sess_dirs)

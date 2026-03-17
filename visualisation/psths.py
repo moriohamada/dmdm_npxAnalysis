@@ -11,7 +11,7 @@ import seaborn as sns
 from pathlib import Path
 sns.set_style("whitegrid")
 
-from config import ANALYSIS_OPTIONS, PATHS, PLOT_COLOURS
+from config import ANALYSIS_OPTIONS, PATHS, PLOT_OPTIONS
 from data.session import Session
 from analyses.load_responses import load_psth
 from utils.filing import get_response_files
@@ -113,8 +113,8 @@ def plot_basic_psths(psth_path: str,
                              gridspec_kw={'hspace': 0.05, 'wspace': 0.4},
                              constrained_layout=True)
 
-    c_block = PLOT_COLOURS['block']
-    c_tf    = PLOT_COLOURS['tf']
+    c_block = PLOT_OPTIONS['colours']['block']
+    c_tf    = PLOT_OPTIONS['colours']['tf']
     u       = unit_idx
 
     # baseline
@@ -154,7 +154,7 @@ def plot_basic_psths(psth_path: str,
         ch_conds = list(f['ch'].keys())
     ch_tfs = sorted({c.split('_tf')[-1] for c in ch_conds if '_tf' in c}, key=float)
     ch_colors = list(
-        plt.cm.get_cmap(PLOT_COLOURS['ch_tf_cmap'])(np.linspace(0.15, 0.85, len(ch_tfs))))
+        plt.cm.get_cmap(PLOT_OPTIONS['colours']['ch_tf_cmap'])(np.linspace(0.15, 0.85, len(ch_tfs))))
     ch_colors[0] = (0.6, 0.6, 0.6, 1.0)  # grey for no-change (smallest tf)
 
     for block, col in {'early': 4, 'late': 5}.items():

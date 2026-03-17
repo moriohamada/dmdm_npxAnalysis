@@ -8,7 +8,7 @@ from analyses.dynamical import run_lds_analysis
 from config import PATHS, ANALYSIS_OPTIONS
 from analyses.dynamical import run_flow_analysis
 
-#%% get all event times and event-aligned responses
+#%% get all event times and event-aligned neural responses
 
 extract_session_data(npx_dir_ceph=PATHS['npx_dir_ceph'],
                      npx_dir_local=PATHS['npx_dir_local'],
@@ -38,8 +38,13 @@ visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
 #%% Fit GLMs to single units
 
 
-#%% PCA
+#%% Downsample FR matrices for population analyses
+from utils.downsampling import save_downsampled_fr
+save_downsampled_fr(npx_dir=PATHS['npx_dir_local'],
+                    ops=ANALYSIS_OPTIONS,
+                    n_workers=4)
 
+#%% PCA
 extract_pcs(npx_dir=PATHS['npx_dir_local'],
             ops=ANALYSIS_OPTIONS)
 
@@ -55,14 +60,27 @@ run_flow_analysis(npx_dir=PATHS['npx_dir_local'],
                   ops=ANALYSIS_OPTIONS,
                   n_workers=4)
 
-#%% Visualise trajectories + flow fields
+#%% Visualise LDS trajectories + flow fields
 
 from pathlib import Path
 from utils.filing import get_response_files
 from visualisation.dynamical import plot_empirical_flow
 
 psth_paths = get_response_files(PATHS['npx_dir_local'])
-for psth_path in psth_paths[:1]:
+for psth_path in psth_paths:
+    sess_dir = Path(psth_path).parent
+    for event_type in ['tf', 'blOn', 'lick']:
+        save_path = (Path(PATHS['plots_dir']) / 'lds' / sess_dir.parent.name
+                     / sess_dir.name / f'lds_{event_type}.png')
+        plot_session_dynamics(sess_dir,
+                              pca_key='event_all',
+                              event_type=event_type,
+                              ops=ANALYSIS_OPTIONS,
+                              save_path=str(save_path))
+
+#%% Visualise empirical flow fields
+
+for psth_path in psth_paths[:3]:
     sess_dir = Path(psth_path).parent
     for event_type in ['tf', 'blOn', 'lick']:
         save_path = (Path(PATHS['plots_dir']) / 'flow' / sess_dir.parent.name
@@ -80,7 +98,6 @@ for psth_path in psth_paths[:1]:
 
 import os
 import pickle
-import numpy as np
 
 npx_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/'
 

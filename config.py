@@ -8,8 +8,8 @@ PATHS = dict(
 )
 
 ANALYSIS_OPTIONS = dict(
-    sp_bin_width     =10 / 1000,      # s
-    sp_smooth_width  =50 / 1000,      # s; size of casual boxcar fitler
+    sp_bin_width     = 10 / 1000,     # s
+    sp_smooth_width  = 50 / 1000,     # s; size of casual boxcar fitler
 
     tf_outlier = 1.0,                 # std deviations away from mean to consider an outlier
 
@@ -40,23 +40,30 @@ ANALYSIS_OPTIONS = dict(
 
     # Dynamical systems
     lds_n_dims = 5,               # number of PCs for linear LDS
-    lds_n_folds = 5,              # k-fold CV for LDS fitting
+    lds_n_folds = 5,             # k-fold CV for LDS fitting
     flow_n_dims = 2,              # number of PCs for empirical flow field
     flow_n_bins = 15,             # bins per dimension for flow field
+    flow_min_count = 50,        # minimum time bin pairs per grid bin to estimate flow
 
 )
 
-PLOT_COLOURS = dict(
-    block = {
-        'early': (230/255, 97/255,   1/255),   # orange
-        'late':  ( 94/255, 60/255, 153/255),   # purple
-    },
+PLOT_OPTIONS = dict(
+    colours = dict(
+        block = {
+            'early': (230/255, 97/255,   1/255),   # orange
+            'late':  ( 94/255, 60/255, 153/255),   # purple
+        },
 
-    tf = {
-        'pos': (204/255,  37/255,  41/255),  # Red
-        'neg': ( 57/255, 106/255, 177/255),  # Blue
-    },
+        tf = {
+            'pos': (204/255,  37/255,  41/255),  # Red
+            'neg': ( 57/255, 106/255, 177/255),  # Blue
+        },
 
-    ch_tf_cmap = 'viridis',
+        ch_tf_cmap = 'viridis',
+    ),
 
+    smooth_sigma_short = 250 / 1000,  # s; Gaussian sigma for short-window trajectories
+    # (TF, baseline)
+    smooth_sigma_long  = 500 / 1000, # s; Gaussian sigma for long-window trajectories (
+    # lick, change)
 )

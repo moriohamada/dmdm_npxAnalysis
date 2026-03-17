@@ -7,7 +7,7 @@ import h5py
 import pandas as pd
 from pathlib import Path
 import pickle
-from config import ANALYSIS_OPTIONS, PATHS, PLOT_COLOURS
+from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
 from analyses.load_responses import load_psth
 from utils.filing import get_response_files

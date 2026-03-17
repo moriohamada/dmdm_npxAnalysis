@@ -1,6 +1,7 @@
 """
 Functions for population analyses
 """
+import gc
 import numpy as np
 import pandas as pd
 import h5py
@@ -59,6 +60,7 @@ def _run_pca(X: np.ndarray, n_components: int = 10):
     n_components = min(n_components, *X.shape)
     pca = PCA(n_components=n_components)
     weights = pca.fit_transform(X)  # nN x nPC
+    weights /= np.linalg.norm(weights, axis=0, keepdims=True)
     return pca.explained_variance_ratio_, weights
 
 
@@ -76,11 +78,11 @@ def _project_events(psth_path: str,
     t_axes = {}
 
     with h5py.File(psth_path, 'r') as f:
-        for et, conditions in projection_events.items():
-            mean_key = f'{et}_mean'
-            if mean_key not in f or f't_ax/{et}' not in f:
+        for ev_type, conditions in projection_events.items():
+            mean_key = f'{ev_type}_mean'
+            if mean_key not in f or f't_ax/{ev_type}' not in f:
                 continue
-            t_axes[et] = downsample_bins(f[f't_ax/{et}'][:], ds_factor, axis=0)
+            t_axes[ev_type] = downsample_bins(f[f't_ax/{ev_type}'][:], ds_factor, axis=0)
             available = list(f[mean_key].keys())
 
             for cond_pattern in conditions:
@@ -95,18 +97,17 @@ def _project_events(psth_path: str,
                     if area_mask is not None:
                         mean_resp = mean_resp[area_mask]
                     mean_resp = downsample_bins(mean_resp, ds_factor)
-                    projections[f'{et}/{cond}'] = weights.T @ mean_resp  # nPC x nT
+                    projections[f'{ev_type}/{cond}'] = weights.T @ mean_resp  # nPC x nT
 
     return projections, t_axes
 
 
 def _extract_trial_bins(fr_matrix: pd.DataFrame,
                         session: Session,
-                        trial_buffer: float = 1.0,
-                        ds_factor: int = 1):
+                        trial_buffer: float = 1.0):
     """
     Mask FR matrix to only include time bins around trials (±trial_buffer from
-    trial start/end). Optionally downsamples. Returns (nN x nT_valid) array.
+    trial start/end). Returns (nN x nT_valid) array.
     """
     t_ax = fr_matrix.columns.values
     valid = np.zeros(len(t_ax), dtype=bool)
@@ -116,8 +117,7 @@ def _extract_trial_bins(fr_matrix: pd.DataFrame,
         t_end = np.nanmax([row['Baseline_ON_fall'], row['Change_ON_fall']]) + trial_buffer
         valid |= (t_ax >= t_start) & (t_ax < t_end)
 
-    out = fr_matrix.values[:, valid]
-    return downsample_bins(out, ds_factor)
+    return fr_matrix.values[:, valid]
 
 
 def _build_concat_matrix(psth_path: str,
@@ -164,14 +164,14 @@ def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
 
     # collect all conditions we need
     sel_keys = set()
-    for et, conds in event_selection.items():
+    for ev_type, conds in event_selection.items():
         for c in conds:
-            sel_keys.add((et, c))
+            sel_keys.add((ev_type, c))
 
     with h5py.File(psth_path, 'r') as f:
         # load selection means (for building PCA input)
-        for et, cond in sel_keys:
-            mean_key = f'{et}_mean'
+        for ev_type, cond in sel_keys:
+            mean_key = f'{ev_type}_mean'
             if mean_key not in f:
                 continue
             if '*' in cond:
@@ -181,14 +181,14 @@ def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
                 matched = [cond] if cond in f[mean_key] else []
             for c in matched:
                 data = f[f'{mean_key}/{c}'][:]
-                selection_means[(et, c)] = downsample_bins(data, ds_factor)
+                selection_means[(ev_type, c)] = downsample_bins(data, ds_factor)
 
         # load projection means
-        for et, cond_patterns in projection_events.items():
-            mean_key = f'{et}_mean'
-            if mean_key not in f or f't_ax/{et}' not in f:
+        for ev_type, cond_patterns in projection_events.items():
+            mean_key = f'{ev_type}_mean'
+            if mean_key not in f or f't_ax/{ev_type}' not in f:
                 continue
-            t_axes[et] = downsample_bins(f[f't_ax/{et}'][:], ds_factor, axis=0)
+            t_axes[ev_type] = downsample_bins(f[f't_ax/{ev_type}'][:], ds_factor, axis=0)
             available = list(f[mean_key].keys())
             for pat in cond_patterns:
                 if '*' in pat:
@@ -196,9 +196,9 @@ def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
                 else:
                     matched = [pat] if pat in available else []
                 for c in matched:
-                    if (et, c) not in projection_means:
+                    if (ev_type, c) not in projection_means:
                         data = f[f'{mean_key}/{c}'][:]
-                        projection_means[(et, c)] = downsample_bins(data, ds_factor)
+                        projection_means[(ev_type, c)] = downsample_bins(data, ds_factor)
 
     return selection_means, projection_means, t_axes
 
@@ -225,7 +225,7 @@ def pca_by_session(areas: np.ndarray,
 
         # event-aligned PCA: build concat matrix from pre-loaded data
         blocks = []
-        for (et, cond), data in sel_means.items():
+        for (ev_type, cond), data in sel_means.items():
             sub = data[mask]
             if sub.shape[0] == 0:
                 continue
@@ -237,9 +237,9 @@ def pca_by_session(areas: np.ndarray,
 
             # project through pre-loaded projection means
             projections = {}
-            for (et, cond), data in proj_means.items():
+            for (ev_type, cond), data in proj_means.items():
                 sub = data[mask]
-                projections[f'{et}/{cond}'] = weights.T @ sub
+                projections[f'{ev_type}/{cond}'] = weights.T @ sub
 
             results[f'event_{group_name}'] = dict(
                 var_explained=var_exp, weights=weights,
@@ -252,9 +252,9 @@ def pca_by_session(areas: np.ndarray,
                 var_exp, weights = _run_pca(fr_sub, n_components)
 
                 projections = {}
-                for (et, cond), data in proj_means.items():
+                for (ev_type, cond), data in proj_means.items():
                     sub = data[mask]
-                    projections[f'{et}/{cond}'] = weights.T @ sub
+                    projections[f'{ev_type}/{cond}'] = weights.T @ sub
 
                 results[f'session_{group_name}'] = dict(
                     var_explained=var_exp, weights=weights,
@@ -275,8 +275,8 @@ def _save_pca_results(results: dict, save_path: str):
                 proj.create_dataset(label, data=arr)
 
             t_ax = analysis.create_group('t_ax')
-            for et, arr in res['t_axes'].items():
-                t_ax.create_dataset(et, data=arr)
+            for ev_type, arr in res['t_axes'].items():
+                t_ax.create_dataset(ev_type, data=arr)
 
 
 def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
@@ -316,6 +316,7 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
     ds_factor = round(ops['pop_bin_width'] / ops['sp_bin_width'])
 
     for i, psth_path in enumerate(psth_paths):
+
         sess_data = Session.load(psth_path.replace('psths.h5', 'session.pkl'))
         print(f'{sess_data.animal}_{sess_data.name} ({i + 1}/{len(psth_paths)})')
         save_dir = Path(npx_dir) / sess_data.animal / sess_data.name
@@ -324,15 +325,14 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
         if not in_any_area(areas).any():
             continue
 
-        # load whole-session FR matrix (trimmed to trial bins, downsampled)
+        # load pre-downsampled FR matrix, trim to trial bins
         fr_matrix = None
         if include_whole_session:
-            fr_path = save_dir / 'FR_matrix.parquet'
+            fr_path = save_dir / 'FR_matrix_ds.parquet'
             if fr_path.exists():
-                fr_df = load_fr_matrix(fr_path)
-                fr_matrix = _extract_trial_bins(fr_df, sess_data,
-                                                ds_factor=ds_factor)
-                del fr_df
+                fr_df = pd.read_parquet(fr_path)
+                fr_matrix = _extract_trial_bins(fr_df, sess_data)
+                del fr_df; gc.collect()
 
         # load psth data once for this session
         sel_means, proj_means, t_axes = _load_psth_data(
@@ -351,12 +351,12 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
                 continue
             blocks = []
             labels = []
-            for (et, cond), data in sel_means.items():
+            for (ev_type, cond), data in sel_means.items():
                 sub = data[mask]
                 if sub.shape[0] == 0:
                     continue
                 blocks.append(sub)
-                labels.append(f'{et}/{cond}')
+                labels.append(f'{ev_type}/{cond}')
             if blocks:
                 X_ev = np.concatenate(blocks, axis=1)
                 combined_blocks.setdefault(group_name, []).append(X_ev)
