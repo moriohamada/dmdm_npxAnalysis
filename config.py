@@ -65,8 +65,8 @@ LICK_PRED_OPS = dict(
     lambdas         = [0, 1e-4, 1e-3, 1e-2],
     lr              = 1e-4,
     batch_size      = 4096,
-    max_epochs      = 10000,
-    patience        = 100,             # early stopping patience (epochs)
+    max_epochs      = 1000,
+    patience        = 50,             # early stopping patience (epochs)
     val_frac        = 0.1,             # fraction of training trials for early stopping
 )
 

@@ -49,51 +49,77 @@ def run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
         if not overwrite and os.path.exists(save_path):
             print(f'\n===== {animal}: already done, skipping =====')
             continue
+        run_single_mouse(animal, sess_paths, save_dir, ops)
 
-        print(f'\n===== {animal} ({len(sess_paths)} sessions) =====')
 
-        sessions_data = []
-        session_names = []
-        for path in sess_paths:
-            sess = Session.load(path)
-            X, y, trial_ids = build_session_features(sess, ops)
-            if len(X) > 0:
-                sessions_data.append((X, y, trial_ids))
-                session_names.append(sess.name)
-                print(f'  {sess.name}: {X.shape[0]} bins, '
-                      f'{(y > 0).sum()} lick bins')
+def run_single_mouse(animal, sess_paths, save_dir, ops=LICK_PRED_OPS):
+    """run lick prediction for one mouse"""
+    print(f'\n===== {animal} ({len(sess_paths)} sessions) =====')
 
-        if len(sessions_data) < 3:
-            print(f'  Skipping {animal}: too few sessions')
-            continue
+    sessions_data = []
+    session_names = []
+    for path in sess_paths:
+        sess = Session.load(path)
+        X, y, trial_ids = build_session_features(sess, ops)
+        if len(X) > 0:
+            sessions_data.append((X, y, trial_ids))
+            session_names.append(sess.name)
+            print(f'  {sess.name}: {X.shape[0]} bins, '
+                  f'{(y > 0).sum()} lick bins')
 
-        print(f'  Running hyperparameter sweep...')
-        loss_curve_dir = os.path.join(save_dir, animal, 'loss_curves')
-        os.makedirs(loss_curve_dir, exist_ok=True)
-        sweep_results = hyperparameter_sweep(sessions_data, ops,
-                                              save_dir=loss_curve_dir)
+    if len(sessions_data) < 3:
+        print(f'  Skipping {animal}: too few sessions')
+        return
 
-        model, mu, sd, best_key = fit_best_model(sessions_data, sweep_results, ops)
+    print(f'  Running hyperparameter sweep...')
+    loss_curve_dir = os.path.join(save_dir, animal, 'loss_curves')
+    os.makedirs(loss_curve_dir, exist_ok=True)
+    sweep_results = hyperparameter_sweep(sessions_data, ops,
+                                          save_dir=loss_curve_dir)
 
-        print(f'  Running ablation analysis...')
-        ablation, baseline_losses = ablation_analysis(
-            model, sessions_data, mu, sd, ops)
+    model, mu, sd, best_key = fit_best_model(sessions_data, sweep_results, ops)
 
-        result = dict(
-            animal=animal,
-            session_names=session_names,
-            sweep_results=sweep_results,
-            best_config=best_key,
-            ablation=ablation,
-            baseline_losses=baseline_losses,
-            norm_mu=mu,
-            norm_sd=sd,
-        )
+    print(f'  Running ablation analysis...')
+    ablation, baseline_losses = ablation_analysis(
+        model, sessions_data, mu, sd, ops)
 
-        save_path = os.path.join(save_dir, f'{animal}_lick_pred.pkl')
-        with open(save_path, 'wb') as f:
-            pickle.dump(result, f)
+    result = dict(
+        animal=animal,
+        session_names=session_names,
+        sweep_results=sweep_results,
+        best_config=best_key,
+        ablation=ablation,
+        baseline_losses=baseline_losses,
+        norm_mu=mu,
+        norm_sd=sd,
+    )
 
-        model_path = os.path.join(save_dir, f'{animal}_model.pt')
-        torch.save(model.state_dict(), model_path)
-        print(f'  Saved to {save_path}')
+    save_path = os.path.join(save_dir, f'{animal}_lick_pred.pkl')
+    with open(save_path, 'wb') as f:
+        pickle.dump(result, f)
+
+    model_path = os.path.join(save_dir, f'{animal}_model.pt')
+    torch.save(model.state_dict(), model_path)
+    print(f'  Saved to {save_path}')
+
+
+if __name__ == '__main__':
+    import sys
+
+    npx_dir = sys.argv[1]
+    mouse_idx = int(sys.argv[2])
+
+    grouped = _group_sessions_by_mouse(npx_dir, npx_only=False)
+    animals = sorted(grouped.keys())
+    print(f'Found {len(animals)} mice: {animals}')
+
+    if mouse_idx >= len(animals):
+        print(f'Mouse index {mouse_idx} out of range')
+        sys.exit(1)
+
+    animal = animals[mouse_idx]
+    save_dir = os.path.join(npx_dir, 'lick_prediction')
+    os.makedirs(save_dir, exist_ok=True)
+
+    print(f'Running mouse {mouse_idx}: {animal}')
+    run_single_mouse(animal, grouped[animal], save_dir)
