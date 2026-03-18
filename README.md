@@ -1,6 +1,7 @@
 # dmdm neuropixels analysis
 
-Neuropixels analysis pipeline for brain-wide recordings in mice performing a visual change detection task with temporal expectation (early/late hazard-rate blocks). Data from Khilkevich & Lohse et al., Nature 2024.
+(In progress) neuropixels analysis pipeline for dmdm dataset (Khilkevich & Lohse et al., Nature 2024.)
+analysing effects of temporal expectation (early/late hazard-rate blocks). 
 
 ## Directory structure
 
