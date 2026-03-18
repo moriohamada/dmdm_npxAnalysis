@@ -43,8 +43,30 @@ ANALYSIS_OPTIONS = dict(
     lds_n_folds = 5,             # k-fold CV for LDS fitting
     flow_n_dims = 2,              # number of PCs for empirical flow field
     flow_n_bins = 15,             # bins per dimension for flow field
-    flow_min_count = 50,        # minimum time bin pairs per grid bin to estimate flow
+    flow_min_count = 50,          # minimum time bin pairs per grid bin to estimate flow
 
+)
+
+LICK_PRED_OPS = dict(
+    bin_width       = 50 / 1000,       # s; prediction bin width (matches pop_bin_width)
+    tf_history_bins = 40,              # number of 50ms bins of TF history (2s)
+    tf_subsample    = 3,               # subsample raw 60Hz TF by this factor
+
+    # target
+    lick_sigma_bins   = 2,             # gaussian kernel sigma in bins
+    lick_extend_bins  = 5,             # extend trial 250ms past lick
+    response_window   = 2.15,          # s; task response window after change onset
+
+    # trial history
+    max_time_since_reward = 300,       # s; cap for first trial before any reward
+
+    # training
+    hidden_sizes    = [16, 32, 64, 128],
+    weight_decays   = [0, 1e-4, 1e-3, 1e-2],
+    lr              = 1e-3,
+    max_epochs      = 500,
+    patience        = 20,              # early stopping patience (epochs)
+    val_frac        = 0.1,             # fraction of training trials for early stopping
 )
 
 PLOT_OPTIONS = dict(

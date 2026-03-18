@@ -15,6 +15,12 @@ extract_session_data(npx_dir_ceph=PATHS['npx_dir_ceph'],
                      ops=ANALYSIS_OPTIONS,
                      n_workers=4)
 
+#%% behavioural model - predict animals' behaviour, identify important variables
+
+from analyses.run_lick_prediction import run_lick_prediction
+run_lick_prediction(npx_dir=PATHS['npx_dir_local'])
+
+
 #%% plot single unit psths
 
 plot_all_su_psths(npx_dir=PATHS['npx_dir_local'],
