@@ -2,6 +2,7 @@
 Lick prediction model: logistic regression and single-hidden-layer network.
 Predicts P(lick) at each 50ms bin from stimulus, trial history, and state features.
 """
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -82,19 +83,36 @@ def train_model(model, X_train, y_train, pos_weight,
     best_val_loss = float('inf')
     best_state = None
     patience_counter = 0
+    train_losses, val_losses = [], []
+    batch_size = ops.get('batch_size', 4096)
+    n_tr = len(train_idx)
 
     for epoch in range(ops['max_epochs']):
+        # mini-batch training
         model.train()
-        optimiser.zero_grad()
-        logits = model(X_tr)
-        loss = criterion(logits, y_tr)
-        loss.backward()
-        optimiser.step()
+        perm_tr = np.random.permutation(n_tr)
+        epoch_loss = 0.0
+        n_batches = 0
+        for start in range(0, n_tr, batch_size):
+            batch_idx = perm_tr[start:start + batch_size]
+            X_batch = X_tr[batch_idx]
+            y_batch = y_tr[batch_idx]
+
+            optimiser.zero_grad()
+            logits = model(X_batch)
+            loss = criterion(logits, y_batch)
+            loss.backward()
+            optimiser.step()
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        train_losses.append(epoch_loss / n_batches)
 
         model.eval()
         with torch.no_grad():
             val_logits = model(X_val)
             val_loss = criterion(val_logits, y_val).item()
+        val_losses.append(val_loss)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -109,7 +127,8 @@ def train_model(model, X_train, y_train, pos_weight,
     model.load_state_dict(best_state)
     model.eval()
 
-    return model, dict(best_val_loss=best_val_loss, epochs=epoch + 1)
+    return model, dict(best_val_loss=best_val_loss, epochs=epoch + 1,
+                       train_losses=train_losses, val_losses=val_losses)
 
 
 def predict(model, X):
@@ -146,6 +165,7 @@ def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
     """
     n_sessions = len(sessions_data)
     test_losses = np.full(n_sessions, np.nan)
+    loss_history = []
 
     all_y = np.concatenate([d[1] for d in sessions_data])
     pos_weight = compute_class_weight(all_y)
@@ -162,38 +182,63 @@ def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
         else:
             model = model_class(n_features=X_train.shape[1])
 
-        model, _ = train_model(model, X_train, y_train, pos_weight,
-                               ops=ops, weight_decay=weight_decay)
+        model, hist = train_model(model, X_train, y_train, pos_weight,
+                                   ops=ops, weight_decay=weight_decay)
         test_losses[i] = evaluate(model, X_test, y_test, pos_weight)
+        loss_history.append(hist)
 
-    return test_losses
+    return test_losses, loss_history
 
 
-def hyperparameter_sweep(sessions_data, ops=LICK_PRED_OPS):
+def _save_loss_curves(loss_history, key, save_dir):
+    """save train/val loss curves for all CV folds of one config"""
+    import matplotlib.pyplot as plt
+    n_folds = len(loss_history)
+    fig, axes = plt.subplots(1, n_folds, figsize=(3 * n_folds, 3), squeeze=False)
+    for i, hist in enumerate(loss_history):
+        ax = axes[0, i]
+        ax.plot(hist['train_losses'], label='train', alpha=0.7)
+        ax.plot(hist['val_losses'], label='val', alpha=0.7)
+        ax.set_title(f'fold {i}')
+        if i == 0:
+            ax.set_ylabel('Loss')
+            ax.legend(fontsize=7)
+    axes[0, n_folds // 2].set_xlabel('Epoch')
+    fig.suptitle(key, fontsize=10)
+    plt.tight_layout()
+    fig.savefig(os.path.join(save_dir, f'{key}.png'), dpi=100)
+    plt.close(fig)
+
+
+def hyperparameter_sweep(sessions_data, ops=LICK_PRED_OPS, save_dir=None):
     """
-    Sweep hidden sizes and weight decays for the network model.
-    Also fits the linear baseline. Returns dict with results per config.
+    sweep hidden sizes and weight decays for the network model
+    also fits the linear baseline. returns dict with results per config
     """
     results = {}
 
-    for wd in ops['weight_decays']:
+    for wd in ops['lambdas']:
         key = f'linear_lambda{wd}'
-        losses = leave_one_out_cv(sessions_data, LinearLickModel,
-                                   weight_decay=wd, ops=ops)
+        losses, loss_history = leave_one_out_cv(sessions_data, LinearLickModel,
+                                                 weight_decay=wd, ops=ops)
         results[key] = dict(
             model='linear', weight_decay=wd,
             test_losses=losses, mean_loss=np.nanmean(losses))
         print(f'  {key}: mean_loss={np.nanmean(losses):.4f}')
+        if save_dir:
+            _save_loss_curves(loss_history, key, save_dir)
 
     for nh in ops['hidden_sizes']:
-        for wd in ops['weight_decays']:
+        for wd in ops['lambdas']:
             key = f'network_h{nh}_lambda{wd}'
-            losses = leave_one_out_cv(sessions_data, NetworkLickModel,
-                                       n_hidden=nh, weight_decay=wd, ops=ops)
+            losses, loss_history = leave_one_out_cv(sessions_data, NetworkLickModel,
+                                                     n_hidden=nh, weight_decay=wd, ops=ops)
             results[key] = dict(
                 model='network', n_hidden=nh, weight_decay=wd,
                 test_losses=losses, mean_loss=np.nanmean(losses))
             print(f'  {key}: mean_loss={np.nanmean(losses):.4f}')
+            if save_dir:
+                _save_loss_curves(loss_history, key, save_dir)
 
     return results
 

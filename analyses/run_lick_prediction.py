@@ -68,7 +68,10 @@ def run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
             continue
 
         print(f'  Running hyperparameter sweep...')
-        sweep_results = hyperparameter_sweep(sessions_data, ops)
+        loss_curve_dir = os.path.join(save_dir, animal, 'loss_curves')
+        os.makedirs(loss_curve_dir, exist_ok=True)
+        sweep_results = hyperparameter_sweep(sessions_data, ops,
+                                              save_dir=loss_curve_dir)
 
         model, mu, sd, best_key = fit_best_model(sessions_data, sweep_results, ops)
 
