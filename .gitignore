@@ -1,2 +1,5 @@
 /session_io/
 /scratch.py
+/docs/
+.idea/
+__pycache__/
