@@ -14,6 +14,7 @@ from analyses.load_responses import load_psth_mean
 from utils.filing import get_response_files
 from utils.rois import AREA_GROUPS, in_any_area, in_group
 from utils.downsampling import downsample_bins
+from utils.selection import trim_fr_to_periods
 
 # default event selection: event_type: list of conditions
 DEFAULT_EVENT_SELECTION = {
@@ -101,23 +102,6 @@ def _project_events(psth_path: str,
 
     return projections, t_axes
 
-
-def _extract_trial_bins(fr_matrix: pd.DataFrame,
-                        session: Session,
-                        trial_buffer: float = 1.0):
-    """
-    Mask FR matrix to only include time bins around trials (±trial_buffer from
-    trial start/end). Returns (nN x nT_valid) array.
-    """
-    t_ax = fr_matrix.columns.values
-    valid = np.zeros(len(t_ax), dtype=bool)
-
-    for _, row in session.trials.iterrows():
-        t_start = row['Baseline_ON_rise'] - trial_buffer
-        t_end = np.nanmax([row['Baseline_ON_fall'], row['Change_ON_fall']]) + trial_buffer
-        valid |= (t_ax >= t_start) & (t_ax < t_end)
-
-    return fr_matrix.values[:, valid]
 
 
 def _build_concat_matrix(psth_path: str,
@@ -331,7 +315,8 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
             fr_path = save_dir / 'FR_matrix_ds.parquet'
             if fr_path.exists():
                 fr_df = pd.read_parquet(fr_path)
-                fr_matrix = _extract_trial_bins(fr_df, sess_data)
+                fr_matrix = trim_fr_to_periods(sess_data, fr_df,
+                                                include='trial').values
                 del fr_df; gc.collect()
 
         # load psth data once for this session

@@ -62,8 +62,7 @@ PLOT_OPTIONS = dict(
         ch_tf_cmap = 'viridis',
     ),
 
-    smooth_sigma_short = 250 / 1000,  # s; Gaussian sigma for short-window trajectories
-    # (TF, baseline)
-    smooth_sigma_long  = 500 / 1000, # s; Gaussian sigma for long-window trajectories (
-    # lick, change)
+    smooth_window_short = 250 / 1000,  # s; causal boxcar window for short trajectories (TF, blOn)
+    smooth_window_long  = 500 / 1000,  # s; causal boxcar window for long trajectories
+    # (bl, lick)
 )

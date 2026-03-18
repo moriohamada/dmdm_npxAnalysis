@@ -21,6 +21,7 @@ from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
 from utils.filing import get_response_files
 from utils.rois import in_any_area, in_group
+from utils.selection import trim_fr_to_periods, get_condition_mask
 from utils.downsampling import downsample_bins
 
 CONDITIONS = {
@@ -40,17 +41,15 @@ def fit_lds(Z, U, valid):
     """
     # only use pairs where both t and t+1 are valid, avoiding spanning trial boundaries
     consecutive = valid[:-1] & valid[1:]
-    idx = np.where(consecutive)[0]
-    if len(idx) < Z.shape[0] + 1:
-        return None, None, np.nan, 0
+    valid_idx = np.where(consecutive)[0]
 
-    Z_curr = Z[:, idx]
-    Z_next = Z[:, idx + 1]
-    U_curr = U[:, idx]
+    Z_curr = Z[:, valid_idx]
+    Z_next = Z[:, valid_idx + 1]
+    U_curr = U[:, valid_idx]
 
     # solve Z_next = [A B] @ [Z_curr; U_curr] for [A B]
-    predictors = np.vstack([Z_curr, U_curr])
-    M, _, _, _ = np.linalg.lstsq(predictors.T, Z_next.T)
+    predictors = np.vstack([Z_curr, U_curr]).T
+    M, _, _, _ = np.linalg.lstsq(predictors, Z_next.T)
     M = M.T
 
     n_pcs = Z.shape[0]
@@ -62,10 +61,10 @@ def fit_lds(Z, U, valid):
     ss_tot = np.sum((Z_next - Z_next.mean(axis=1, keepdims=True)) ** 2)
     r2 = 1 - ss_res / ss_tot
 
-    return A, B, r2, len(idx)
+    return A, B, r2, len(valid_idx)
 
 
-def _build_input_vector(session, t_ax):
+def _build_stim_vector(session, t_ax):
     """
     Build full-session stimulus vector U (1, T) by mapping per-trial TF onto FR matrix
     time bins. Bins outside any trial get 0
@@ -87,7 +86,9 @@ def _build_input_vector(session, t_ax):
         if len(tf_20hz) == 0 or len(ft_20hz) == 0:
             continue
         if len(tf_20hz) != len(ft_20hz):
-            continue
+            n = min(len(tf_20hz), len(ft_20hz))
+            tf_20hz = tf_20hz[:n]
+            ft_20hz = ft_20hz[:n]
 
         # find which FR bins fall within this trial's stimulus period
         mask = (t_ax >= ft_20hz[0]) & (t_ax <= ft_20hz[-1])
@@ -103,55 +104,8 @@ def _build_input_vector(session, t_ax):
     return U
 
 
-def _get_lick_mask(session, t_ax, buffer):
-    """Boolean mask (T,): True for bins NOT within `buffer` of any lick."""
-    mask = np.ones(len(t_ax), dtype=bool)
-    if session.move is not None and 'licks' in session.move:
-        lick_times = session.move['licks']
-        for lt in lick_times:
-            mask &= np.abs(t_ax - lt) > buffer
-    return mask
 
 
-def _get_condition_mask(session, t_ax, condition, ops, trial_indices=None):
-    """
-    Boolean mask (T,) selecting bins that:
-    - belong to trials matching the condition (block + time-in-trial)
-    - are not in transition trials
-    - are away from licks
-
-    trial_indices: if provided, only include these trials (for train/test)
-    """
-    cond = CONDITIONS[condition]
-    mask = np.zeros(len(t_ax), dtype=bool)
-
-    for tr, row in session.trials.iterrows():
-        if trial_indices is not None and tr not in trial_indices:
-            continue
-        if row['tr_in_block'] <= ops['ignore_first_trials_in_block']:
-            continue
-        if row['hazardblock'] != cond['block']:
-            continue
-
-        # time window within trial
-        bl_on = row['Baseline_ON_rise']
-        tr_time_start = bl_on + ops['rmv_time_around']
-
-        if cond['time'] == 'early':
-            tr_time_end = bl_on + ops['tr_split_time']
-        else:  # late — start at split time, go until trial end
-            tr_time_start = bl_on + ops['tr_split_time']
-            tr_time_end = np.nanmax([row['Baseline_ON_fall'],
-                                     row['Change_ON_fall']])
-
-        if tr_time_end <= tr_time_start:
-            continue
-
-        mask |= (t_ax >= tr_time_start) & (t_ax < tr_time_end)
-
-    # exclude bins near licks
-    mask &= _get_lick_mask(session, t_ax, ops['rmv_time_around'])
-    return mask
 
 
 def _get_fold_splits(session, condition, ops, n_folds):
@@ -302,7 +256,7 @@ def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS,
 
     args:
         session: Session object (with trials, move)
-        Z: (n_lds, T) PC trajectory
+        Z: (n_lds, T) PC projections
         t_ax: (T,) time axis
         U: (n_inputs, T) input vector
         compute_cv_r2: if True, compute R2 vs identity-A null and cross-block R2
@@ -311,10 +265,8 @@ def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS,
 
     for cond_name in CONDITIONS:
         # fit on all data for this condition
-        full_mask = _get_condition_mask(session, t_ax, cond_name, ops)
+        full_mask = get_condition_mask(session, t_ax, cond_name, ops)
         A, B, r2_full, n_samples = fit_lds(Z, U, full_mask)
-        if A is None:
-            continue
 
         eigenvalues = np.linalg.eigvals(A)
 
@@ -356,9 +308,9 @@ def fit_session_lds(session, Z, t_ax, U, ops=ANALYSIS_OPTIONS,
             r2_cross = np.full(n_folds, np.nan)
 
             for k, (train_trials, test_trials) in enumerate(folds):
-                train_mask = _get_condition_mask(session, t_ax, cond_key, ops,
+                train_mask = get_condition_mask(session, t_ax, cond_key, ops,
                                                  trial_indices=train_trials)
-                test_mask = _get_condition_mask(session, t_ax, cond_key, ops,
+                test_mask = get_condition_mask(session, t_ax, cond_key, ops,
                                                 trial_indices=test_trials)
                 A_k, B_k, _, _ = fit_lds(Z, U, train_mask)
                 if A_k is None:
@@ -434,7 +386,7 @@ def _load_session_fr(sess_dir, ops):
     return sess_data, fr_full, areas, pca_path
 
 
-def _get_fr_for_key(fr_full, areas, pca_key, pca_path):
+def _get_fr_for_pca_key(fr_full, areas, pca_key, pca_path):
     with h5py.File(pca_path, 'r') as f:
         if pca_key not in f:
             return None, None
@@ -454,7 +406,10 @@ def _get_fr_for_key(fr_full, areas, pca_key, pca_path):
     return fr_filtered, weights
 
 
-def lds_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
+def lds_single_session(sess_dir, ops,
+                       pca_keys: list[str],
+                       compute_cv_r2: bool = False,
+                       keep_baseline_only: bool = True):
     """Fit LDS for one session across all pca_keys."""
     print(sess_dir)
     loaded = _load_session_fr(sess_dir, ops)
@@ -462,19 +417,28 @@ def lds_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
         return
     sess_data, fr_full, areas, pca_path = loaded
     del loaded; gc.collect()
+
+    # trim fr_matrix to baseline periods
+    inclusion = 'baseline' if keep_baseline_only else 'trial'
+    fr_full = trim_fr_to_periods(session=sess_data,
+                                 fr_matrix=fr_full,
+                                 include=inclusion,
+                                )
     for pca_key in pca_keys:
         lds_path = Path(sess_dir) / f'lds_{pca_key}.h5'
         # if lds_path.exists():
         #     continue
 
-        fr_matrix, weights = _get_fr_for_key(fr_full, areas, pca_key, pca_path)
+        fr_matrix, weights = _get_fr_for_pca_key(fr_full, areas, pca_key, pca_path)
+
         if fr_matrix is None:
             continue
 
         t_ax = fr_matrix.columns.values
         n_lds = ops['lds_n_dims']
         Z = weights[:, :n_lds].T @ fr_matrix.values
-        U = _build_input_vector(sess_data, t_ax)
+        # print(Z.shape)
+        U = _build_stim_vector(sess_data, t_ax)
         del fr_matrix; gc.collect()
 
         results = fit_session_lds(sess_data, Z, t_ax, U, ops,
@@ -509,7 +473,7 @@ def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
         # if flow_path.exists():
         #     continue
 
-        fr_matrix, weights = _get_fr_for_key(fr_full, areas, pca_key, pca_path)
+        fr_matrix, weights = _get_fr_for_pca_key(fr_full, areas, pca_key, pca_path)
         if fr_matrix is None:
             continue
 
@@ -521,7 +485,7 @@ def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
         # shared grid from all conditions pooled
         all_valid = np.zeros(len(t_ax), dtype=bool)
         for cond_name in CONDITIONS:
-            all_valid |= _get_condition_mask(sess_data, t_ax, cond_name, ops)
+            all_valid |= get_condition_mask(sess_data, t_ax, cond_name, ops)
 
         min_count = ops['flow_min_count']
         shared_result = fit_empirical_flow(Z_flow, all_valid, n_bins=n_bins,
@@ -537,7 +501,7 @@ def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
                                  data=(edges[:-1] + edges[1:]) / 2)
 
             for cond_name in CONDITIONS:
-                cond_mask = _get_condition_mask(sess_data, t_ax, cond_name, ops)
+                cond_mask = get_condition_mask(sess_data, t_ax, cond_name, ops)
                 result = fit_empirical_flow(Z_flow, cond_mask,
                                              n_bins=n_bins,
                                              grid_edges=shared_edges,
@@ -554,10 +518,10 @@ def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
                     cv_min_count = max(1, int(min_count * (n_folds - 1) / n_folds))
                     r2_cv = np.full(n_folds, np.nan)
                     for k, (train_trials, test_trials) in enumerate(folds):
-                        train_mask = _get_condition_mask(
+                        train_mask = get_condition_mask(
                             sess_data, t_ax, cond_name, ops,
                             trial_indices=train_trials)
-                        test_mask = _get_condition_mask(
+                        test_mask = get_condition_mask(
                             sess_data, t_ax, cond_name, ops,
                             trial_indices=test_trials)
 
