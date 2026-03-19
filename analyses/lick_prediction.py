@@ -155,17 +155,21 @@ def evaluate(model, X_test, y_test, pos_weight):
 
 #%% cross-validation and hyperparameter sweep
 
-def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
-                     weight_decay=0.0, ops=LICK_PRED_OPS):
-    """
-    Leave-one-session-out CV. Returns test loss per fold.
+def _make_model(model_class, n_features, n_hidden=None):
+    if model_class == NetworkLickModel:
+        return model_class(n_features=n_features, n_hidden=n_hidden)
+    return model_class(n_features=n_features)
 
-    sessions_data: list of (X, y, trial_ids) per session
-    model_class: LinearLickModel or NetworkLickModel
-    """
+
+def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
+                     weight_decay=0.0, ops=LICK_PRED_OPS, max_epochs=None):
+    """leave-one-session-out CV, returns (test_losses, loss_history)"""
     n_sessions = len(sessions_data)
     test_losses = np.full(n_sessions, np.nan)
     loss_history = []
+
+    if max_epochs is not None:
+        ops = {**ops, 'max_epochs': max_epochs}
 
     all_y = np.concatenate([d[1] for d in sessions_data])
     pos_weight = compute_class_weight(all_y)
@@ -174,20 +178,60 @@ def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
         X_train = np.vstack([sessions_data[j][0] for j in range(n_sessions) if j != i])
         y_train = np.concatenate([sessions_data[j][1] for j in range(n_sessions) if j != i])
         X_test, y_test = sessions_data[i][0], sessions_data[i][1]
-
         X_train, X_test, _, _ = _normalise_features(X_train, X_test)
 
-        if model_class == NetworkLickModel:
-            model = model_class(n_features=X_train.shape[1], n_hidden=n_hidden)
-        else:
-            model = model_class(n_features=X_train.shape[1])
-
+        model = _make_model(model_class, X_train.shape[1], n_hidden)
         model, hist = train_model(model, X_train, y_train, pos_weight,
                                    ops=ops, weight_decay=weight_decay)
         test_losses[i] = evaluate(model, X_test, y_test, pos_weight)
         loss_history.append(hist)
 
     return test_losses, loss_history
+
+
+def full_cv_with_ablation(sessions_data, model_class, n_hidden=None,
+                          weight_decay=0.0, ops=LICK_PRED_OPS):
+    """
+    leave-one-session-out CV with full training, per-fold model saving,
+    and zero-out ablation on each fold's held-out session
+    """
+    n_sessions = len(sessions_data)
+    test_losses = np.full(n_sessions, np.nan)
+    loss_history = []
+    fold_models = []
+    fold_norm = []
+    ablation = {name: np.full(n_sessions, np.nan) for name in FEATURE_COLS}
+
+    all_y = np.concatenate([d[1] for d in sessions_data])
+    pos_weight = compute_class_weight(all_y)
+
+    for i in range(n_sessions):
+        X_train = np.vstack([sessions_data[j][0] for j in range(n_sessions) if j != i])
+        y_train = np.concatenate([sessions_data[j][1] for j in range(n_sessions) if j != i])
+        X_test, y_test = sessions_data[i][0], sessions_data[i][1]
+        X_train, X_test, mu, sd = _normalise_features(X_train, X_test)
+
+        model = _make_model(model_class, X_train.shape[1], n_hidden)
+        model, hist = train_model(model, X_train, y_train, pos_weight,
+                                   ops=ops, weight_decay=weight_decay)
+        test_losses[i] = evaluate(model, X_test, y_test, pos_weight)
+        loss_history.append(hist)
+        fold_models.append({k: v.cpu().clone() for k, v in model.state_dict().items()})
+        fold_norm.append((mu, sd))
+
+        # zero-out ablation on this fold's held-out session
+        for name, cols in FEATURE_COLS.items():
+            X_abl = X_test.copy()
+            X_abl[:, cols] = 0.0
+            ablation[name][i] = evaluate(model, X_abl, y_test, pos_weight) - test_losses[i]
+
+    return dict(
+        test_losses=test_losses,
+        loss_history=loss_history,
+        fold_models=fold_models,
+        fold_norm=fold_norm,
+        ablation=ablation,
+    )
 
 
 def _save_loss_curves(loss_history, key, save_dir):
@@ -210,48 +254,98 @@ def _save_loss_curves(loss_history, key, save_dir):
     plt.close(fig)
 
 
-def hyperparameter_sweep(sessions_data, ops=LICK_PRED_OPS, save_dir=None):
+def _best_per_architecture(sweep_results):
+    """from sweep results, find the best config key per architecture"""
+    from collections import defaultdict as dd
+    arch_configs = dd(list)
+    for key, val in sweep_results.items():
+        if val['model'] == 'linear':
+            arch_configs['linear'].append(key)
+        else:
+            arch_configs[f'h{val["n_hidden"]}'].append(key)
+
+    best = {}
+    for arch in sorted(arch_configs.keys(), key=lambda a: (a != 'linear', a)):
+        best[arch] = min(arch_configs[arch],
+                         key=lambda k: sweep_results[k]['mean_loss'])
+    return best
+
+
+def run_sweep_and_ablation(sessions_data, ops=LICK_PRED_OPS, save_dir=None):
     """
-    sweep hidden sizes and weight decays for the network model
-    also fits the linear baseline. returns dict with results per config
+    three-stage pipeline:
+    1. quick sweep (truncated epochs) to find best lambda per architecture
+    2. full CV on best config per architecture, saving per-fold models
+    3. zero-out ablation on those configs
     """
-    results = {}
+    sweep_epochs = max(1, int(ops['max_epochs'] * ops['sweep_epoch_frac']))
+
+    # stage 1: quick sweep
+    print(f'  Stage 1: quick sweep ({sweep_epochs} epochs)...')
+    sweep_results = {}
 
     for wd in ops['lambdas']:
         key = f'linear_lambda{wd}'
-        losses, loss_history = leave_one_out_cv(sessions_data, LinearLickModel,
-                                                 weight_decay=wd, ops=ops)
-        results[key] = dict(
+        losses, loss_history = leave_one_out_cv(
+            sessions_data, LinearLickModel, weight_decay=wd,
+            ops=ops, max_epochs=sweep_epochs)
+        sweep_results[key] = dict(
             model='linear', weight_decay=wd,
             test_losses=losses, mean_loss=np.nanmean(losses))
-        print(f'  {key}: mean_loss={np.nanmean(losses):.4f}')
+        print(f'    {key}: mean_loss={np.nanmean(losses):.4f}')
         if save_dir:
-            _save_loss_curves(loss_history, key, save_dir)
+            _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
 
     for nh in ops['hidden_sizes']:
         for wd in ops['lambdas']:
             key = f'network_h{nh}_lambda{wd}'
-            losses, loss_history = leave_one_out_cv(sessions_data, NetworkLickModel,
-                                                     n_hidden=nh, weight_decay=wd, ops=ops)
-            results[key] = dict(
+            losses, loss_history = leave_one_out_cv(
+                sessions_data, NetworkLickModel, n_hidden=nh, weight_decay=wd,
+                ops=ops, max_epochs=sweep_epochs)
+            sweep_results[key] = dict(
                 model='network', n_hidden=nh, weight_decay=wd,
                 test_losses=losses, mean_loss=np.nanmean(losses))
-            print(f'  {key}: mean_loss={np.nanmean(losses):.4f}')
+            print(f'    {key}: mean_loss={np.nanmean(losses):.4f}')
             if save_dir:
-                _save_loss_curves(loss_history, key, save_dir)
+                _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
 
-    return results
+    # stage 2 + 3: full CV with ablation on best per architecture
+    best_per_arch = _best_per_architecture(sweep_results)
+    full_results = {}
+
+    for arch, config_key in best_per_arch.items():
+        cfg = sweep_results[config_key]
+        print(f'  Stage 2+3: full CV + ablation for {arch} ({config_key})...')
+
+        if cfg['model'] == 'network':
+            model_class, n_hidden = NetworkLickModel, cfg['n_hidden']
+        else:
+            model_class, n_hidden = LinearLickModel, None
+
+        cv = full_cv_with_ablation(
+            sessions_data, model_class, n_hidden=n_hidden,
+            weight_decay=cfg['weight_decay'], ops=ops)
+
+        full_results[arch] = dict(
+            config_key=config_key,
+            test_losses=cv['test_losses'],
+            mean_loss=np.nanmean(cv['test_losses']),
+            fold_models=cv['fold_models'],
+            fold_norm=cv['fold_norm'],
+            ablation=cv['ablation'],
+        )
+        print(f'    {arch}: full mean_loss={np.nanmean(cv["test_losses"]):.4f}')
+
+        if save_dir:
+            _save_loss_curves(cv['loss_history'], f'full_{config_key}', save_dir)
+
+    return sweep_results, full_results
 
 
-def fit_best_model(sessions_data, sweep_results, ops=LICK_PRED_OPS):
-    """
-    refit the best config on all data.
-    returns model, normalisation params (mu, sd), and the best config key.
-    """
-    best_key = min(sweep_results, key=lambda k: sweep_results[k]['mean_loss'])
-    cfg = sweep_results[best_key]
-    print(f'Best config: {best_key} (mean_loss={cfg["mean_loss"]:.4f})')
+#%% legacy functions (for working with existing results)
 
+def _fit_config(sessions_data, cfg, ops=LICK_PRED_OPS):
+    """refit a single config on all data, returns model, mu, sd"""
     X_all = np.vstack([d[0] for d in sessions_data])
     y_all = np.concatenate([d[1] for d in sessions_data])
     pos_weight = compute_class_weight(y_all)
@@ -270,16 +364,11 @@ def fit_best_model(sessions_data, sweep_results, ops=LICK_PRED_OPS):
     model, _ = train_model(model, X_normed, y_all, pos_weight,
                            ops=ops, weight_decay=cfg['weight_decay'])
 
-    return model, mu, sd, best_key
+    return model, mu, sd
 
-
-#%% interpretation
 
 def ablation_analysis(model, sessions_data, mu, sd, ops=LICK_PRED_OPS):
-    """
-    zero out each feature group and measure increase in test loss.
-    returns dict mapping group name to (n_sessions,) loss increases.
-    """
+    """zero out each feature group and measure increase in test loss (no refitting)"""
     n_sessions = len(sessions_data)
     all_y = np.concatenate([d[1] for d in sessions_data])
     pos_weight = compute_class_weight(all_y)
@@ -304,7 +393,7 @@ def ablation_analysis(model, sessions_data, mu, sd, ops=LICK_PRED_OPS):
 
 
 def extract_stimulus_filter(model):
-    """extract the 40 stimulus history weights from a LinearLickModel."""
+    """extract the 40 stimulus history weights from a LinearLickModel"""
     with torch.no_grad():
         w = model.linear.weight[0].cpu().numpy()
     return w[:len(FEATURE_COLS['stimulus'])]

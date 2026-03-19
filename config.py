@@ -61,13 +61,14 @@ LICK_PRED_OPS = dict(
     max_time_since_reward = 300,       # s; cap for first trial before any reward
 
     # training
-    hidden_sizes    = [16, 32, 64, 128],
+    hidden_sizes    = [32, 64, 128],
     lambdas         = [0, 1e-4, 1e-3, 1e-2],
     lr              = 1e-4,
     batch_size      = 4096,
     max_epochs      = 1000,
+    sweep_epoch_frac = 0.2,           # fraction of max_epochs for quick sweep
     patience        = 50,             # early stopping patience (epochs)
-    val_frac        = 0.1,             # fraction of training trials for early stopping
+    val_frac        = 0.1,            # fraction of training trials for early stopping
 )
 
 PLOT_OPTIONS = dict(

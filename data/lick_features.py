@@ -88,18 +88,22 @@ OUTCOME_MAP = {'hit': 0, 'miss': 1, 'fa': 2, 'abort': 3}
 # feature column layout - defines which columns in X correspond to which features
 N_TF_HIST = 40
 FEATURE_COLS = {
-    'stimulus':          list(range(0, N_TF_HIST)),
-    'time_in_trial':     [N_TF_HIST],
-    'block':             [N_TF_HIST + 1],
-    'prev_outcome':      list(range(N_TF_HIST + 2, N_TF_HIST + 6)),
-    'prev_event_time':   [N_TF_HIST + 6],
-    'time_since_reward': [N_TF_HIST + 7],
-    'trial_num':         [N_TF_HIST + 8],
+    'stimulus':            list(range(0, N_TF_HIST)),
+    'time_in_trial':       [N_TF_HIST],
+    'block':               [N_TF_HIST + 1],
+    'prev_outcome':        list(range(N_TF_HIST + 2, N_TF_HIST + 6)),
+    'prev_hit_time':       [N_TF_HIST + 6],
+    'prev_miss_time':      [N_TF_HIST + 7],
+    'prev_fa_time':        [N_TF_HIST + 8],
+    'prev_abort_time':     [N_TF_HIST + 9],
+    'time_since_reward':   [N_TF_HIST + 10],
+    'trial_num':           [N_TF_HIST + 11],
 }
 CONTINUOUS_COLS = (FEATURE_COLS['stimulus'] + FEATURE_COLS['time_in_trial']
-                   + FEATURE_COLS['prev_event_time'] + FEATURE_COLS['time_since_reward']
-                   + FEATURE_COLS['trial_num'])
-N_FEATURES = N_TF_HIST + 9
+                   + FEATURE_COLS['prev_hit_time'] + FEATURE_COLS['prev_miss_time']
+                   + FEATURE_COLS['prev_fa_time'] + FEATURE_COLS['prev_abort_time']
+                   + FEATURE_COLS['time_since_reward'] + FEATURE_COLS['trial_num'])
+N_FEATURES = N_TF_HIST + 12
 
 
 def build_trial_features(row, prev_outcome, prev_event_time,
@@ -155,9 +159,14 @@ def build_trial_features(row, prev_outcome, prev_event_time,
     if prev_outcome in OUTCOME_MAP:
         outcome_onehot[OUTCOME_MAP[prev_outcome]] = 1.0
 
-    # get 'static' features constant over all bins in a trial
+    # per-outcome event times (only the relevant outcome gets a nonzero time)
+    prev_event_times = np.zeros(4)
+    if prev_outcome in OUTCOME_MAP:
+        prev_event_times[OUTCOME_MAP[prev_outcome]] = prev_event_time
+
     static = np.concatenate([[block], outcome_onehot,
-                              [prev_event_time, time_since_reward, trial_num]])
+                              prev_event_times,
+                              [time_since_reward, trial_num]])
 
     X = np.column_stack([
         tf_history,
