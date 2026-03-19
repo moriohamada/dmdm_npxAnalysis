@@ -4,7 +4,7 @@
 #SBATCH -o logs/lick_pred-%A_%a.out
 #SBATCH -e logs/lick_pred-%A_%a.err
 #SBATCH -N 1
-#SBATCH -t 0-04:00
+#SBATCH -t 0-12:00
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH --gpus-per-task=1
@@ -24,4 +24,4 @@ NPX_DIR=/ceph/mrsic_flogel/public/projects/MoHa_20260212_dmdmTemporalExpectation
 mkdir -p logs
 
 cd $CODE_DIR
-python -m analyses.run_lick_prediction $NPX_DIR $SLURM_ARRAY_TASK_ID
+python -u -m analyses.run_lick_prediction $NPX_DIR $SLURM_ARRAY_TASK_ID

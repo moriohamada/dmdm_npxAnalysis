@@ -11,14 +11,13 @@ from config import LICK_PRED_OPS
 
 
 def _get_trial_stimulus(row):
-    """Extract aligned log2 TF and frame times at 20Hz for one trial."""
+    """extract aligned log2 TF and frame times at 20Hz for one trial"""
     tf_raw = np.array(row['TF'])
     ft_raw = np.array(row['frame_time'])
     tf_seq = tf_raw[tf_raw.nonzero()]
-    ch_fr = round(row['stimT'] * 60)
 
-    tf_20hz = np.log2(tf_seq[:ch_fr:3])
-    ft_20hz = ft_raw[~np.isnan(ft_raw)][:ch_fr:3]
+    tf_20hz = np.log2(tf_seq[::3])
+    ft_20hz = ft_raw[~np.isnan(ft_raw)][::3]
 
     n = min(len(tf_20hz), len(ft_20hz))
     return tf_20hz[:n], ft_20hz[:n]
