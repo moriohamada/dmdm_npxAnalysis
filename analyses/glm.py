@@ -1,15 +1,742 @@
 """
-Function for fitting glms and indetifying TF/lick responsive units
+poisson glm following Khilkevich & Lohse, Nature 2024
 """
+import numpy as np
+import pandas as pd
+import pickle
+import os
+import gc
+from pathlib import Path
 
-#%% data prep
+from config import PATHS, ANALYSIS_OPTIONS, GLM_OPTIONS
+from data.session import Session
+from utils.filing import load_fr_matrix
 
-# Prepare X for each session
 
-# Prepare ys for each unit
+#%% spike counts
 
-#%% fitting
+def build_spike_counts(fr_path, fr_stats, bin_factor=5):
+    """un-z-score 10ms FR matrix and sum into 50ms spike counts
 
-#%% lesioning regressors
+    returns (nN x T) uint16 array and (T,) time axis
+    """
+    fr = load_fr_matrix(fr_path)
+    t_ax_10ms = fr.columns.values.astype(float)
 
-#%% test for baseline TF sensitivity, lick modulation, block modulation
+    # un-z-score: rate_hz = z * sd + mean
+    mu = fr_stats['mean'].values[:, None]
+    sd = fr_stats['sd'].values[:, None]
+    rate = fr.values * sd + mu
+
+    # convert to spike counts per 10ms bin
+    counts_10ms = rate * ANALYSIS_OPTIONS['sp_bin_width']
+
+    # sum groups of bin_factor bins to get 50ms counts
+    n_keep = (counts_10ms.shape[1] // bin_factor) * bin_factor
+    counts = counts_10ms[:, :n_keep].reshape(counts_10ms.shape[0], -1, bin_factor).sum(axis=2)
+    t_ax = t_ax_10ms[:n_keep].reshape(-1, bin_factor).mean(axis=1)
+
+    # clip any tiny negative values from floating point and round
+    counts = np.clip(counts, 0, None).round().astype(np.uint16)
+
+    return counts, t_ax
+
+
+#%% time-shift utility
+
+def _time_shift(signal, kernel_win, bin_width=GLM_OPTIONS['bin_width']):
+    """expand a (T,) signal into (T, n_lags) by shifting at each lag
+
+    kernel_win: (start, end) in seconds
+    e.g. (0, 1.5) means lags 0, 0.05, 0.10, ..., 1.45s into the past
+    e.g. (-1.25, 0) means the predictor leads the response by 0 to 1.25s
+    """
+    T = len(signal)
+    lag_start = round(kernel_win[0] / bin_width)
+    lag_end = round(kernel_win[1] / bin_width)
+    lags = np.arange(lag_start, lag_end)
+    n_lags = len(lags)
+
+    shifted = np.zeros((T, n_lags), dtype=np.float32)
+    for i, lag in enumerate(lags):
+        if lag >= 0:
+            shifted[lag:, i] = signal[:T - lag]
+        else:
+            shifted[:T + lag, i] = signal[-lag:]
+
+    return shifted, lags
+
+
+#%% predictor builders
+
+def _build_tf_predictor(session, t_ax):
+    """log2(TF) at each 50ms bin during baseline period, 0 elsewhere"""
+    T = len(t_ax)
+    tf_signal = np.zeros(T, dtype=np.float32)
+
+    for _, row in session.trials.iterrows():
+        tf_raw = np.array(row['TF'])
+        ft_raw = np.array(row['frame_time'])
+
+        tf_seq = tf_raw[tf_raw.nonzero()]
+        ch_fr = round(row['stimT'] * 60)
+        tf_20hz = np.log2(tf_seq[:ch_fr:3])
+        ft_20hz = ft_raw[~np.isnan(ft_raw)][:ch_fr:3]
+
+        if len(tf_20hz) == 0 or len(ft_20hz) == 0:
+            continue
+        n = min(len(tf_20hz), len(ft_20hz))
+        tf_20hz, ft_20hz = tf_20hz[:n], ft_20hz[:n]
+
+        # only baseline period (before change)
+        bl_end = row.get('Baseline_ON_fall', np.nan)
+        if np.isnan(bl_end):
+            bl_end = ft_20hz[-1]
+        bl_mask = ft_20hz <= bl_end
+
+        mask = (t_ax >= ft_20hz[0]) & (t_ax <= bl_end)
+        bin_idx = np.where(mask)[0]
+        if len(bin_idx) == 0:
+            continue
+
+        insert_idx = np.searchsorted(ft_20hz[bl_mask], t_ax[bin_idx], side='right') - 1
+        insert_idx = np.clip(insert_idx, 0, bl_mask.sum() - 1)
+        tf_signal[bin_idx] = tf_20hz[bl_mask][insert_idx]
+
+    return tf_signal
+
+
+def _build_event_predictor(event_times, t_ax):
+    """place impulse at bin nearest each event time"""
+    signal = np.zeros(len(t_ax), dtype=np.float32)
+    for t in event_times:
+        if np.isnan(t):
+            continue
+        idx = np.searchsorted(t_ax, t)
+        idx = min(idx, len(t_ax) - 1)
+        signal[idx] = 1.0
+    return signal
+
+
+def _build_trial_start_predictor(session, t_ax):
+    return _build_event_predictor(session.trials['Baseline_ON_rise'].values, t_ax)
+
+
+def _build_change_predictors(session, t_ax):
+    """one impulse predictor per change magnitude, returns dict"""
+    change_tfs = sorted(session.trials['Stim2TF'].dropna().unique())
+    predictors = {}
+    for ch_tf in change_tfs:
+        mask = session.trials['Stim2TF'] == ch_tf
+        times = session.trials.loc[mask, 'Change_ON_rise'].dropna().values
+        predictors[f'change_tf{ch_tf}'] = _build_event_predictor(times, t_ax)
+    return predictors
+
+
+def _build_lick_prep_predictor(session, t_ax):
+    """impulse at motion_onset for hits and FAs"""
+    times = session.trials.loc[
+        (session.trials['IsHit'] == 1) | (session.trials['IsFA'] == 1),
+        'motion_onset'
+    ].dropna().values
+    return _build_event_predictor(times, t_ax)
+
+
+def _build_lick_exec_predictor(session, t_ax):
+    """impulse at first_lick"""
+    times = session.trials['first_lick'].dropna().values
+    return _build_event_predictor(times, t_ax)
+
+
+def _build_air_puff_predictor(session, t_ax):
+    return _build_event_predictor(session.trials['Air_puff_rise'].dropna().values, t_ax)
+
+
+def _build_reward_predictor(session, t_ax):
+    return _build_event_predictor(session.trials['Valve_L_rise'].dropna().values, t_ax)
+
+
+def _build_abort_predictor(session, t_ax):
+    """impulse at abort time (Baseline_ON_rise + rt_abort)"""
+    abort_mask = session.trials['rt_abort'].notna()
+    times = (session.trials.loc[abort_mask, 'Baseline_ON_rise']
+             + session.trials.loc[abort_mask, 'rt_abort']).values
+    return _build_event_predictor(times, t_ax)
+
+
+def _build_time_ramp_predictor(session, t_ax):
+    """ramp from 0 at each baseline onset, 0 outside trials"""
+    signal = np.zeros(len(t_ax), dtype=np.float32)
+    for _, row in session.trials.iterrows():
+        bl_on = row['Baseline_ON_rise']
+        bl_off = row['Baseline_ON_fall']
+        if np.isnan(bl_on) or np.isnan(bl_off):
+            continue
+        tr_end = np.nanmax([bl_off, row.get('Change_ON_fall', np.nan)])
+        mask = (t_ax >= bl_on) & (t_ax < tr_end)
+        signal[mask] = t_ax[mask] - bl_on
+    return signal
+
+
+def _build_block_predictor(session, t_ax):
+    """binary: 1 during late block trials, 0 during early block / outside trials"""
+    signal = np.zeros(len(t_ax), dtype=np.float32)
+    for _, row in session.trials.iterrows():
+        if row['hazardblock'] != 'late':
+            continue
+        bl_on = row['Baseline_ON_rise']
+        tr_end = np.nanmax([row['Baseline_ON_fall'],
+                            row.get('Change_ON_fall', np.nan)])
+        if np.isnan(bl_on) or np.isnan(tr_end):
+            continue
+        mask = (t_ax >= bl_on) & (t_ax < tr_end)
+        signal[mask] = 1.0
+    return signal
+
+
+def _build_phase_predictors(session, t_ax):
+    """one-hot grating phase, split by drift direction
+
+    returns dict with 'phase_up' and 'phase_down', each (T, 12)
+    """
+    n_bins = GLM_OPTIONS['n_phase_bins']
+    T = len(t_ax)
+    phase_up = np.zeros((T, n_bins), dtype=np.float32)
+    phase_down = np.zeros((T, n_bins), dtype=np.float32)
+
+    for _, row in session.trials.iterrows():
+        tf_raw = np.array(row['TF'])
+        ft_raw = np.array(row['frame_time'])
+
+        tf_seq = tf_raw[tf_raw.nonzero()]
+        ft_seq = ft_raw[~np.isnan(ft_raw)]
+        n = min(len(tf_seq), len(ft_seq))
+        if n == 0:
+            continue
+        tf_seq, ft_seq = tf_seq[:n], ft_seq[:n]
+
+        # cumulative phase in degrees
+        dt = np.median(np.diff(ft_seq))
+        phase = np.cumsum(tf_seq * dt) * 360.0
+        phase_mod = phase % 360.0
+
+        # assign to bins
+        bin_idx = np.clip((phase_mod / (360.0 / n_bins)).astype(int), 0, n_bins - 1)
+
+        # map to FR time axis
+        fr_mask = (t_ax >= ft_seq[0]) & (t_ax <= ft_seq[-1])
+        fr_idx = np.where(fr_mask)[0]
+        if len(fr_idx) == 0:
+            continue
+
+        insert_idx = np.searchsorted(ft_seq, t_ax[fr_idx], side='right') - 1
+        insert_idx = np.clip(insert_idx, 0, n - 1)
+
+        target = phase_up if row['Stim1Ori'] == 90 else phase_down
+        for fi, si in zip(fr_idx, insert_idx):
+            target[fi, bin_idx[si]] = 1.0
+
+    return {'phase_up': phase_up, 'phase_down': phase_down}
+
+
+def _align_to_bins(signal, signal_times, t_ax):
+    """align a continuous signal to the 50ms time axis via nearest-sample lookup"""
+    idx = np.searchsorted(signal_times, t_ax, side='right') - 1
+    idx = np.clip(idx, 0, len(signal) - 1)
+    aligned = signal[idx].astype(np.float32)
+    aligned[t_ax < signal_times[0]] = 0
+    aligned[t_ax > signal_times[-1]] = 0
+    return aligned
+
+
+def _build_face_me_predictor(session, eye_cam_times, t_ax):
+    mouth_me = np.array(session.move['video']['mouth_me'])
+    n = min(len(mouth_me), len(eye_cam_times))
+    return _align_to_bins(mouth_me[:n], eye_cam_times[:n], t_ax)
+
+
+def _build_running_predictor(session, t_ax):
+    speed = np.array(session.move['running']['speed'])
+    time = np.array(session.move['running']['time'])
+    return _align_to_bins(speed, time, t_ax)
+
+
+def _build_pupil_predictor(session, eye_cam_times, t_ax):
+    pupil = np.array(session.move['video']['pupil_area'])
+    n = min(len(pupil), len(eye_cam_times))
+    return _align_to_bins(pupil[:n], eye_cam_times[:n], t_ax)
+
+
+#%% valid mask (exclude transition trials)
+
+def _build_valid_mask(session, t_ax):
+    """boolean mask (T,): True for bins inside non-transition trials"""
+    mask = np.zeros(len(t_ax), dtype=bool)
+    n_ignore = ANALYSIS_OPTIONS['ignore_first_trials_in_block']
+
+    for _, row in session.trials.iterrows():
+        if row['tr_in_block'] <= n_ignore:
+            continue
+        bl_on = row['Baseline_ON_rise']
+        tr_end = np.nanmax([row['Baseline_ON_fall'],
+                            row.get('Change_ON_fall', np.nan)])
+        if np.isnan(bl_on) or np.isnan(tr_end):
+            continue
+        mask |= (t_ax >= bl_on) & (t_ax < tr_end)
+
+    return mask
+
+
+#%% design matrix assembly
+
+def build_predictor_spec(session, has_eye_cam=True):
+    """returns list of (name, kernel_window_or_None) tuples
+
+    kernel_window is None for predictors that are already multi-column (phase, time ramp, block)
+    """
+    ops = GLM_OPTIONS
+    change_tfs = sorted(session.trials['Stim2TF'].dropna().unique())
+
+    spec = []
+    spec.append(('tf', ops['kern_tf']))
+    spec.append(('trial_start', ops['kern_trial_start']))
+    spec.append(('time_ramp', None))
+    spec.append(('block', None))
+    for ch_tf in change_tfs:
+        spec.append((f'change_tf{ch_tf}', ops['kern_change']))
+    spec.append(('lick_prep', ops['kern_lick_prep']))
+    spec.append(('lick_exec', ops['kern_lick_exec']))
+    spec.append(('air_puff', ops['kern_air_puff']))
+    spec.append(('reward', ops['kern_reward']))
+    spec.append(('abort', ops['kern_abort']))
+    spec.append(('phase_up', None))
+    spec.append(('phase_down', None))
+    if has_eye_cam:
+        spec.append(('face_me', ops['kern_face_me']))
+        spec.append(('pupil', ops['kern_pupil']))
+    spec.append(('running', ops['kern_running']))
+
+    return spec
+
+
+def build_design_matrix(session, t_ax, eye_cam_times):
+    """build full (T x P) design matrix for one session
+
+    returns design matrix, predictor col_map dict mapping name -> (col_slice, lags)
+    """
+    ops = GLM_OPTIONS
+    bin_w = ops['bin_width']
+
+    # build all base signals
+    base_signals = {}
+    base_signals['tf'] = _build_tf_predictor(session, t_ax)
+    base_signals['trial_start'] = _build_trial_start_predictor(session, t_ax)
+    base_signals['time_ramp'] = _build_time_ramp_predictor(session, t_ax)
+    base_signals['block'] = _build_block_predictor(session, t_ax)
+
+    for name, sig in _build_change_predictors(session, t_ax).items():
+        base_signals[name] = sig
+
+    base_signals['lick_prep'] = _build_lick_prep_predictor(session, t_ax)
+    base_signals['lick_exec'] = _build_lick_exec_predictor(session, t_ax)
+    base_signals['air_puff'] = _build_air_puff_predictor(session, t_ax)
+    base_signals['reward'] = _build_reward_predictor(session, t_ax)
+    base_signals['abort'] = _build_abort_predictor(session, t_ax)
+    base_signals['running'] = _build_running_predictor(session, t_ax)
+
+    phase = _build_phase_predictors(session, t_ax)
+    base_signals['phase_up'] = phase['phase_up']
+    base_signals['phase_down'] = phase['phase_down']
+
+    if eye_cam_times is not None:
+        base_signals['face_me'] = _build_face_me_predictor(session, eye_cam_times, t_ax)
+        base_signals['pupil'] = _build_pupil_predictor(session, eye_cam_times, t_ax)
+
+    # assemble: time-shift where needed, concatenate
+    has_eye_cam = eye_cam_times is not None
+    pred_spec = build_predictor_spec(session, has_eye_cam=has_eye_cam)
+    blocks = []
+    col_map = {}
+    col_offset = 0
+
+    for name, kernel_win in pred_spec:
+        sig = base_signals[name]
+
+        if kernel_win is not None:
+            shifted, lags = _time_shift(sig, kernel_win, bin_w)
+            n_cols = shifted.shape[1]
+            blocks.append(shifted)
+        elif sig.ndim == 2:
+            # already multi-column (phase)
+            n_cols = sig.shape[1]
+            lags = np.arange(n_cols)
+            blocks.append(sig)
+        else:
+            # single column, no shifting (time ramp, block)
+            n_cols = 1
+            lags = np.array([0])
+            blocks.append(sig[:, None])
+
+        col_map[name] = (slice(col_offset, col_offset + n_cols), lags)
+        col_offset += n_cols
+
+    X = np.concatenate(blocks, axis=1).astype(np.float32)
+
+    return X, col_map
+
+
+#%% save/load
+
+def save_glm_inputs(sess_dir, counts, X, col_map, t_ax, valid_mask):
+    """save prepped GLM data for one session"""
+    sess_dir = Path(sess_dir)
+    np.save(sess_dir / 'glm_counts.npy', counts)
+    np.save(sess_dir / 'glm_design.npy', X)
+    np.save(sess_dir / 'glm_t_ax.npy', t_ax)
+    np.save(sess_dir / 'glm_valid.npy', valid_mask)
+    with open(sess_dir / 'glm_spec.pkl', 'wb') as f:
+        pickle.dump(col_map, f)
+
+
+def load_glm_inputs(sess_dir):
+    """load prepped GLM data"""
+    sess_dir = Path(sess_dir)
+    counts = np.load(sess_dir / 'glm_counts.npy')
+    X = np.load(sess_dir / 'glm_design.npy')
+    t_ax = np.load(sess_dir / 'glm_t_ax.npy')
+    valid_mask = np.load(sess_dir / 'glm_valid.npy')
+    with open(sess_dir / 'glm_spec.pkl', 'rb') as f:
+        col_map = pickle.load(f)
+    return counts, X, col_map, t_ax, valid_mask
+
+
+#%% local prep
+
+def prepare_session(sess_dir, ceph_dir):
+    """build and save GLM inputs for one session"""
+    sess_dir = Path(sess_dir)
+    if (sess_dir / 'glm_design.npy').exists():
+        print(f'  already prepped, skipping')
+        return
+
+    sess = Session.load(str(sess_dir / 'session.pkl'))
+    fr_path = sess_dir / 'FR_matrix.parquet'
+    if not fr_path.exists():
+        print(f'  no FR matrix, skipping')
+        return
+
+    print(f'  building spike counts...')
+    counts, t_ax = build_spike_counts(str(fr_path), sess.fr_stats)
+
+    # load eye cam timestamps from ceph
+    ceph_sess = Path(ceph_dir) / sess.animal / sess.name
+    eye_cam_path = ceph_sess / 'daq_Eye_cam.csv'
+    eye_cam_times = None
+    if eye_cam_path.exists():
+        eye_cam_times = pd.read_csv(eye_cam_path)['rise_t'].values
+
+    print(f'  building design matrix...')
+    X, col_map = build_design_matrix(sess, t_ax, eye_cam_times)
+    valid_mask = _build_valid_mask(sess, t_ax)
+
+    save_glm_inputs(str(sess_dir), counts, X, col_map, t_ax, valid_mask)
+    print(f'  saved: counts {counts.shape}, X {X.shape}, '
+          f'valid bins: {valid_mask.sum()}/{len(valid_mask)}')
+
+    del counts, X, sess
+    gc.collect()
+
+
+def prepare_all_sessions(npx_dir=PATHS['npx_dir_local'],
+                          ceph_dir=PATHS['npx_dir_ceph']):
+    """prep GLM inputs for all sessions"""
+    for subj in sorted(os.listdir(npx_dir)):
+        subj_dir = os.path.join(npx_dir, subj)
+        if not os.path.isdir(subj_dir):
+            continue
+        for sess in sorted(os.listdir(subj_dir)):
+            sess_dir = os.path.join(subj_dir, sess)
+            if not os.path.exists(os.path.join(sess_dir, 'session.pkl')):
+                continue
+            print(f'{subj}/{sess}')
+            prepare_session(sess_dir, ceph_dir)
+
+
+def build_job_map(npx_dir=PATHS['npx_dir_local'], output_path=None):
+    """build CSV mapping SLURM array index -> (session_dir, neuron_index, cluster_id)"""
+    if output_path is None:
+        output_path = os.path.join(npx_dir, 'glm_job_map.csv')
+
+    rows = []
+    for subj in sorted(os.listdir(npx_dir)):
+        subj_dir = os.path.join(npx_dir, subj)
+        if not os.path.isdir(subj_dir):
+            continue
+        for sess in sorted(os.listdir(subj_dir)):
+            sess_dir = os.path.join(subj_dir, sess)
+            counts_path = os.path.join(sess_dir, 'glm_counts.npy')
+            if not os.path.exists(counts_path):
+                continue
+            sess_data = Session.load(os.path.join(sess_dir, 'session.pkl'))
+            n_neurons = len(sess_data.fr_stats)
+            cluster_ids = sess_data.fr_stats.index.values
+            for i in range(n_neurons):
+                rows.append({
+                    'job_idx': len(rows),
+                    'sess_dir': sess_dir,
+                    'neuron_idx': i,
+                    'cluster_id': cluster_ids[i],
+                    'animal': sess_data.animal,
+                    'session': sess_data.name,
+                })
+
+    df = pd.DataFrame(rows)
+    df.to_csv(output_path, index=False)
+    print(f'Job map: {len(df)} neurons across {df["sess_dir"].nunique()} sessions')
+    print(f'Saved to {output_path}')
+    return df
+
+
+#%% GLM fitting
+
+def _eval_r(y_true, y_pred):
+    """pearson r, or nan if degenerate"""
+    from scipy.stats import pearsonr
+    if len(y_true) < 5 or np.std(y_true) == 0 or np.std(y_pred) == 0:
+        return np.nan
+    return pearsonr(y_true, y_pred.ravel())[0]
+
+
+def _lesion_design_matrix(X, predictor_names, col_map):
+    """zero out columns belonging to a list of predictors"""
+    X_les = X.copy()
+    for name, (col_slice, _) in col_map.items():
+        if name in predictor_names:
+            X_les[:, col_slice] = 0
+    return X_les
+
+
+def build_event_masks(session, t_ax):
+    """build boolean masks marking relevant time windows for each lesion group
+
+    returns dict: group_name -> (T,) bool
+    """
+    T = len(t_ax)
+    masks = {}
+
+    # TF: bins within -0.1 to 0.75s of each TF outlier pulse during baseline
+    tf_mask = np.zeros(T, dtype=bool)
+    if session.tf_pulses is not None and len(session.tf_pulses) > 0:
+        for _, pulse in session.tf_pulses.iterrows():
+            t = pulse['time']
+            tf_mask |= (t_ax >= t - 0.1) & (t_ax <= t + 0.75)
+    masks['tf'] = tf_mask
+
+    # lick_prep: -1.25 to 0s before motion_onset
+    lick_prep_mask = np.zeros(T, dtype=bool)
+    for _, row in session.trials.iterrows():
+        if row['IsHit'] != 1 and row['IsFA'] != 1:
+            continue
+        t = row.get('motion_onset', np.nan)
+        if np.isnan(t):
+            continue
+        lick_prep_mask |= (t_ax >= t - 1.25) & (t_ax <= t)
+    masks['lick_prep'] = lick_prep_mask
+
+    # lick_exec: 0 to 0.5s after first_lick
+    lick_exec_mask = np.zeros(T, dtype=bool)
+    for _, row in session.trials.iterrows():
+        t = row.get('first_lick', np.nan)
+        if np.isnan(t):
+            continue
+        lick_exec_mask |= (t_ax >= t) & (t_ax <= t + 0.5)
+    masks['lick_exec'] = lick_exec_mask
+
+    return masks
+
+
+def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
+               ops=GLM_OPTIONS):
+    """fit full + lesioned poisson GLMs for one neuron
+
+    counts_1d: (T,) spike counts
+    X: (T, P) design matrix
+    col_map: dict mapping predictor name -> (col_slice, lags)
+    valid_mask: (T,) bool - bins to include in fitting
+    event_masks: dict mapping group name -> (T,) bool for window-specific eval
+    """
+    import glmnet
+
+    n_folds = ops['n_outer_folds']
+    lesion_groups = ops['lesion_groups']
+    group_names = list(lesion_groups.keys())
+
+    # restrict to valid bins
+    X_v = X[valid_mask]
+    y_v = counts_1d[valid_mask].astype(np.float64)
+    T_v = len(y_v)
+
+    # random fold assignment over valid bins
+    fold_ids = np.tile(np.arange(n_folds), T_v // n_folds + 1)[:T_v]
+    np.random.shuffle(fold_ids)
+
+    full_r = np.full(n_folds, np.nan)
+    lesioned_r = {name: np.full(n_folds, np.nan) for name in group_names}
+    full_r_window = {name: np.full(n_folds, np.nan) for name in group_names}
+    lesioned_r_window = {name: np.full(n_folds, np.nan) for name in group_names}
+
+    # pre-compute valid-bin event masks
+    ev_masks_v = {}
+    if event_masks is not None:
+        for gname in group_names:
+            if gname in event_masks:
+                ev_masks_v[gname] = event_masks[gname][valid_mask]
+
+    for k in range(n_folds):
+        test_mask = fold_ids == k
+        train_mask = ~test_mask
+
+        X_train, y_train = X_v[train_mask], y_v[train_mask]
+        X_test, y_test = X_v[test_mask], y_v[test_mask]
+
+        if y_train.sum() == 0 or y_test.sum() == 0:
+            continue
+
+        # fit full model with inner CV for lambda
+        model = glmnet.ElasticNet(alpha=0, n_splits=ops['n_inner_folds'],
+                                   family='poisson')
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        full_r[k] = _eval_r(y_test, y_pred)
+
+        # window-specific evaluation of full model
+        for gname in group_names:
+            if gname in ev_masks_v:
+                win_mask = ev_masks_v[gname][test_mask]
+                if win_mask.sum() >= 5:
+                    full_r_window[gname][k] = _eval_r(
+                        y_test[win_mask], y_pred.ravel()[win_mask])
+
+        # lesioned models
+        for gname, pred_list in lesion_groups.items():
+            X_train_les = _lesion_design_matrix(X_train, pred_list, col_map)
+            X_test_les = _lesion_design_matrix(X_test, pred_list, col_map)
+
+            model_les = glmnet.ElasticNet(alpha=0, n_splits=ops['n_inner_folds'],
+                                           family='poisson')
+            model_les.fit(X_train_les, y_train)
+            y_pred_les = model_les.predict(X_test_les)
+            lesioned_r[gname][k] = _eval_r(y_test, y_pred_les)
+
+            if gname in ev_masks_v:
+                win_mask = ev_masks_v[gname][test_mask]
+                if win_mask.sum() >= 5:
+                    lesioned_r_window[gname][k] = _eval_r(
+                        y_test[win_mask], y_pred_les.ravel()[win_mask])
+
+    # fit full model on all valid data for kernel extraction
+    full_model = glmnet.ElasticNet(alpha=0, n_splits=ops['n_inner_folds'],
+                                    family='poisson')
+    full_model.fit(X_v, y_v)
+
+    result = {
+        'weights': full_model.coef_,
+        'intercept': full_model.intercept_,
+        'full_r': full_r,
+        'lambda_best': full_model.lambda_best_,
+    }
+    for gname in group_names:
+        result[f'lesioned_r_{gname}'] = lesioned_r[gname]
+        result[f'full_r_window_{gname}'] = full_r_window[gname]
+        result[f'lesioned_r_window_{gname}'] = lesioned_r_window[gname]
+
+    return result
+
+
+def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
+    """load prepped data, fit one neuron, save results"""
+    counts, X, col_map, t_ax, valid_mask = load_glm_inputs(sess_dir)
+    y = counts[neuron_idx]
+
+    sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
+    event_masks = build_event_masks(sess, t_ax)
+
+    result = fit_neuron(y, X, col_map, valid_mask, event_masks, ops)
+
+    results_dir = Path(sess_dir) / 'glm_results'
+    results_dir.mkdir(exist_ok=True)
+    np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
+
+
+#%% classification
+
+def classify_units(sess_dir, ops=GLM_OPTIONS):
+    """load per-neuron GLM results and classify as TF-resp / lick-prep / lick-exec"""
+    from scipy.stats import ttest_rel
+
+    results_dir = Path(sess_dir) / 'glm_results'
+    sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
+    n_neurons = len(sess.fr_stats)
+    group_names = list(ops['lesion_groups'].keys())
+
+    classifications = []
+
+    for i in range(n_neurons):
+        res_path = results_dir / f'neuron_{i}.npz'
+        if not res_path.exists():
+            classifications.append({
+                'neuron_idx': i,
+                'cluster_id': sess.fr_stats.index[i],
+            })
+            continue
+
+        res = np.load(res_path, allow_pickle=True)
+        full_r = res['full_r']
+
+        row = {
+            'neuron_idx': i,
+            'cluster_id': sess.fr_stats.index[i],
+            'mean_r': np.nanmean(full_r),
+        }
+
+        for gname in group_names:
+            full_r_win = res[f'full_r_window_{gname}']
+            les_r_win = res[f'lesioned_r_window_{gname}']
+            valid = ~(np.isnan(full_r_win) | np.isnan(les_r_win))
+
+            if valid.sum() >= 3:
+                _, p = ttest_rel(full_r_win[valid], les_r_win[valid])
+                delta_r = np.nanmean(full_r_win[valid]) - np.nanmean(les_r_win[valid])
+            else:
+                p = 1.0
+                delta_r = 0.0
+
+            is_sig = (np.nanmean(full_r_win) > ops['min_r'] and
+                      p < ops['lesion_alpha'] and
+                      delta_r > 0)
+
+            row[f'{gname}_mean_r'] = np.nanmean(full_r_win)
+            row[f'{gname}_p'] = p
+            row[f'{gname}_delta_r'] = delta_r
+            row[f'{gname}_sig'] = is_sig
+
+        classifications.append(row)
+
+    df = pd.DataFrame(classifications)
+    df.to_csv(Path(sess_dir) / 'glm_classifications.csv', index=False)
+    return df
+
+
+#%% kernel extraction
+
+def extract_kernels(weights, col_map, bin_width=GLM_OPTIONS['bin_width']):
+    """reshape flat weight vector into named kernels
+
+    returns dict: predictor_name -> (t_ax_kernel, kernel_values)
+    """
+    kernels = {}
+    for name, (col_slice, lags) in col_map.items():
+        t_ax_kernel = lags * bin_width
+        kernel_vals = weights[col_slice]
+        kernels[name] = (t_ax_kernel, kernel_vals)
+    return kernels

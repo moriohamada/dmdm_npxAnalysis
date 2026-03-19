@@ -47,6 +47,42 @@ ANALYSIS_OPTIONS = dict(
 
 )
 
+GLM_OPTIONS = dict(
+    bin_width = 50 / 1000,  # s; matches TF pulse duration (3 frames at 60Hz)
+
+    # predictor kernel windows (start, end) in seconds
+    # positive lags = predictor precedes response, negative = follows
+    kern_tf          = (-.25, 1.25),
+    kern_trial_start = (0, 1.0),
+    kern_change      = (0, 2.0),
+    kern_lick_prep   = (-1.25, 0),
+    kern_lick_exec   = (0, 0.5),
+    kern_air_puff    = (0, 0.25),
+    kern_reward      = (0, 0.4),
+    kern_abort       = (-1.25, 0.25),
+    kern_face_me     = (-0.05, 0.8),
+    kern_running     = (-0.05, 0.8),
+    kern_pupil       = (-0.75, 0.75),
+
+    n_phase_bins = 12,
+
+    # CV
+    n_outer_folds = 10,
+    n_inner_folds = 10,
+
+    # unit classification thresholds
+    min_r = 0.2,
+    lesion_alpha = 0.01,
+
+    # predictor groups to lesion together for unit classification
+    # correlated predictors removed together to avoid compensation
+    lesion_groups = {
+        'tf':        ['tf', 'phase_up', 'phase_down'],
+        'lick_prep': ['lick_prep'],
+        'lick_exec': ['lick_exec', 'face_me', 'running'],
+    },
+)
+
 LICK_PRED_OPS = dict(
     bin_width       = 50 / 1000,       # s; prediction bin width (matches pop_bin_width)
     tf_history_bins = 40,              # number of 50ms bins of TF history (2s)
@@ -65,8 +101,8 @@ LICK_PRED_OPS = dict(
     lambdas         = [0, 1e-4, 1e-3, 1e-2],
     lr              = 1e-4,
     batch_size      = 4096,
-    max_epochs      = 1000,
-    sweep_epoch_frac = 0.2,           # fraction of max_epochs for quick sweep
+    max_epochs      = 800,
+    sweep_epoch_frac = 0.25,           # fraction of max_epochs for quick sweep
     patience        = 50,             # early stopping patience (epochs)
     val_frac        = 0.1,            # fraction of training trials for early stopping
 )

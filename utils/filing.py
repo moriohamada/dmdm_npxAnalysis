@@ -48,7 +48,5 @@ def get_session_files(npx_dir: str,
 
             if os.path.exists(os.path.join(sess_folder, 'session.pkl')):
                 session_paths.append(os.path.join(sess_folder, 'session.pkl'))
-            else:
-                print(f'Session file not found for {session_name}')
 
     return session_paths

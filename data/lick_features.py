@@ -133,15 +133,21 @@ def build_trial_features(row, prev_outcome, prev_event_time,
     if len(tf_20hz) == 0:
         return None, None, 0
 
-    # determine number of bins
+    # determine number of bins — truncate at change frame so model only
+    # sees baseline TF (it will generalise to post-change naturally)
+    has_change = row['IsHit'] or row['IsMiss']
+    change_bin = int(row['stimT'] / ops['bin_width']) if has_change else None
+
     if has_lick:
         trial_end = lick_t - bl_on + extend * ops['bin_width']
-    elif row['IsHit'] or row['IsMiss']:
+    elif has_change:
         trial_end = row['stimT'] + resp_win
     else:
         trial_end = len(tf_20hz) * ops['bin_width']
 
     n_bins = max(1, int(trial_end / ops['bin_width']))
+    if change_bin is not None:
+        n_bins = min(n_bins, change_bin)
     if n_bins < 1:
         return None, None, 0
 
