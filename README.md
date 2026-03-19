@@ -1,27 +1,30 @@
 # dmdm neuropixels analysis
 
 (In progress) neuropixels analysis pipeline for dmdm dataset (Khilkevich & Lohse et al),
-focussing on effects of behavioural and neural correlates of temporal expectation (early/late hazard-rate blocks). 
+focussing on effects of behavioural and neural correlates of temporal expectation (early/late hazard-rate blocks).
 
 ## Directory structure
 
-``` 
-data/                loading raw data, building FR matrices, extracting event timings and PSTHs
-analyses/            preferences, PCA, LDS, flow fields, lick prediction model
+```
+data/                shared data loading: sessions, FR matrices, event timings, PSTHs
 utils/               filtering, smoothing, downsampling, normalisation, file I/O, ROI definitions
-visualisation/       plotting (PSTHs, preferences, PC-space trajectories, lick prediction)
+lick_pred/           lick prediction model: features, training, analysis, plotting, HPC scripts
+glm/                 Poisson GLM per neuron: fitting, classification, kernel plots, HPC scripts
+single_unit/         unit preferences (TF selectivity, block/lick modulation) and PSTH plots
+population/          PCA, linear dynamical systems, empirical flow fields, trajectory plots
 config.py            all paths, analysis parameters, plot options
-testing_grounds.py   main runner script (run cells top to bottom) - will be changed to analyse.py
-``` 
+testing_grounds.py   main runner script (run cells top to bottom)
+```
 
 ## Pipeline
 
 1. Preprocessing raw data files to extract session data, neural responses
 2. Behavioural lick prediction model (logistic regression and neural network)
-3. Unit preferences (TF selectivity, block modulation, lick modulation)
-4. Downsample FR matrices to 50ms bins for population analyses
-5. PCA on event-aligned population responses
-6. Linear dynamical systems / empirical flow fields in PC space
+3. Poisson GLM per neuron (stimulus + behaviour kernels, lesion analysis)
+4. Unit preferences (TF selectivity, block modulation, lick modulation)
+5. Downsample FR matrices to 50ms bins for population analyses
+6. PCA on event-aligned population responses
+7. Linear dynamical systems / empirical flow fields in PC space
 
 ## Key data notes
 

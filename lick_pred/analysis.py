@@ -4,22 +4,26 @@ fns for analysis of lick prediction models
 import os
 import pickle
 import numpy as np
+import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set_style('whitegrid')
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats
 from config import PATHS
-from data.lick_features import (
+from lick_pred.features import (
     FEATURE_COLS, CONTINUOUS_COLS, N_TF_HIST, N_FEATURES,
-    build_mouse_features, OUTCOME_MAP,
+    build_mouse_features, OUTCOME_MAP, PREV_TIME_MASK, ABLATION_GROUPS,
 )
 from data.session import Session
-from analyses.lick_prediction import (
+from lick_pred.models import (
     LinearLickModel, NetworkLickModel, evaluate, compute_class_weight,
 )
-from analyses.run_lick_prediction import _group_sessions_by_mouse
+from lick_pred.run import _group_sessions_by_mouse
 
 BIN_WIDTH = 0.05
+SAVE_DIR = os.path.join(PATHS['plots_dir'], 'lick_pred')
 # feature groups for plotting
 DRIVER_GROUPS = {
     'stimulus':       FEATURE_COLS['stimulus'],
@@ -36,6 +40,20 @@ DRIVER_GROUPS = {
     'time_since_rwd': FEATURE_COLS['time_since_reward'],
     'trial_num':      FEATURE_COLS['trial_num'],
 }
+
+
+def _fix_old_ablation(abl):
+    """hack: old results have per-feature ablation keys, regroup into ABLATION_GROUPS.
+    remove once results are rerun on HPC with grouped ablation"""
+    if 'trial_history' in abl:
+        return abl
+    out = {}
+    for group, cols in ABLATION_GROUPS.items():
+        matching = [k for k, v in FEATURE_COLS.items()
+                    if all(c in cols for c in v)]
+        if matching:
+            out[group] = np.mean([abl[k] for k in matching if k in abl], axis=0)
+    return out
 
 
 #%% loading
@@ -87,19 +105,30 @@ def load_mouse(animal, all_res, npx_dir=None):
         npx_dir = PATHS['npx_dir_local']
 
     grouped = _group_sessions_by_mouse(npx_dir, npx_only=False)
-    sessions_data, session_names = build_mouse_features(grouped[animal])
+    sessions_data, session_names = build_mouse_features(grouped[animal],
+                                                         truncate_at_change=False)
 
     trial_outcomes = []
+    change_tfs = []
+    trial_info = []
     for path in grouped[animal]:
         sess = Session.load(path)
         if sess.name in session_names:
             trial_outcomes.append(_get_trial_outcomes(sess))
+            change_tfs.append({tr: row['Stim2TF']
+                               for tr, row in sess.trials.iterrows()
+                               if not pd.isna(row.get('Stim2TF', np.nan))})
+            trial_info.append({tr: dict(block=row.get('hazardblock', '?'),
+                                        tr_in_block=row.get('tr_in_block', '?'))
+                               for tr, row in sess.trials.iterrows()})
 
     return dict(
         animal=animal,
         sessions_data=sessions_data,
         session_names=session_names,
         trial_outcomes=trial_outcomes,
+        change_tfs=change_tfs,
+        trial_info=trial_info,
     )
 
 
@@ -129,6 +158,8 @@ def predict_session(mouse, all_res, arch, sess_idx):
 
     X_norm = X.copy()
     X_norm[:, CONTINUOUS_COLS] = (X_norm[:, CONTINUOUS_COLS] - norm_mean) / norm_std
+    for time_col, gate_col in PREV_TIME_MASK:
+        X_norm[X[:, gate_col] == 0, time_col] = 0.0
 
     model = _reconstruct_model(fold_results['fold_models'][sess_idx])
     with torch.no_grad():
@@ -173,27 +204,41 @@ def compute_chance_loss(sessions_data):
     return losses
 
 
-def plot_model_vs_chance(all_res, mice, save_path=None):
-    """line plot: perfect / chance / linear / best network per mouse
+def plot_model_vs_chance(all_res, mice, save_path='default'):
+    """line plot: perfect / chance / linear / each network size per mouse
 
     thin grey line per mouse, thick black grand average
     """
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, 'model_vs_chance.png')
+
     animals = sorted(mice.keys())
-    labels = ['perfect', 'chance', 'linear', 'network']
+
+    # collect all network architectures across mice (sorted by hidden size)
+    net_archs = sorted({k for a in animals
+                        for k in all_res[a]['full_results'] if k != 'linear'},
+                       key=lambda k: int(k[1:]))
+    labels = ['perfect', 'chance', 'linear'] + net_archs
     x = np.arange(len(labels))
 
     per_mouse = []
     for animal in animals:
         full_results = all_res[animal]['full_results']
-        floor = perfect_model_loss(mice[animal]['sessions_data'])
-        chance = compute_chance_loss(mice[animal]['sessions_data']).mean()
-        linear = full_results['linear']['mean_loss']
-        best_net = _best_network_arch(full_results)
-        network = full_results[best_net]['mean_loss'] if best_net else np.nan
-        per_mouse.append([floor, chance, linear, network])
+        row = [
+            perfect_model_loss(mice[animal]['sessions_data']),
+            compute_chance_loss(mice[animal]['sessions_data']).mean(),
+            full_results['linear']['mean_loss'],
+        ]
+        for arch in net_archs:
+            if arch in full_results:
+                row.append(full_results[arch]['mean_loss'])
+            else:
+                row.append(np.nan)
+        per_mouse.append(row)
     per_mouse = np.array(per_mouse)
 
-    fig, ax = plt.subplots(figsize=(5, 5))
+    fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(labels)), 5))
     for row in per_mouse:
         ax.plot(x, row, color='grey', alpha=0.3, linewidth=0.8)
     ax.plot(x, np.nanmean(per_mouse, axis=0), color='k', linewidth=2.5)
@@ -230,8 +275,11 @@ def _non_stimulus_features():
     return feats
 
 
-def plot_linear_weights(all_res, mice, save_path=None):
+def plot_linear_weights(all_res, mice, save_path='default'):
     """stimulus filter and non-stimulus weights per mouse, with mean at bottom"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, 'linear_weights.png')
     animals = sorted(mice.keys())
     n_mice = len(animals)
     all_weights = np.array([_get_linear_weights(all_res, a) for a in animals])
@@ -247,7 +295,7 @@ def plot_linear_weights(all_res, mice, save_path=None):
 
     for row, animal in enumerate(animals):
         weights = all_weights[row]
-        ablation = all_res[animal]['full_results']['linear']['ablation']
+        ablation = _fix_old_ablation(all_res[animal]['full_results']['linear']['ablation'])
 
         axes[row, 0].plot(t_ax, weights[:N_TF_HIST])
         axes[row, 0].axhline(0, color='k', linewidth=0.5)
@@ -256,10 +304,13 @@ def plot_linear_weights(all_res, mice, save_path=None):
         bar_vals = [weights[other_features[name]].mean() for name in other_names]
         colours = []
         for name in other_names:
-            if name.startswith('prev_') and name not in ablation:
-                abl_key = 'prev_outcome'
-            else:
+            # map individual features to their ablation group
+            if name in ablation:
                 abl_key = name
+            elif name in ('block',):
+                abl_key = 'block'
+            else:
+                abl_key = 'trial_history'
             if abl_key in ablation:
                 sig = stats.ttest_1samp(ablation[abl_key], 0).pvalue < 0.05
             else:
@@ -268,11 +319,8 @@ def plot_linear_weights(all_res, mice, save_path=None):
 
         axes[row, 1].barh(range(len(other_names)), bar_vals, color=colours)
         axes[row, 1].axvline(0, color='k', linewidth=0.5)
-        if row == 0:
-            axes[row, 1].set_yticks(range(len(other_names)))
-            axes[row, 1].set_yticklabels(other_names, fontsize=7)
-        else:
-            axes[row, 1].set_yticks([])
+        axes[row, 1].set_yticks(range(len(other_names)))
+        axes[row, 1].set_yticklabels(other_names, fontsize=7)
 
     # mean row
     mean_weights = all_weights.mean(axis=0)
@@ -302,14 +350,17 @@ def plot_linear_weights(all_res, mice, save_path=None):
     return fig
 
 
-def plot_feature_ablation(all_res, mice, arch='linear', save_path=None):
+def plot_feature_ablation(all_res, mice, arch='linear', save_path='default'):
     """bar plot of mean ablation loss increase per feature group, across mice"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, f'feature_ablation_{arch}.png')
     animals = sorted(mice.keys())
-    groups = list(FEATURE_COLS.keys())
+    groups = list(ABLATION_GROUPS.keys())
 
     per_mouse = np.zeros((len(animals), len(groups)))
     for i, animal in enumerate(animals):
-        abl = all_res[animal]['full_results'][arch]['ablation']
+        abl = _fix_old_ablation(all_res[animal]['full_results'][arch]['ablation'])
         for j, g in enumerate(groups):
             per_mouse[i, j] = np.nanmean(abl[g])
 
@@ -332,8 +383,12 @@ def plot_feature_ablation(all_res, mice, arch='linear', save_path=None):
 
 #%% session and trial plots
 
-def plot_session_heatmap(mouse, all_res, arch, sess_idx, save_path=None):
+def plot_session_heatmap(mouse, all_res, arch, sess_idx, save_path='default'):
     """heatmap of stimulus, target, and prediction for lick trials in a session"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR,
+            f'heatmap_{mouse["animal"]}_{mouse["session_names"][sess_idx]}.png')
     X_raw, _, y, y_pred, trial_ids = predict_session(mouse, all_res, arch, sess_idx)
 
     lick_trials = []
@@ -388,71 +443,138 @@ def plot_session_heatmap(mouse, all_res, arch, sess_idx, save_path=None):
     return fig
 
 
-def plot_trial_detail(trial_idx, X_raw, X_norm, y,
-                      y_pred_linear, y_pred_net, trial_ids,
-                      weights, bias, trial_type=None):
-    """stimulus, prediction, and feature group contributions for one trial
+ABLATION_COLOURS = {
+    'stimulus':      'tab:green',
+    'time_in_trial': 'tab:orange',
+    'block':         'tab:purple',
+    'trial_history': 'tab:brown',
+}
 
-    y_pred_net can be None if no network model available
+
+def _predict_ablated(model, X_norm, group_cols):
+    """predict with a feature group zeroed out"""
+    X_abl = X_norm.copy()
+    X_abl[:, group_cols] = 0.0
+    with torch.no_grad():
+        X_t = torch.tensor(X_abl, dtype=torch.float32)
+        return torch.sigmoid(model(X_t)).numpy()
+
+
+def plot_trial_detail(trial_idx, X_raw, X_norm, y,
+                      y_pred_linear, y_pred_net, ablated_preds,
+                      trial_ids, weights, bias,
+                      title=None, net_label='network'):
+    """combined trial detail: predictions, linear decomposition, network ablation
+
+    row 1: stimulus trace
+    row 2: predictions (target + linear + network)
+    row 3: time-varying logit contributions from linear model (stimulus + time)
+    row 4: constant logit contributions from linear model (bar)
+    row 5: network ablation predictions
     """
     mask = trial_ids == trial_idx
+    if mask.sum() < 2:
+        return None
     bins = np.arange(mask.sum()) * BIN_WIDTH
 
-    fig, (ax_stim, ax_pred, ax_contrib) = plt.subplots(
-        3, 1, figsize=(8, 6), sharex=True)
+    fig, (ax_stim, ax_pred, ax_time, ax_bar, ax_abl) = plt.subplots(
+        5, 1, figsize=(8, 10),
+        gridspec_kw={'height_ratios': [0.8, 1, 1, 1.2, 1]})
 
-    ax_stim.plot(bins, X_raw[mask, N_TF_HIST - 1])
+    # row 1: stimulus
+    ax_stim.plot(bins, X_raw[mask, N_TF_HIST - 1], color='k')
     ax_stim.set_ylabel('log2 TF')
-    title = f'Trial {int(trial_idx)}'
-    if trial_type:
-        title += f' ({trial_type})'
+    if title is None:
+        title = f'Trial {int(trial_idx)}'
     ax_stim.set_title(title)
+    ax_stim.set_xlim(bins[0], bins[-1])
 
-    ax_pred.plot(bins, y[mask], label='target', color='k', alpha=0.5)
+    # row 2: predictions
+    ax_pred.plot(bins, y[mask], label='target', color='k', alpha=0.4)
     ax_pred.plot(bins, y_pred_linear[mask], label='linear', color='tab:blue')
     if y_pred_net is not None:
-        ax_pred.plot(bins, y_pred_net[mask], label='network', color='tab:red')
+        ax_pred.plot(bins, y_pred_net[mask], label=net_label, color='tab:red')
     ax_pred.set_ylabel('P(lick)')
     ax_pred.legend(fontsize=8)
+    ax_pred.set_xlim(bins[0], bins[-1])
 
-    for name, cols in DRIVER_GROUPS.items():
-        if name == 'stimulus':
-            continue
-        contrib = (weights[cols] * X_norm[mask][:, cols]).sum(axis=1)
-        ax_contrib.plot(bins, contrib, label=name, alpha=0.8)
-
+    # row 3: time-varying logit contributions (linear)
     stim_cols = DRIVER_GROUPS['stimulus']
     stim_contrib = (weights[stim_cols] * X_norm[mask][:, stim_cols]).sum(axis=1)
-    ax_contrib.plot(bins, stim_contrib, label='stimulus', linewidth=2, color='k')
+    ax_time.plot(bins, stim_contrib, label='stimulus', color='k')
 
-    ax_contrib.axhline(bias, color='grey', linewidth=0.5, linestyle='--', label='bias')
-    ax_contrib.set_ylabel('Logit contribution (linear)')
-    ax_contrib.set_xlabel('Time in trial (s)')
-    ax_contrib.legend(fontsize=7, ncol=3)
+    time_cols = DRIVER_GROUPS['time']
+    time_contrib = (weights[time_cols] * X_norm[mask][:, time_cols]).sum(axis=1)
+    ax_time.plot(bins, time_contrib, label='time_in_trial', color='tab:orange')
 
+    ax_time.axhline(0, color='grey', linewidth=0.5)
+    ax_time.set_ylabel('Logit (linear)')
+    ax_time.legend(fontsize=8)
+    ax_time.set_xlim(bins[0], bins[-1])
+
+    # row 4: constant contributions bar (linear)
+    constant_groups = {k: v for k, v in DRIVER_GROUPS.items()
+                       if k not in ('stimulus', 'time')}
+    names = list(constant_groups.keys()) + ['bias']
+    vals = []
+    for name, cols in constant_groups.items():
+        vals.append((weights[cols] * X_norm[mask][:, cols]).sum(axis=1)[0])
+    vals.append(bias)
+
+    bar_colours = ['tab:red' if v > 0 else 'tab:blue' for v in vals]
+    ax_bar.barh(range(len(names)), vals, color=bar_colours)
+    ax_bar.set_yticks(range(len(names)))
+    ax_bar.set_yticklabels(names, fontsize=7)
+    ax_bar.axvline(0, color='k', linewidth=0.5)
+    ax_bar.set_xlabel('Logit (linear)')
+
+    # row 5: network ablation
+    if y_pred_net is not None and ablated_preds:
+        ax_abl.plot(bins, y[mask], label='target', color='grey', alpha=0.4)
+        ax_abl.plot(bins, y_pred_net[mask], label=net_label, color='tab:red', alpha=0.5)
+        for group_name, y_abl in ablated_preds.items():
+            ax_abl.plot(bins, y_abl[mask], label=f'no {group_name}',
+                        color=ABLATION_COLOURS[group_name], linestyle='--')
+        ax_abl.set_ylabel('P(lick)')
+        ax_abl.legend(fontsize=7)
+    else:
+        ax_abl.set_visible(False)
+    ax_abl.set_xlabel('Time in trial (s)')
+    ax_abl.set_xlim(bins[0], bins[-1])
+
+    for ax in [ax_stim, ax_pred, ax_time, ax_bar, ax_abl]:
+        sns.despine(ax=ax)
+
+    fig.tight_layout()
     return fig
 
 
 def plot_all_lick_trials(mouse, all_res, sess_idx,
                          lick_only=True, save_path=None):
-    """plot_trial_detail for every trial in a session, saved to a single pdf
+    """per-trial predictions with linear decomposition and network ablation
 
-    shows both linear and best network predictions
-    contribution decomposition uses linear weights
+    one pdf per session, one page per trial
     """
     X_raw, X_norm, y, y_pred_linear, trial_ids = predict_session(
         mouse, all_res, 'linear', sess_idx)
     outcomes = mouse['trial_outcomes'][sess_idx]
+    change_tfs = mouse.get('change_tfs', [{}] * len(mouse['sessions_data']))[sess_idx]
+    trial_info = mouse.get('trial_info', [{}] * len(mouse['sessions_data']))[sess_idx]
 
-    # get network prediction for the same session
+    # network prediction + ablation
     best_net = _best_network_arch(all_res[mouse['animal']]['full_results'])
     y_pred_net = None
+    ablated_preds = {}
     if best_net:
         _, _, _, y_pred_net, _ = predict_session(mouse, all_res, best_net, sess_idx)
+        fold_results = all_res[mouse['animal']]['full_results'][best_net]
+        net_model = _reconstruct_model(fold_results['fold_models'][sess_idx])
+        for group_name, cols in ABLATION_GROUPS.items():
+            ablated_preds[group_name] = _predict_ablated(net_model, X_norm, cols)
 
     # linear weights for contribution decomposition
-    fold_results = all_res[mouse['animal']]['full_results']['linear']
-    state = fold_results['fold_models'][sess_idx]
+    lin_results = all_res[mouse['animal']]['full_results']['linear']
+    state = lin_results['fold_models'][sess_idx]
     weights = state['linear.weight'][0].numpy()
     bias = state['linear.bias'].item()
 
@@ -462,17 +584,35 @@ def plot_all_lick_trials(mouse, all_res, sess_idx,
                          if y[trial_ids == tr].max() > 0]
 
     if save_path is None:
+        save_dir = os.path.join(PATHS['plots_dir'], 'lick_pred')
+        os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(
-            PATHS['plots_dir'],
+            save_dir,
             f'lick_pred_trials_{mouse["animal"]}_{mouse["session_names"][sess_idx]}.pdf')
 
     with PdfPages(save_path) as pdf:
         for tr in all_trial_ids:
             trial_type = outcomes.get(tr, None)
+            ch_tf = change_tfs.get(tr, None)
+            info = trial_info.get(tr, {})
+            block = info.get('block', '?')
+            tr_in_block = info.get('tr_in_block', '?')
+
+            title_parts = [f'Trial {int(tr)}']
+            if trial_type:
+                title_parts.append(f'({trial_type})')
+            if ch_tf is not None:
+                title_parts.append(f'({ch_tf}Hz)')
+            title_parts.append(f'[{block} block, #{tr_in_block}]')
+            title = ' '.join(title_parts)
+
             fig = plot_trial_detail(tr, X_raw, X_norm, y,
-                                    y_pred_linear, y_pred_net, trial_ids,
-                                    weights, bias, trial_type=trial_type)
-            plt.tight_layout()
+                                    y_pred_linear, y_pred_net, ablated_preds,
+                                    trial_ids, weights, bias,
+                                    title=title,
+                                    net_label=best_net or 'network')
+            if fig is None:
+                continue
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -525,14 +665,30 @@ def _collect_trial_losses(mice, all_res, arch='linear'):
     return records
 
 
-def plot_loss_by_trial_type(records, save_path=None):
-    """box plot of per-trial loss grouped by outcome"""
+def plot_loss_by_trial_type(records, save_path='default'):
+    """per-trial loss grouped by outcome, with per-mouse lines"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, 'loss_by_trial_type.png')
     outcome_types = ['Hit', 'FA', 'Miss']
-    data = [[r['loss'] for r in records if r['outcome'] == o] for o in outcome_types]
+    x = np.arange(len(outcome_types))
+
+    animals = sorted(set(r['animal'] for r in records))
+    per_mouse = np.full((len(animals), len(outcome_types)), np.nan)
+    for i, animal in enumerate(animals):
+        for j, outcome in enumerate(outcome_types):
+            vals = [r['loss'] for r in records
+                    if r['animal'] == animal and r['outcome'] == outcome]
+            if vals:
+                per_mouse[i, j] = np.mean(vals)
 
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.boxplot(data, labels=outcome_types, showfliers=False)
-    ax.set_ylabel('Per-trial loss (weighted BCE)')
+    for row in per_mouse:
+        ax.plot(x, row, color='grey', alpha=0.3, linewidth=0.8)
+    ax.plot(x, np.nanmean(per_mouse, axis=0), color='k', linewidth=2.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(outcome_types)
+    ax.set_ylabel('Mean trial loss (weighted BCE)')
     ax.set_xlabel('Trial outcome')
 
     plt.tight_layout()
@@ -541,14 +697,30 @@ def plot_loss_by_trial_type(records, save_path=None):
     return fig
 
 
-def plot_loss_by_block(records, save_path=None):
-    """box plot of per-trial loss split by hazard-rate block"""
+def plot_loss_by_block(records, save_path='default'):
+    """per-trial loss split by block, with per-mouse lines"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, 'loss_by_block.png')
     blocks = ['early', 'late']
-    data = [[r['loss'] for r in records if r['block'] == b] for b in blocks]
+    x = np.arange(len(blocks))
+
+    animals = sorted(set(r['animal'] for r in records))
+    per_mouse = np.full((len(animals), len(blocks)), np.nan)
+    for i, animal in enumerate(animals):
+        for j, block in enumerate(blocks):
+            vals = [r['loss'] for r in records
+                    if r['animal'] == animal and r['block'] == block]
+            if vals:
+                per_mouse[i, j] = np.mean(vals)
 
     fig, ax = plt.subplots(figsize=(4, 4))
-    ax.boxplot(data, labels=blocks, showfliers=False)
-    ax.set_ylabel('Per-trial loss (weighted BCE)')
+    for row in per_mouse:
+        ax.plot(x, row, color='grey', alpha=0.3, linewidth=0.8)
+    ax.plot(x, np.nanmean(per_mouse, axis=0), color='k', linewidth=2.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(blocks)
+    ax.set_ylabel('Mean trial loss (weighted BCE)')
     ax.set_xlabel('Block')
 
     plt.tight_layout()
@@ -557,8 +729,11 @@ def plot_loss_by_block(records, save_path=None):
     return fig
 
 
-def plot_loss_by_trial_position(records, n_bins=5, save_path=None):
+def plot_loss_by_trial_position(records, n_bins=5, save_path='default'):
     """loss vs normalised position within session"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, 'loss_by_trial_position.png')
     positions = np.array([r['position'] for r in records])
     losses = np.array([r['loss'] for r in records])
 
@@ -584,8 +759,11 @@ def plot_loss_by_trial_position(records, n_bins=5, save_path=None):
     return fig
 
 
-def plot_session_loss_scatter(all_res, mice, arch='linear', save_path=None):
+def plot_session_loss_scatter(all_res, mice, arch='linear', save_path='default'):
     """per-session test loss, one point per session, coloured by mouse"""
+    if save_path == 'default':
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        save_path = os.path.join(SAVE_DIR, 'session_loss_scatter.png')
     animals = sorted(mice.keys())
     colours = plt.cm.tab20(np.linspace(0, 1, len(animals)))
 
@@ -605,27 +783,68 @@ def plot_session_loss_scatter(all_res, mice, arch='linear', save_path=None):
     return fig
 
 
-#%% run
-all_res = load_results()
-mice = {a: load_mouse(a, all_res) for a in all_res}
+def run_all_lick_model_analyses(results_dir=None):
+    """run all lick prediction analyses and generate plots"""
+    from lick_pred.hidden_units import (
+        analyse_hidden_units, plot_network_schematic, plot_unit_summary,
+        plot_unit_responses, plot_unit_ablation_trials,
+    )
 
-#%% loss comparison
-plot_model_vs_chance(all_res, mice)
+    all_res = load_results(results_dir)
+    mice = {a: load_mouse(a, all_res) for a in all_res}
 
-#%% linear weights
-plot_linear_weights(all_res, mice)
+    plot_model_vs_chance(all_res, mice)
+    plot_linear_weights(all_res, mice)
+    plot_feature_ablation(all_res, mice)
 
-#%% feature ablation
-plot_feature_ablation(all_res, mice)
+    records = _collect_trial_losses(mice, all_res)
+    plot_loss_by_trial_type(records)
+    # plot_loss_by_block(records)
+    # plot_loss_by_trial_position(records)
+    # plot_session_loss_scatter(all_res, mice)
 
-#%% failure analysis
-records = _collect_trial_losses(mice, all_res)
-plot_loss_by_trial_type(records)
-plot_loss_by_block(records)
-plot_loss_by_trial_position(records)
-plot_session_loss_scatter(all_res, mice)
+    # for animal in all_res:
+    #     mouse = mice[animal]
+    #     for sess_idx in range(len(mouse['sessions_data'])):
+    #         print(f"{animal} - {mouse['session_names'][sess_idx]}")
+    #         plot_all_lick_trials(mouse, all_res, sess_idx=sess_idx)
 
-#%% example session
-animal = list(mice.keys())[0]
-plot_session_heatmap(mice[animal], all_res, 'linear', 0)
-plot_all_lick_trials(mice[animal], all_res, sess_idx=0)
+    # hidden unit analysis
+    arch = 'h8'
+    for animal in all_res:
+        mouse = mice[animal]
+        if arch not in all_res[animal]['full_results']:
+            continue
+        print(f'{animal} — hidden unit analysis ({arch})')
+        unit_result = analyse_hidden_units(mouse, all_res, arch)
+        plot_network_schematic(unit_result, animal, arch)
+        plot_unit_summary(unit_result, animal, arch)
+        plot_unit_responses(mouse, all_res, arch, unit_result)
+        plot_unit_ablation_trials(mouse, all_res, arch, unit_result)
+
+
+if __name__ == '__main__':
+    #%% run
+    all_res = load_results()
+    mice = {a: load_mouse(a, all_res) for a in all_res}
+
+    #%% loss comparison
+    plot_model_vs_chance(all_res, mice)
+
+    #%% linear weights
+    plot_linear_weights(all_res, mice)
+
+    #%% feature ablation
+    plot_feature_ablation(all_res, mice)
+
+    #%% failure analysis
+    records = _collect_trial_losses(mice, all_res)
+    plot_loss_by_trial_type(records)
+    plot_loss_by_block(records)
+    plot_loss_by_trial_position(records)
+    plot_session_loss_scatter(all_res, mice)
+
+    #%% example session
+    animal = list(mice.keys())[0]
+    plot_session_heatmap(mice[animal], all_res, 'linear', 0)
+    plot_all_lick_trials(mice[animal], all_res, sess_idx=0)

@@ -3,7 +3,7 @@ plotting for lick prediction model results
 """
 import numpy as np
 import matplotlib.pyplot as plt
-from data.lick_features import FEATURE_COLS
+from lick_pred.features import FEATURE_COLS
 
 
 def plot_calibration(y_true, y_pred, n_bins=10, ax=None):

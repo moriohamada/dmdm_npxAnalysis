@@ -9,7 +9,7 @@ from pathlib import Path
 import pickle
 from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
-from analyses.load_responses import load_psth
+from data.load_responses import load_psth
 from utils.filing import get_response_files
 
 from concurrent.futures import ProcessPoolExecutor

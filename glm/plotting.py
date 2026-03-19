@@ -9,7 +9,7 @@ from pathlib import Path
 sns.set_style("whitegrid")
 
 from config import GLM_OPTIONS, PLOT_OPTIONS
-from analyses.glm import extract_kernels
+from glm.fit import extract_kernels
 
 
 def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,

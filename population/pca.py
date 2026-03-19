@@ -10,7 +10,7 @@ from sklearn.decomposition import PCA
 
 from config import ANALYSIS_OPTIONS, PATHS
 from data.session import Session
-from analyses.load_responses import load_psth_mean
+from data.load_responses import load_psth_mean
 from utils.filing import get_response_files
 from utils.rois import AREA_GROUPS, in_any_area, in_group
 from utils.downsampling import downsample_bins

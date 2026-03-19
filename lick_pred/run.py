@@ -11,9 +11,9 @@ from collections import defaultdict
 
 from config import PATHS, LICK_PRED_OPS
 from data.session import Session
-from data.lick_features import build_session_features
+from lick_pred.features import build_session_features
 from utils.filing import get_session_files
-from analyses.lick_prediction import run_sweep_and_ablation
+from lick_pred.models import run_sweep_and_ablation
 
 
 def _group_sessions_by_mouse(npx_dir, npx_only=False):

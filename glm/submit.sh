@@ -7,4 +7,4 @@
 #SBATCH --mem=4G
 #SBATCH --time=00:30:00
 
-python run_glm_neuron.py --job-index $SLURM_ARRAY_TASK_ID --job-map glm_job_map.csv
+python -m glm.run_neuron --job-index $SLURM_ARRAY_TASK_ID --job-map glm_job_map.csv

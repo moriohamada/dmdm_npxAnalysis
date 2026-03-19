@@ -6,7 +6,7 @@ import numpy as np
 from pathlib import Path
 from config import ANALYSIS_OPTIONS, PATHS
 from utils.filing import get_response_files
-from analyses.preferences import (combine_preference_data, clean_preference_data)
+from single_unit.preferences import (combine_preference_data, clean_preference_data)
 
 
 

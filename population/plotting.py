@@ -14,7 +14,7 @@ from config import ANALYSIS_OPTIONS, PLOT_OPTIONS
 from data.session import Session
 from utils.rois import in_any_area, in_group
 from utils.smoothing import causal_boxcar
-from analyses.dynamical import CONDITIONS
+from population.dynamical import CONDITIONS
 
 COND_LABELS = ['earlyBlock_early', 'lateBlock_early']
 COND_NAMES  = {

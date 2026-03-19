@@ -102,14 +102,38 @@ CONTINUOUS_COLS = (FEATURE_COLS['time_in_trial']
                    + FEATURE_COLS['prev_hit_time'] + FEATURE_COLS['prev_miss_time']
                    + FEATURE_COLS['prev_fa_time'] + FEATURE_COLS['prev_abort_time']
                    + FEATURE_COLS['time_since_reward'] + FEATURE_COLS['trial_num'])
+
+# prev_event_time columns paired with their outcome one-hot gate
+# each entry: (time_col_index, one_hot_col_index)
+PREV_TIME_MASK = [
+    (FEATURE_COLS['prev_hit_time'][0],   FEATURE_COLS['prev_outcome'][0]),
+    (FEATURE_COLS['prev_miss_time'][0],  FEATURE_COLS['prev_outcome'][1]),
+    (FEATURE_COLS['prev_fa_time'][0],    FEATURE_COLS['prev_outcome'][2]),
+    (FEATURE_COLS['prev_abort_time'][0], FEATURE_COLS['prev_outcome'][3]),
+]
 N_FEATURES = N_TF_HIST + 12
+
+# grouped feature sets for ablation analysis
+ABLATION_GROUPS = {
+    'stimulus':      FEATURE_COLS['stimulus'],
+    'time_in_trial': FEATURE_COLS['time_in_trial'],
+    'block':         FEATURE_COLS['block'],
+    'trial_history': (FEATURE_COLS['prev_outcome']
+                      + FEATURE_COLS['prev_hit_time'] + FEATURE_COLS['prev_miss_time']
+                      + FEATURE_COLS['prev_fa_time'] + FEATURE_COLS['prev_abort_time']
+                      + FEATURE_COLS['time_since_reward'] + FEATURE_COLS['trial_num']),
+}
 
 
 def build_trial_features(row, prev_outcome, prev_event_time,
                          time_since_reward, trial_num,
-                         motion_lick_delay=0.0, ops=LICK_PRED_OPS):
+                         motion_lick_delay=0.0, ops=LICK_PRED_OPS,
+                         truncate_at_change=True):
     """
     Build feature matrix X and target vector y for one trial.
+
+    truncate_at_change: if True, cut trial at change frame (for training).
+        if False, extend through change period (for prediction/visualisation).
 
     Returns (X, y, n_bins) or (None, None, 0) if trial should be skipped.
     """
@@ -146,7 +170,7 @@ def build_trial_features(row, prev_outcome, prev_event_time,
         trial_end = len(tf_20hz) * ops['bin_width']
 
     n_bins = max(1, int(trial_end / ops['bin_width']))
-    if change_bin is not None:
+    if truncate_at_change and change_bin is not None:
         n_bins = min(n_bins, change_bin)
     if n_bins < 1:
         return None, None, 0
@@ -192,14 +216,12 @@ def build_trial_features(row, prev_outcome, prev_event_time,
     return X, y, n_bins
 
 
-def build_session_features(session, ops=LICK_PRED_OPS):
+def build_session_features(session, ops=LICK_PRED_OPS, truncate_at_change=True):
     """
-    build feature matrices and targets for all non-abort trials in a session.
+    build feature matrices and targets for all non-abort trials in a session
 
-    Returns:
-        X: (total_bins, 49) feature matrix
-        y: (total_bins,) target vector (lick/no lick, smoothed)
-        trial_ids: (total_bins,) trial index for each bin
+    truncate_at_change: if True, cut at change frame (training).
+        if False, extend through change period (prediction/visualisation).
     """
     Xs, ys, ids = [], [], []
     motion_lick_delay = _compute_motion_lick_delay(session.trials)
@@ -217,7 +239,8 @@ def build_session_features(session, ops=LICK_PRED_OPS):
 
         X, y_tr, n_bins = build_trial_features(
             row, prev_outcome, prev_event_time,
-            time_since_reward, float(tr), motion_lick_delay, ops)
+            time_since_reward, float(tr), motion_lick_delay, ops,
+            truncate_at_change=truncate_at_change)
 
         if X is not None and n_bins > 0:
             Xs.append(X)
@@ -236,9 +259,9 @@ def build_session_features(session, ops=LICK_PRED_OPS):
     return np.vstack(Xs), np.concatenate(ys), np.concatenate(ids)
 
 
-def build_mouse_features(session_paths, ops=LICK_PRED_OPS):
+def build_mouse_features(session_paths, ops=LICK_PRED_OPS, truncate_at_change=True):
     """
-    build features for all sessions of one mouse.
+    build features for all sessions of one mouse
 
     returns
         sessions_data: list of (X, y, trial_ids) tuples per sess
@@ -249,7 +272,8 @@ def build_mouse_features(session_paths, ops=LICK_PRED_OPS):
 
     for path in session_paths:
         sess = Session.load(path)
-        X, y, trial_ids = build_session_features(sess, ops)
+        X, y, trial_ids = build_session_features(sess, ops,
+                                                  truncate_at_change=truncate_at_change)
         if len(X) > 0:
             sessions_data.append((X, y, trial_ids))
             session_names.append(sess.name)

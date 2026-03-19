@@ -24,4 +24,4 @@ NPX_DIR=/ceph/mrsic_flogel/public/projects/MoHa_20260212_dmdmTemporalExpectation
 mkdir -p logs
 
 cd $CODE_DIR
-python -u -m analyses.run_lick_prediction $NPX_DIR $SLURM_ARRAY_TASK_ID
+python -u -m lick_pred.run $NPX_DIR $SLURM_ARRAY_TASK_ID

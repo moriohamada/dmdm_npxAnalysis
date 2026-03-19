@@ -97,7 +97,7 @@ LICK_PRED_OPS = dict(
     max_time_since_reward = 300,       # s; cap for first trial before any reward
 
     # training
-    hidden_sizes    = [8, 16, 32, 64],
+    hidden_sizes    = [8, 16, 32, 64, 128],
     lambdas         = [0, 1e-4, 1e-3, 1e-2],
     lr              = 1e-4,
     batch_size      = 4096,

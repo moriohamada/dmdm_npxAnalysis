@@ -3,7 +3,7 @@ post-hoc script: collect per-neuron GLM results and classify units across all se
 """
 import os
 from config import PATHS
-from analyses.glm import classify_units
+from glm.fit import classify_units
 
 npx_dir = PATHS['npx_dir_local']
 

@@ -8,39 +8,43 @@ extract_session_data(npx_dir_ceph=PATHS['npx_dir_ceph'],
                      n_workers=4)
 
 #%% behavioural model - predict animals' behaviour, identify important variables
-# from analyses.run_lick_prediction import run_lick_prediction
+# from lick_pred.run import run_lick_prediction
 # run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
 #                     overwrite=True)
 
-# local parallelized:
-from config import LICK_PRED_OPS
-from analyses.run_lick_prediction import _group_sessions_by_mouse, run_single_mouse
-from multiprocessing import Pool
+# # local parallelized:
+# from config import LICK_PRED_OPS
+# from lick_pred.run import _group_sessions_by_mouse, run_single_mouse
+# from multiprocessing import Pool
+#
+# ops = {**LICK_PRED_OPS, 'max_epochs': 250, 'patience': 15}
+# save_dir = '/tmp/lick_pred_test'
+#
+# grouped = _group_sessions_by_mouse(PATHS['npx_dir_local'])
+# def _run(args):
+#     animal, paths = args
+#     run_single_mouse(animal, paths, save_dir, ops=ops)
+# with Pool(4) as pool:
+#     pool.map(_run, sorted(grouped.items()))
 
-ops = {**LICK_PRED_OPS, 'max_epochs': 250, 'patience': 15}
-save_dir = '/tmp/lick_pred_test'
+from lick_pred.analysis import run_all_lick_model_analyses
+run_all_lick_model_analyses()
 
-grouped = _group_sessions_by_mouse(PATHS['npx_dir_local'])
-def _run(args):
-    animal, paths = args
-    run_single_mouse(animal, paths, save_dir, ops=ops)
-with Pool(4) as pool:
-    pool.map(_run, sorted(grouped.items()))
 
 #%% plot single unit psths
-from visualisation.psths import plot_all_su_psths
+from single_unit.psths import plot_all_su_psths
 plot_all_su_psths(npx_dir=PATHS['npx_dir_local'],
                   plots_dir=PATHS['plots_dir'],
                   ops=ANALYSIS_OPTIONS,
                   n_workers=10)
 
 #%% Extract TF preference, lick modulation by block/time
-from analyses.preferences import extract_all_unit_preferences
+from single_unit.preferences import extract_all_unit_preferences
 extract_all_unit_preferences(npx_dir=PATHS['npx_dir_local'],
                              ops=ANALYSIS_OPTIONS)
 
 #%% Visualize preferences
-from visualisation.preferences import visualise_all_preferences
+from single_unit.plotting import visualise_all_preferences
 visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
                           save_dir=PATHS['plots_dir'],
                           ops=ANALYSIS_OPTIONS,
@@ -57,12 +61,12 @@ save_downsampled_fr(npx_dir=PATHS['npx_dir_local'],
                     n_workers=4)
 
 #%% PCA
-from analyses.population import extract_pcs
+from population.pca import extract_pcs
 extract_pcs(npx_dir=PATHS['npx_dir_local'],
             ops=ANALYSIS_OPTIONS)
 
 #%% Linear dynamical systems analysis
-from analyses.dynamical import run_lds_analysis
+from population.dynamical import run_lds_analysis
 run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
                  ops=ANALYSIS_OPTIONS,
                  n_workers=4)
@@ -77,7 +81,7 @@ run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
 
 from pathlib import Path
 from utils.filing import get_response_files
-from visualisation.dynamical import plot_session_dynamics
+from population.plotting import plot_session_dynamics
 
 
 psth_paths = get_response_files(PATHS['npx_dir_local'])

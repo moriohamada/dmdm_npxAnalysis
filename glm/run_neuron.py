@@ -5,7 +5,7 @@ usage: python run_glm_neuron.py --job-index 42 --job-map /path/to/glm_job_map.cs
 """
 import argparse
 import pandas as pd
-from analyses.glm import fit_neuron_from_disk
+from glm.fit import fit_neuron_from_disk
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--job-index', type=int, required=True)

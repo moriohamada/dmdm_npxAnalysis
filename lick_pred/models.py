@@ -7,7 +7,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from config import LICK_PRED_OPS
-from data.lick_features import FEATURE_COLS, CONTINUOUS_COLS, N_FEATURES
+from lick_pred.features import (
+    FEATURE_COLS, CONTINUOUS_COLS, N_FEATURES, PREV_TIME_MASK, ABLATION_GROUPS,
+)
 
 
 class LinearLickModel(nn.Module):
@@ -39,18 +41,34 @@ def compute_class_weight(y):
 
 
 def _normalise_features(X_train, X_test):
-    """
-    Z-score continuous features, leave binary/one-hot as-is.
-    Which columns are continuous is defined in data.lick_features.CONTINUOUS_COLS.
+    """z-score continuous features, leave binary/one-hot as-is
+
+    for prev_event_time columns: compute stats from active rows only
+    (where the corresponding outcome one-hot is 1), then zero out inactive rows
     """
     mu = X_train[:, CONTINUOUS_COLS].mean(axis=0)
     sd = X_train[:, CONTINUOUS_COLS].std(axis=0)
     sd[sd == 0] = 1.0
 
+    # override stats for prev_time cols using only active rows
+    for time_col, gate_col in PREV_TIME_MASK:
+        ci = CONTINUOUS_COLS.index(time_col)
+        active = X_train[:, gate_col] == 1
+        if active.sum() > 1:
+            mu[ci] = X_train[active, time_col].mean()
+            sd[ci] = X_train[active, time_col].std()
+            if sd[ci] == 0:
+                sd[ci] = 1.0
+
     X_train = X_train.copy()
     X_test = X_test.copy()
     X_train[:, CONTINUOUS_COLS] = (X_train[:, CONTINUOUS_COLS] - mu) / sd
     X_test[:, CONTINUOUS_COLS] = (X_test[:, CONTINUOUS_COLS] - mu) / sd
+
+    # zero out inactive prev_time columns
+    for time_col, gate_col in PREV_TIME_MASK:
+        X_train[X_train[:, gate_col] == 0, time_col] = 0.0
+        X_test[X_test[:, gate_col] == 0, time_col] = 0.0
 
     return X_train, X_test, mu, sd
 
@@ -200,7 +218,7 @@ def full_cv_with_ablation(sessions_data, model_class, n_hidden=None,
     loss_history = []
     fold_models = []
     fold_norm = []
-    ablation = {name: np.full(n_sessions, np.nan) for name in FEATURE_COLS}
+    ablation = {name: np.full(n_sessions, np.nan) for name in ABLATION_GROUPS}
 
     all_y = np.concatenate([d[1] for d in sessions_data])
     pos_weight = compute_class_weight(all_y)
@@ -220,7 +238,7 @@ def full_cv_with_ablation(sessions_data, model_class, n_hidden=None,
         fold_norm.append((mu, sd))
 
         # zero-out ablation on this fold's held-out session
-        for name, cols in FEATURE_COLS.items():
+        for name, cols in ABLATION_GROUPS.items():
             X_abl = X_test.copy()
             X_abl[:, cols] = 0.0
             ablation[name][i] = evaluate(model, X_abl, y_test, pos_weight) - test_losses[i]
@@ -380,7 +398,7 @@ def ablation_analysis(model, sessions_data, mu, sd, ops=LICK_PRED_OPS):
         baseline_losses[i] = evaluate(model, X_test, sessions_data[i][1], pos_weight)
 
     results = {}
-    for group_name, cols in FEATURE_COLS.items():
+    for group_name, cols in ABLATION_GROUPS.items():
         ablated_losses = np.full(n_sessions, np.nan)
         for i in range(n_sessions):
             X_test = sessions_data[i][0].copy()
