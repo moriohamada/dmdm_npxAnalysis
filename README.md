@@ -1,7 +1,7 @@
 # dmdm neuropixels analysis
 
-(In progress) neuropixels analysis pipeline for dmdm dataset (Khilkevich & Lohse et al., Nature 2024.)
-analysing effects of temporal expectation (early/late hazard-rate blocks). 
+(In progress) neuropixels analysis pipeline for dmdm dataset (Khilkevich & Lohse et al),
+focussing on effects of behavioural and neural correlates of temporal expectation (early/late hazard-rate blocks). 
 
 ## Directory structure
 
@@ -16,7 +16,7 @@ testing_grounds.py   main runner script (run cells top to bottom) - will be chan
 
 ## Pipeline
 
-1. Raw neuropixels data (ceph) - FR matrices + PSTHs (local parquet/HDF5)
+1. Preprocessing raw data files to extract session data, neural responses
 2. Behavioural lick prediction model (logistic regression and neural network)
 3. Unit preferences (TF selectivity, block modulation, lick modulation)
 4. Downsample FR matrices to 50ms bins for population analyses

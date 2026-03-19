@@ -8,10 +8,24 @@ extract_session_data(npx_dir_ceph=PATHS['npx_dir_ceph'],
                      n_workers=4)
 
 #%% behavioural model - predict animals' behaviour, identify important variables
-from analyses.run_lick_prediction import run_lick_prediction
-run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
-                    overwrite=True)
+# from analyses.run_lick_prediction import run_lick_prediction
+# run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
+#                     overwrite=True)
 
+# local parallelized:
+from config import LICK_PRED_OPS
+from analyses.run_lick_prediction import _group_sessions_by_mouse, run_single_mouse
+from multiprocessing import Pool
+
+ops = {**LICK_PRED_OPS, 'max_epochs': 250, 'patience': 15}
+save_dir = '/tmp/lick_pred_test'
+
+grouped = _group_sessions_by_mouse(PATHS['npx_dir_local'])
+def _run(args):
+    animal, paths = args
+    run_single_mouse(animal, paths, save_dir, ops=ops)
+with Pool(4) as pool:
+    pool.map(_run, sorted(grouped.items()))
 
 #%% plot single unit psths
 from visualisation.psths import plot_all_su_psths
