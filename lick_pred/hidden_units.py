@@ -116,8 +116,9 @@ def analyse_hidden_units(mouse, all_res, arch, fold_idx=None):
 #%% plots
 
 def plot_network_schematic(unit_result, animal, arch, save_path='default'):
-    """schematic of the network: hidden units sized by importance, with small
-    input weight profile insets and connections to output coloured by output weight
+    """hidden unit overview: stimulus filter, non-stimulus input weights (vertical
+    bars aligned across units), and a circle sized by importance / coloured by
+    output weight (red = drives licking, blue = suppresses)
     """
     if save_path == 'default':
         os.makedirs(SAVE_DIR, exist_ok=True)
@@ -132,107 +133,85 @@ def plot_network_schematic(unit_result, animal, arch, save_path='default'):
     t_ax = np.arange(N_TF_HIST) * BIN_WIDTH - 2.0
     other_features = _non_stimulus_features()
     other_names = list(other_features.keys())
+    n_other = len(other_names)
 
-    # normalise importance to marker sizes (area), clipping negatives to zero
+    # importance -> circle size, clipping negatives
     imp_clipped = np.clip(importance, 0, None)
     imp_max = imp_clipped.max() if imp_clipped.max() > 0 else 1.0
     imp_norm = imp_clipped / imp_max
-    min_size, max_size = 100, 1500
+    min_size, max_size = 80, 600
 
-    # normalise output weights to a diverging colourmap
+    # output weight -> diverging colourmap
     out_abs_max = max(abs(output_w.min()), abs(output_w.max()), 1e-6)
     cmap = plt.cm.RdBu_r
 
-    # layout: insets on left, network diagram on right
-    fig_height = max(6, 1.2 * n_hidden)
-    fig = plt.figure(figsize=(14, fig_height))
+    # layout: 3 columns per row — [stimulus filter | vertical bars | circle]
+    fig, axes = plt.subplots(
+        n_hidden, 3, figsize=(12, 1.8 * n_hidden),
+        gridspec_kw={'width_ratios': [3, n_other * 0.4, 0.8]})
+    if n_hidden == 1:
+        axes = axes[None, :]
 
-    # network diagram axes (right half)
-    ax_net = fig.add_axes([0.55, 0.08, 0.4, 0.85])
-    ax_net.set_xlim(-0.3, 1.3)
-    ax_net.set_ylim(-0.5, n_hidden - 0.5)
-    ax_net.axis('off')
+    # shared y limits for stimulus filters and bar plots
+    stim_max = np.abs(input_w[:, :N_TF_HIST]).max() * 1.1
+    other_vals = np.array([[input_w[u][other_features[name]].mean()
+                            for name in other_names] for u in range(n_hidden)])
+    bar_max = np.abs(other_vals).max() * 1.1 if np.abs(other_vals).max() > 0 else 1.0
 
-    # hidden unit y positions (ranked by importance, top = most important)
-    unit_y = {order[i]: n_hidden - 1 - i for i in range(n_hidden)}
-    out_x, out_y = 1.0, (n_hidden - 1) / 2
+    for row, unit_idx in enumerate(order):
+        w = input_w[unit_idx]
+        is_bottom = (row == n_hidden - 1)
 
-    # draw connections first (behind nodes)
-    for unit_idx in range(n_hidden):
+        # stimulus filter
+        ax_stim = axes[row, 0]
+        ax_stim.plot(t_ax, w[:N_TF_HIST], linewidth=0.8)
+        ax_stim.axhline(0, color='k', linewidth=0.3)
+        ax_stim.set_ylim(-stim_max, stim_max)
+        ax_stim.set_ylabel(f'unit {unit_idx}', fontsize=7)
+        ax_stim.tick_params(labelsize=6)
+        if is_bottom:
+            ax_stim.set_xlabel('Time before current bin (s)', fontsize=7)
+        else:
+            ax_stim.set_xticklabels([])
+        sns.despine(ax=ax_stim)
+
+        # non-stimulus weights as vertical bars
+        ax_bar = axes[row, 1]
+        vals = [w[other_features[name]].mean() for name in other_names]
+        colours = ['tab:red' if v > 0 else 'tab:blue' for v in vals]
+        ax_bar.bar(range(n_other), vals, color=colours, width=0.7)
+        ax_bar.axhline(0, color='k', linewidth=0.3)
+        ax_bar.set_ylim(-bar_max, bar_max)
+        ax_bar.set_xlim(-0.5, n_other - 0.5)
+        ax_bar.set_yticks([])
+        if is_bottom:
+            ax_bar.set_xticks(range(n_other))
+            ax_bar.set_xticklabels(other_names, rotation=45, ha='right', fontsize=6)
+        else:
+            ax_bar.set_xticks([])
+        sns.despine(ax=ax_bar, left=True)
+
+        # circle: size = importance, colour = output weight
+        ax_circ = axes[row, 2]
+        size = min_size + (max_size - min_size) * imp_norm[unit_idx]
         colour = cmap(0.5 + output_w[unit_idx] / (2 * out_abs_max))
-        linewidth = 0.5 + 2.5 * imp_norm[unit_idx]
-        ax_net.plot([0.0, out_x], [unit_y[unit_idx], out_y],
-                    color=colour, linewidth=linewidth, alpha=0.6, zorder=1)
-
-    # draw hidden unit nodes as circles
-    from matplotlib.patches import Circle
-    # scale radius in data coords
-    y_range = max(n_hidden - 1, 1)
-    max_radius = 0.08 * y_range
-    min_radius = 0.02 * y_range
-
-    for unit_idx in range(n_hidden):
-        r = min_radius + (max_radius - min_radius) * imp_norm[unit_idx]
-        colour = cmap(0.5 + output_w[unit_idx] / (2 * out_abs_max))
-        circ = Circle((0.0, unit_y[unit_idx]), r, facecolor=colour,
-                       edgecolor='k', linewidth=0.5, zorder=2,
-                       transform=ax_net.transData)
-        ax_net.add_patch(circ)
-        ax_net.text(-0.2, unit_y[unit_idx], f'{unit_idx}',
-                    ha='center', va='center', fontsize=7)
-
-    # output node
-    out_r = 0.05 * y_range
-    out_circ = Circle((out_x, out_y), out_r, facecolor='white',
-                       edgecolor='k', linewidth=1.5, zorder=2,
-                       transform=ax_net.transData)
-    ax_net.add_patch(out_circ)
-    ax_net.text(out_x, out_y, 'P(lick)', ha='center', va='center', fontsize=7)
+        ax_circ.scatter(0.5, 0.5, s=size, color=colour,
+                        edgecolor='k', linewidth=0.5)
+        ax_circ.set_xlim(0, 1)
+        ax_circ.set_ylim(0, 1)
+        ax_circ.set_xticks([])
+        ax_circ.set_yticks([])
+        ax_circ.axis('off')
 
     # colourbar for output weight
     sm = plt.cm.ScalarMappable(cmap=cmap,
         norm=plt.Normalize(-out_abs_max, out_abs_max))
-    cbar = fig.colorbar(sm, ax=ax_net, fraction=0.03, pad=0.02, shrink=0.5)
+    cbar = fig.colorbar(sm, ax=axes[:, 2].tolist(), fraction=0.3,
+                        pad=0.1, shrink=0.5)
     cbar.set_label('Output weight', fontsize=8)
 
-    # input weight insets (left half) — one row per unit in importance order
-    inset_left = 0.03
-    stim_width = 0.25
-    other_width = 0.18
-    row_height = 0.85 / n_hidden
-    inset_height = row_height * 0.75
-
-    for rank, unit_idx in enumerate(order):
-        w = input_w[unit_idx]
-        y_bottom = 0.08 + (n_hidden - 1 - rank) * row_height
-
-        # stimulus filter inset
-        ax_stim = fig.add_axes([inset_left, y_bottom, stim_width, inset_height])
-        ax_stim.plot(t_ax, w[:N_TF_HIST], linewidth=0.8)
-        ax_stim.axhline(0, color='k', linewidth=0.3)
-        ax_stim.set_yticks([])
-        if rank == n_hidden - 1:
-            ax_stim.tick_params(labelsize=5)
-        else:
-            ax_stim.set_xticks([])
-        sns.despine(ax=ax_stim, left=True)
-
-        # non-stimulus weights inset
-        ax_other = fig.add_axes([inset_left + stim_width + 0.01,
-                                  y_bottom, other_width, inset_height])
-        vals = [w[other_features[name]].mean() for name in other_names]
-        colours = ['tab:red' if v > 0 else 'tab:blue' for v in vals]
-        ax_other.barh(range(len(other_names)), vals, color=colours, height=0.7)
-        ax_other.axvline(0, color='k', linewidth=0.3)
-        ax_other.set_xticks([])
-        if rank == 0:
-            ax_other.set_yticks(range(len(other_names)))
-            ax_other.set_yticklabels(other_names, fontsize=5)
-        else:
-            ax_other.set_yticks([])
-        sns.despine(ax=ax_other, left=True, bottom=True)
-
     fig.suptitle(f'{animal} — {arch} (fold {unit_result["fold_idx"]})', fontsize=10)
+    plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=400)
     return fig
@@ -414,7 +393,7 @@ def plot_unit_ablation_trials(mouse, all_res, arch, unit_result,
 
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.plot(bins, y[mask], color='grey', alpha=0.4, label='target')
-            ax.plot(bins, y_pred_full[mask], color='k', linewidth=2,
+            ax.plot(bins, y_pred_full[mask], color='tab:red', linewidth=2,
                     label='full model')
 
             for rank, unit_idx in enumerate(order):

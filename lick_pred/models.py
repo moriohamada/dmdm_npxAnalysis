@@ -73,8 +73,19 @@ def _normalise_features(X_train, X_test):
     return X_train, X_test, mu, sd
 
 
+def _ortho_penalty(model):
+    """squared pairwise cosine similarity between hidden unit weight vectors"""
+    if not hasattr(model, 'net'):
+        return 0.0
+    W = model.net[0].weight  # (n_hidden, n_features)
+    W_norm = W / W.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    cos_sim = W_norm @ W_norm.T
+    mask = 1 - torch.eye(cos_sim.shape[0], device=cos_sim.device)
+    return (cos_sim * mask).pow(2).mean()
+
+
 def train_model(model, X_train, y_train, pos_weight,
-                ops=LICK_PRED_OPS, weight_decay=0.0):
+                ops=LICK_PRED_OPS, weight_decay=0.0, lambda_ortho=0.0):
     """
     Train with early stopping on a held-out fraction of training data.
     Returns trained model and training history dict.
@@ -119,6 +130,8 @@ def train_model(model, X_train, y_train, pos_weight,
             optimiser.zero_grad()
             logits = model(X_batch)
             loss = criterion(logits, y_batch)
+            if lambda_ortho > 0:
+                loss = loss + lambda_ortho * _ortho_penalty(model)
             loss.backward()
             optimiser.step()
             epoch_loss += loss.item()
@@ -180,7 +193,8 @@ def _make_model(model_class, n_features, n_hidden=None):
 
 
 def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
-                     weight_decay=0.0, ops=LICK_PRED_OPS, max_epochs=None):
+                     weight_decay=0.0, lambda_ortho=0.0,
+                     ops=LICK_PRED_OPS, max_epochs=None):
     """leave-one-session-out CV, returns (test_losses, loss_history)"""
     n_sessions = len(sessions_data)
     test_losses = np.full(n_sessions, np.nan)
@@ -200,7 +214,8 @@ def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
 
         model = _make_model(model_class, X_train.shape[1], n_hidden)
         model, hist = train_model(model, X_train, y_train, pos_weight,
-                                   ops=ops, weight_decay=weight_decay)
+                                   ops=ops, weight_decay=weight_decay,
+                                   lambda_ortho=lambda_ortho)
         test_losses[i] = evaluate(model, X_test, y_test, pos_weight)
         loss_history.append(hist)
 
@@ -208,7 +223,8 @@ def leave_one_out_cv(sessions_data, model_class, n_hidden=None,
 
 
 def full_cv_with_ablation(sessions_data, model_class, n_hidden=None,
-                          weight_decay=0.0, ops=LICK_PRED_OPS):
+                          weight_decay=0.0, lambda_ortho=0.0,
+                          ops=LICK_PRED_OPS):
     """
     leave-one-session-out CV with full training, per-fold model saving,
     and zero-out ablation on each fold's held-out session
@@ -231,7 +247,8 @@ def full_cv_with_ablation(sessions_data, model_class, n_hidden=None,
 
         model = _make_model(model_class, X_train.shape[1], n_hidden)
         model, hist = train_model(model, X_train, y_train, pos_weight,
-                                   ops=ops, weight_decay=weight_decay)
+                                   ops=ops, weight_decay=weight_decay,
+                                   lambda_ortho=lambda_ortho)
         test_losses[i] = evaluate(model, X_test, y_test, pos_weight)
         loss_history.append(hist)
         fold_models.append({k: v.cpu().clone() for k, v in model.state_dict().items()})
@@ -315,13 +332,13 @@ def run_sweep_and_ablation(sessions_data, ops=LICK_PRED_OPS, save_dir=None):
             _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
 
     for nh in ops['hidden_sizes']:
-        for wd in ops['lambdas']:
-            key = f'network_h{nh}_lambda{wd}'
+        for lo in ops.get('ortho_lambdas', ops['lambdas']):
+            key = f'network_h{nh}_ortho{lo}'
             losses, loss_history = leave_one_out_cv(
-                sessions_data, NetworkLickModel, n_hidden=nh, weight_decay=wd,
-                ops=ops, max_epochs=sweep_epochs)
+                sessions_data, NetworkLickModel, n_hidden=nh,
+                lambda_ortho=lo, ops=ops, max_epochs=sweep_epochs)
             sweep_results[key] = dict(
-                model='network', n_hidden=nh, weight_decay=wd,
+                model='network', n_hidden=nh, lambda_ortho=lo,
                 test_losses=losses, mean_loss=np.nanmean(losses))
             print(f'    {key}: mean_loss={np.nanmean(losses):.4f}')
             if save_dir:
@@ -342,7 +359,9 @@ def run_sweep_and_ablation(sessions_data, ops=LICK_PRED_OPS, save_dir=None):
 
         cv = full_cv_with_ablation(
             sessions_data, model_class, n_hidden=n_hidden,
-            weight_decay=cfg['weight_decay'], ops=ops)
+            weight_decay=cfg.get('weight_decay', 0.0),
+            lambda_ortho=cfg.get('lambda_ortho', 0.0),
+            ops=ops)
 
         full_results[arch] = dict(
             config_key=config_key,

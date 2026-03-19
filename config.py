@@ -89,7 +89,7 @@ LICK_PRED_OPS = dict(
     tf_subsample    = 3,               # subsample raw 60Hz TF by this factor
 
     # target
-    lick_sigma_bins   = 2,             # gaussian kernel sigma in bins
+    lick_sigma_bins   = 3,             # gaussian kernel sigma in bins
     lick_extend_bins  = 5,             # extend trial 250ms past lick
     response_window   = 2.15,          # s; task response window after change onset
 
@@ -97,8 +97,9 @@ LICK_PRED_OPS = dict(
     max_time_since_reward = 300,       # s; cap for first trial before any reward
 
     # training
-    hidden_sizes    = [8, 16, 32, 64, 128],
-    lambdas         = [0, 1e-4, 1e-3, 1e-2],
+    hidden_sizes    = [8, 16, 32],
+    lambdas         = [0, 1e-3, 1e-2],       # weight decay for linear model
+    ortho_lambdas   = [0, 1e-3, 1e-2, 1e-1, 1.0],  # orthogonality penalty for networks
     lr              = 1e-4,
     batch_size      = 4096,
     max_epochs      = 800,
