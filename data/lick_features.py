@@ -98,7 +98,7 @@ FEATURE_COLS = {
     'time_since_reward':   [N_TF_HIST + 10],
     'trial_num':           [N_TF_HIST + 11],
 }
-CONTINUOUS_COLS = (FEATURE_COLS['stimulus'] + FEATURE_COLS['time_in_trial']
+CONTINUOUS_COLS = (FEATURE_COLS['time_in_trial']
                    + FEATURE_COLS['prev_hit_time'] + FEATURE_COLS['prev_miss_time']
                    + FEATURE_COLS['prev_fa_time'] + FEATURE_COLS['prev_abort_time']
                    + FEATURE_COLS['time_since_reward'] + FEATURE_COLS['trial_num'])
