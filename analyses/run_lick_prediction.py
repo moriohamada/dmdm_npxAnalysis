@@ -13,11 +13,7 @@ from config import PATHS, LICK_PRED_OPS
 from data.session import Session
 from data.lick_features import build_session_features
 from utils.filing import get_session_files
-from analyses.lick_prediction import (
-    hyperparameter_sweep, leave_one_out_cv,
-    LinearLickModel, NetworkLickModel,
-    fit_best_model, ablation_analysis, extract_stimulus_filter,
-)
+from analyses.lick_prediction import run_sweep_and_ablation
 
 
 def _group_sessions_by_mouse(npx_dir, npx_only=False):
@@ -27,29 +23,6 @@ def _group_sessions_by_mouse(npx_dir, npx_only=False):
         animal = Path(p).parent.parent.name
         grouped[animal].append(p)
     return dict(grouped)
-
-
-def run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
-                        ops=LICK_PRED_OPS,
-                        save_dir=None,
-                        npx_only=False,
-                        overwrite=False):
-    """
-    run lick prediction for all mice
-    saves results and model weights per mouse as pickle + .pt files
-    """
-    if save_dir is None:
-        save_dir = os.path.join(npx_dir, 'lick_prediction')
-    os.makedirs(save_dir, exist_ok=True)
-
-    grouped = _group_sessions_by_mouse(npx_dir, npx_only=npx_only)
-
-    for animal, sess_paths in grouped.items():
-        save_path = os.path.join(save_dir, f'{animal}_lick_pred.pkl')
-        if not overwrite and os.path.exists(save_path):
-            print(f'\n===== {animal}: already done, skipping =====')
-            continue
-        run_single_mouse(animal, sess_paths, save_dir, ops)
 
 
 def run_single_mouse(animal, sess_paths, save_dir, ops=LICK_PRED_OPS):
@@ -71,36 +44,53 @@ def run_single_mouse(animal, sess_paths, save_dir, ops=LICK_PRED_OPS):
         print(f'  Skipping {animal}: too few sessions')
         return
 
-    print(f'  Running hyperparameter sweep...')
     loss_curve_dir = os.path.join(save_dir, animal, 'loss_curves')
     os.makedirs(loss_curve_dir, exist_ok=True)
-    sweep_results = hyperparameter_sweep(sessions_data, ops,
-                                          save_dir=loss_curve_dir)
 
-    model, mu, sd, best_key = fit_best_model(sessions_data, sweep_results, ops)
-
-    print(f'  Running ablation analysis...')
-    ablation, baseline_losses = ablation_analysis(
-        model, sessions_data, mu, sd, ops)
+    sweep_results, full_results = run_sweep_and_ablation(
+        sessions_data, ops, save_dir=loss_curve_dir)
 
     result = dict(
         animal=animal,
         session_names=session_names,
         sweep_results=sweep_results,
-        best_config=best_key,
-        ablation=ablation,
-        baseline_losses=baseline_losses,
-        norm_mu=mu,
-        norm_sd=sd,
+        full_results=full_results,
     )
 
     save_path = os.path.join(save_dir, f'{animal}_lick_pred.pkl')
     with open(save_path, 'wb') as f:
         pickle.dump(result, f)
 
-    model_path = os.path.join(save_dir, f'{animal}_model.pt')
-    torch.save(model.state_dict(), model_path)
+    # save per-architecture model weights (from each fold)
+    for arch, fr in full_results.items():
+        for i, state_dict in enumerate(fr['fold_models']):
+            model_path = os.path.join(save_dir, f'{animal}_{arch}_fold{i}.pt')
+            torch.save(state_dict, model_path)
+
     print(f'  Saved to {save_path}')
+
+
+def run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
+                        ops=LICK_PRED_OPS,
+                        save_dir=None,
+                        npx_only=False,
+                        overwrite=True):
+    """
+    run lick prediction for all mice
+    saves results and model weights per mouse as pickle + .pt files
+    """
+    if save_dir is None:
+        save_dir = os.path.join(npx_dir, 'lick_prediction')
+    os.makedirs(save_dir, exist_ok=True)
+
+    grouped = _group_sessions_by_mouse(npx_dir, npx_only=npx_only)
+
+    for animal, sess_paths in grouped.items():
+        save_path = os.path.join(save_dir, f'{animal}_lick_pred.pkl')
+        if not overwrite and os.path.exists(save_path):
+            print(f'\n===== {animal}: already done, skipping =====')
+            continue
+        run_single_mouse(animal, sess_paths, save_dir, ops)
 
 
 if __name__ == '__main__':
