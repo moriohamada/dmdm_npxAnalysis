@@ -115,30 +115,29 @@ for psth_path in psth_paths:
 #                             ops=ANALYSIS_OPTIONS,
 #                             save_path=str(save_path))
 
-#%% SAE
+#%% Demixing (SAE / LFADS)
+import numpy as np
+from config import DEMIXING_OPTIONS
+from data.session import Session
+from utils.filing import load_fr_matrix
+from demixing.dataset import SpikeData
+from demixing.models import SAE
+from demixing.train import train as train_demixing
+from demixing.analysis import extract_latents
+from demixing.plotting import plot_latent_psths
 
+sess_dir = Path(PATHS['npx_dir_local']) / '1116764' / 'ML_1116764_S01_V1'
+session = Session.load(str(sess_dir / 'session.pkl'))
+fr = load_fr_matrix(str(sess_dir / 'FR_matrix.parquet'))
 
-# #%%
-#
-# import os
-# import pickle
-#
-# npx_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/'
-#
-# all_areas = set()
-# for subj in os.listdir(npx_dir):
-#   subj_dir = os.path.join(npx_dir, subj)
-#   if not os.path.isdir(subj_dir):
-#       continue
-#   for sess in os.listdir(subj_dir):
-#       pkl_path = os.path.join(subj_dir, sess, 'session.pkl')
-#       if not os.path.exists(pkl_path):
-#           continue
-#       with open(pkl_path, 'rb') as f:
-#           s = pickle.load(f)
-#       if s.unit_info is not None:
-#           all_areas.update(s.unit_info['brain_region_comb'].values)
-#
-# for a in sorted(all_areas):
-#   print(a)
+dataset = SpikeData(session, fr)
+n_neurons = dataset.X.shape[0]
+n_latent = int(np.round(n_neurons * DEMIXING_OPTIONS['latent_factor']))
+model = SAE(n_neurons=n_neurons, latent_dim=n_latent)
+
+losses = train_demixing(dataset, model, ops=DEMIXING_OPTIONS)
+
+#%%
+z = extract_latents(dataset, model)
+fig = plot_latent_psths(z, dataset, session, ops=ANALYSIS_OPTIONS)
 

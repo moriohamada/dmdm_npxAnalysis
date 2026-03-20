@@ -111,6 +111,20 @@ LICK_PRED_OPS = dict(
     val_frac        = 0.1,             # fraction of training trials for early stopping
 )
 
+DEMIXING_OPTIONS = dict(
+    latent_factor = .25,              # latent dim as fraction of n_neurons
+    rnn_dim       = 100,              # RNN hidden size (CausalLFADS only)
+
+    loss        = 'MSE',
+    l1_weight   = 5,
+    orth_weight = 0,
+    lr          = 1e-4,
+    optimizer   = 'Adam',
+    epochs      = 500,
+    batch_size  = 10,
+    test_frac   = 0.2,
+)
+
 PLOT_OPTIONS = dict(
     colours = dict(
         block = {
