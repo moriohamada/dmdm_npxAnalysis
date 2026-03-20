@@ -47,7 +47,7 @@ def get_event_aligned_responses(
 
     # Baseline onset
     resp_win = (-1 - buf, 2)
-    valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around'])
+    valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around_bl'])
     non_trans = session.bl_onsets['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block  = (session.bl_onsets['block'] == 'early') & non_trans
     l_block  = (session.bl_onsets['block'] == 'late')  & non_trans
@@ -60,7 +60,7 @@ def get_event_aligned_responses(
 
     # Long baseline
     resp_win = (-1 - buf, 5)
-    valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around'])
+    valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around_bl'])
 
     for key, mask in {'early': e_block, 'late': l_block}.items():
         psths['bl'][key], t_ax['bl'] = psth_fn(
@@ -73,13 +73,13 @@ def get_event_aligned_responses(
     non_trans = session.tf_pulses['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block   = (session.tf_pulses['block'] == 'early') & non_trans
     l_block   = (session.tf_pulses['block'] == 'late')  & non_trans
-    early_tr  = ((session.tf_pulses['tr_time'] > ops['rmv_time_around']) &
+    early_tr  = ((session.tf_pulses['tr_time'] > ops['rmv_time_around_bl']) &
                  (session.tf_pulses['tr_time'] < ops['tr_split_time']))
     late_tr   = session.tf_pulses['tr_time'] > ops['tr_split_time']
     t_to_event = np.fmin(session.tf_pulses['time_to_lick'],
                          session.tf_pulses['time_to_abort'])
-    valid     = ((session.tf_pulses['tr_time'] > ops['rmv_time_around']) &
-                 (t_to_event > ops['rmv_time_around']))
+    valid     = ((session.tf_pulses['tr_time'] > ops['rmv_time_around_bl']) &
+                 (t_to_event > ops['rmv_time_around_move']))
     pos       = session.tf_pulses['tf'] > 0
 
     tf_conditions = {
@@ -126,7 +126,7 @@ def get_event_aligned_responses(
     non_trans = session.lick_times['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block = (session.lick_times['block'] == 'early') & non_trans
     l_block = (session.lick_times['block'] == 'late') & non_trans
-    early_tr = ((session.lick_times['tr_time'] > ops['rmv_time_around']) &
+    early_tr = ((session.lick_times['tr_time'] > ops['rmv_time_around_bl']) &
                 (session.lick_times['tr_time'] < ops['tr_split_time']))
     late_tr = session.lick_times['tr_time'] > ops['tr_split_time']
     hit = session.lick_times['is_hit'] == 1

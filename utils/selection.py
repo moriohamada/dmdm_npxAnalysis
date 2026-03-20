@@ -57,26 +57,26 @@ def _get_lick_mask_old(session, t_ax, buffer):
     return mask
 
 
-def _get_exclusion_mask(session, t_ax, buffer):
-    """Boolean mask (T,): False for bins within `buffer` of any lick, abort,
-    or baseline onset."""
+def _get_exclusion_mask(session, t_ax, buffer_bl, buffer_move):
+    """Boolean mask (T,): False for bins within buffer_bl of any baseline onset
+    or within buffer_move of any lick/abort"""
     mask = np.ones(len(t_ax), dtype=bool)
 
     for _, row in session.trials.iterrows():
         bl_on = row['Baseline_ON_rise']
 
         # exclude around baseline onset
-        mask &= np.abs(t_ax - bl_on) > buffer
+        mask &= np.abs(t_ax - bl_on) > buffer_bl
 
         # exclude around lick (rt_FA relative to baseline onset)
         if not np.isnan(row.get('rt_FA', np.nan)):
             lick_t = bl_on + row['rt_FA']
-            mask &= np.abs(t_ax - lick_t) > buffer
+            mask &= np.abs(t_ax - lick_t) > buffer_move
 
         # exclude around abort (rt_abort relative to baseline onset)
         if not np.isnan(row.get('rt_abort', np.nan)):
             abort_t = bl_on + row['rt_abort']
-            mask &= np.abs(t_ax - abort_t) > buffer
+            mask &= np.abs(t_ax - abort_t) > buffer_move
 
     return mask
 
@@ -102,7 +102,7 @@ def get_condition_mask(session, t_ax, condition, ops, trial_indices=None):
             continue
 
         bl_on = row['Baseline_ON_rise']
-        tr_time_start = bl_on + ops['rmv_time_around']
+        tr_time_start = bl_on + ops['rmv_time_around_bl']
 
         if cond['time'] == 'early':
             tr_time_end = bl_on + ops['tr_split_time']
@@ -116,5 +116,7 @@ def get_condition_mask(session, t_ax, condition, ops, trial_indices=None):
 
         mask |= (t_ax >= tr_time_start) & (t_ax < tr_time_end)
 
-    mask &= _get_exclusion_mask(session, t_ax, ops['rmv_time_around'])
+    mask &= _get_exclusion_mask(session, t_ax,
+                                ops['rmv_time_around_bl'],
+                                ops['rmv_time_around_move'])
     return mask

@@ -13,7 +13,8 @@ from demixing.analysis import (
 def plot_latent_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS):
     """quick overview: trial onset, TF outliers, change onset, lick onset"""
     ign = ops['ignore_first_trials_in_block']
-    rmv = ops['rmv_time_around']
+    rmv_move = ops['rmv_time_around_move']
+    rmv_bl = ops['rmv_time_around_bl']
 
     onset, t_onset = align_to_baseline_onset(z_all, dataset, session,
                                               pre_s=1.0, post_s=2.0,
@@ -21,8 +22,8 @@ def plot_latent_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS):
     tf_dict, t_tf = align_to_tf_outliers(z_all, dataset, session,
                                           pre_s=0.5, post_s=1.5,
                                           tr_in_block_min=ign,
-                                          rmv_near_response=rmv,
-                                          tr_time_range=(1.5, 8))
+                                          rmv_near_response=rmv_move,
+                                          tr_time_range=(rmv_bl, 8))
     change, t_ch = align_to_change_onset(z_all, dataset, session,
                                           pre_s=0.5, post_s=1.5,
                                           tr_in_block_min=ign)
@@ -104,12 +105,13 @@ def plot_tf_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                   pre_s=0.5, post_s=1.5):
     """TF outlier PSTHs: 3 columns (earlyBlock_early, lateBlock_early, lateBlock_late)"""
     ign = ops['ignore_first_trials_in_block']
-    rmv = ops['rmv_time_around']
+    rmv_move = ops['rmv_time_around_move']
+    rmv_bl = ops['rmv_time_around_bl']
     split = ops['tr_split_time']
 
     conditions = {
-        'Early block\n(early trial)': dict(block='early', tr_time_range=(rmv, split)),
-        'Late block\n(early trial)':  dict(block='late',  tr_time_range=(rmv, split)),
+        'Early block\n(early trial)': dict(block='early', tr_time_range=(rmv_bl, split)),
+        'Late block\n(early trial)':  dict(block='late',  tr_time_range=(rmv_bl, split)),
         'Late block\n(late trial)':   dict(block='late',  tr_time_range=(split, np.inf)),
     }
 
@@ -123,7 +125,7 @@ def plot_tf_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
         tf_dict, t = align_to_tf_outliers(
             z_all, dataset, session,
             pre_s=pre_s, post_s=post_s,
-            tr_in_block_min=ign, rmv_near_response=rmv, **kw)
+            tr_in_block_min=ign, rmv_near_response=rmv_move, **kw)
 
         for lat in range(n_latent):
             ax = axes[lat, col]
@@ -221,12 +223,12 @@ def plot_lick_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                     pre_s=1.5, post_s=0.5):
     """lick onset PSTHs: 3 columns, hit vs FA overlay"""
     ign = ops['ignore_first_trials_in_block']
-    rmv = ops['rmv_time_around']
+    rmv_bl = ops['rmv_time_around_bl']
     split = ops['tr_split_time']
 
     conditions = {
-        'Early block\n(early trial)': dict(block='early', tr_time_range=(rmv, split)),
-        'Late block\n(early trial)':  dict(block='late',  tr_time_range=(rmv, split)),
+        'Early block\n(early trial)': dict(block='early', tr_time_range=(rmv_bl, split)),
+        'Late block\n(early trial)':  dict(block='late',  tr_time_range=(rmv_bl, split)),
         'Late block\n(late trial)':   dict(block='late',  tr_time_range=(split, np.inf)),
     }
 

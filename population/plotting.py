@@ -594,6 +594,25 @@ def plot_pc_psths(sess_dir, pca_key='event_all', ops=ANALYSIS_OPTIONS, save_dir=
         var_explained = f[pca_key]['var_explained'][:]
 
     projected, t_axes = _load_all_projected(psth_path, area_mask, weights, ds_factor)
+
+    # trim resp_buffer and smooth
+    buf = ops.get('resp_buffer', 0)
+    ds_bin_s = ops['pop_bin_width']
+    for ev_type in list(t_axes.keys()):
+        t = t_axes[ev_type]
+        trim = t >= t[0] + buf
+        t_axes[ev_type] = t[trim]
+
+        ev_proj = projected.get(ev_type, {})
+        short = ('tf', 'blOn')
+        sm_key = 'smooth_window_short' if ev_type in short else 'smooth_window_long'
+        sm_bins = max(1, int(round(PLOT_OPTIONS[sm_key] / ds_bin_s)))
+
+        for cond in ev_proj:
+            data = ev_proj[cond]  # (nEv, n_pcs, nT)
+            data = causal_boxcar(data, sm_bins, axis=-1)
+            ev_proj[cond] = data[:, :, trim]
+
     bl_proj = projected.get('bl', {})
     tf_proj = projected.get('tf', {})
     ch_proj = projected.get('ch', {})

@@ -15,7 +15,8 @@ ANALYSIS_OPTIONS = dict(
     tf_outlier = 1.0,                 # std deviations away from mean to consider an outlier
 
     min_trial_dur   = 2.0,            # s; minimum trial duration
-    rmv_time_around = 1.0,            # s; remove this time around events
+    rmv_time_around_move = 1.5,       # s; remove this time around aborts/licks
+    rmv_time_around_bl = 1.0,         # s; remove this time from baseline.
 
     min_hits_in_session = 30,         # trials; ignore sessions with fewer hits than this
     ignore_first_trials_in_block = 5, # trials; ignroe first n trials after a new block
@@ -112,8 +113,9 @@ LICK_PRED_OPS = dict(
 )
 
 DEMIXING_OPTIONS = dict(
-    latent_factor = .25,              # latent dim as fraction of n_neurons
-    rnn_dim       = 100,              # RNN hidden size (CausalLFADS only)
+    model_type = 'sae',               # 'sae' or 'lfads'
+    latent_dim = 20,                  # number of latent dimensions
+    rnn_dim    = 100,                 # RNN hidden size (CausalLFADS only)
 
     loss        = 'MSE',
     l1_weight   = 5,
@@ -144,3 +146,39 @@ PLOT_OPTIONS = dict(
     smooth_window_long  = 500 / 1000,  # s; causal boxcar window for long trajectories
     # (bl, lick)
 )
+
+import numpy as np
+
+BEHAVIOUR_PATHS = dict(
+    by_subj = '/media/morio/Data_Fast/dmdm_temporalExpectation/by_subj/',
+    behaviour_mat = '/media/morio/Data_Fast/dmdm_temporalExpectation/behaviour_extended.mat',
+)
+
+BEHAVIOUR_PARAMS = dict(
+    change_tfs    = [1, 1.25, 1.35, 1.5, 2, 4],
+    change_wins   = {'early': [3, 8], 'late': [10.5, 15.5]},
+    exp_change_time    = 8,              # s; split trial into early and late
+    ignore_trial_start = 2,              # s; ignore FAs in first seconds of trial
+    min_trial_dur      = 2,              # s
+    rmv_time_around    = 1.5,            # s
+
+    min_hits_in_session       = 30,
+    ignore_first_sessions     = 2,       # ignore first N sessions after introducing blocks
+    ignore_first_block_trials = 5,
+
+    smooth_tf          = 5,              # samples; moving average for lick-triggered analyses
+    frame_rate         = 60,
+    tf_sample_step     = 3,              # subsample every 3 frames
+    tf_sample_rate     = 20,             # Hz; = 60/3
+    n_pre_lick_samples = 40,             # 2s at 20Hz
+
+    hazard_bin_size = 0.5,               # s
+    hazard_bin_step = 0.1,               # s
+
+    tf_pulse_bin_centres = np.arange(-1, 1, .025),
+    tf_pulse_bin_width   = 0.1,          # octaves
+    tf_pulse_lick_win    = [0.2, 1.5],   # s; time after TF pulse to count as 'licked'
+
+    sig_thresh = 0.05,
+)
+

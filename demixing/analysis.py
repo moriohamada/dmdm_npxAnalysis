@@ -4,9 +4,24 @@ extracting and aligning latent representations from demixing models
 import numpy as np
 import pandas as pd
 import torch
+import h5py
+from pathlib import Path
+from dataclasses import dataclass
 from torch.utils.data import DataLoader
 from demixing.dataset import SpikeData, collate_trials
 from demixing.models import SAE
+
+
+@dataclass
+class LatentData:
+    """lightweight stand-in for SpikeData when working from saved latents"""
+    z_all: list         # list of (T_i, latent_dim) arrays
+    trial_ids: list
+    t_axes: dict        # trial_id -> (T_i,) time axis
+    bin_size_ms: float
+
+    def get_trial_t_ax(self, trial_id):
+        return self.t_axes[trial_id]
 
 
 def extract_latents(dataset, model, batch_size=1):
@@ -27,12 +42,44 @@ def extract_latents(dataset, model, batch_size=1):
     return z_all
 
 
+def save_latents(z_all, dataset, model_type, save_path):
+    """save per-trial latents + time axes to HDF5"""
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(save_path, 'w') as f:
+        lat_grp = f.create_group('latents')
+        tax_grp = f.create_group('t_ax')
+        for i, tid in enumerate(dataset.trial_ids):
+            lat_grp.create_dataset(str(tid), data=z_all[i])
+            tax_grp.create_dataset(str(tid), data=dataset.get_trial_t_ax(tid))
+        f.create_dataset('trial_ids', data=np.array(dataset.trial_ids))
+        f.attrs['bin_size_ms'] = dataset.bin_size_ms
+        f.attrs['latent_dim'] = z_all[0].shape[1]
+        f.attrs['model_type'] = model_type
+
+
+def load_latents(sess_dir, model_type='sae'):
+    """load saved latents into a LatentData object"""
+    path = Path(sess_dir) / f'demixing_{model_type}_latents.h5'
+    with h5py.File(path, 'r') as f:
+        trial_ids = f['trial_ids'][:].tolist()
+        z_all = [f[f'latents/{tid}'][:] for tid in trial_ids]
+        t_axes = {tid: f[f't_ax/{tid}'][:] for tid in trial_ids}
+        bin_size_ms = f.attrs['bin_size_ms']
+
+    return LatentData(z_all=z_all, trial_ids=trial_ids,
+                      t_axes=t_axes, bin_size_ms=bin_size_ms)
+
+
 #%% generic alignment
 
 def align_latents_to_events(z_all, dataset, event_times, event_trials,
                             pre_s=0.5, post_s=1.5):
     """
     align per-trial latent trajectories to arbitrary events.
+    dataset can be a SpikeData or LatentData (anything with trial_ids,
+    bin_size_ms, get_trial_t_ax).
     returns (n_valid, pre+post bins, latent_dim) array and time axis.
     """
     bin_s = dataset.bin_size_ms / 1000.0
