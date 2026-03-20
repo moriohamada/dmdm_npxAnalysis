@@ -167,10 +167,10 @@ def plot_network_schematic(unit_result, animal, arch, save_path='default'):
         ax_stim.plot(t_ax, w[:N_TF_HIST], linewidth=0.8)
         ax_stim.axhline(0, color='k', linewidth=0.3)
         ax_stim.set_ylim(-stim_max, stim_max)
-        ax_stim.set_ylabel(f'unit {unit_idx}', fontsize=7)
-        ax_stim.tick_params(labelsize=6)
+        ax_stim.set_ylabel(f'unit {unit_idx}', fontsize=12)
+        ax_stim.tick_params(labelsize=9)
         if is_bottom:
-            ax_stim.set_xlabel('Time before current bin (s)', fontsize=7)
+            ax_stim.set_xlabel('Time before current bin (s)', fontsize=12)
         else:
             ax_stim.set_xticklabels([])
         sns.despine(ax=ax_stim)
@@ -186,7 +186,7 @@ def plot_network_schematic(unit_result, animal, arch, save_path='default'):
         ax_bar.set_yticks([])
         if is_bottom:
             ax_bar.set_xticks(range(n_other))
-            ax_bar.set_xticklabels(other_names, rotation=45, ha='right', fontsize=6)
+            ax_bar.set_xticklabels(other_names, rotation=45, ha='right', fontsize=10)
         else:
             ax_bar.set_xticks([])
         sns.despine(ax=ax_bar, left=True)
@@ -208,9 +208,9 @@ def plot_network_schematic(unit_result, animal, arch, save_path='default'):
         norm=plt.Normalize(-out_abs_max, out_abs_max))
     cbar = fig.colorbar(sm, ax=axes[:, 2].tolist(), fraction=0.3,
                         pad=0.1, shrink=0.5)
-    cbar.set_label('Output weight', fontsize=8)
+    cbar.set_label('Output weight', fontsize=12)
 
-    fig.suptitle(f'{animal} — {arch} (fold {unit_result["fold_idx"]})', fontsize=10)
+    fig.suptitle(f'{animal} — {arch} (fold {unit_result["fold_idx"]})', fontsize=14)
     plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=400)
@@ -406,11 +406,12 @@ def plot_unit_ablation_trials(mouse, all_res, arch, unit_result,
             ax.set_title(f'Trial {int(tr)} ({outcome})')
             ax.set_xlabel('Time in trial (s)')
             ax.set_ylabel('P(lick)')
-            ax.legend(fontsize=6, loc='upper right')
+            ax.legend(fontsize=6, bbox_to_anchor=(1.02, 1), loc='upper left',
+                      borderaxespad=0)
             sns.despine(ax=ax)
             fig.tight_layout()
 
-            pdf.savefig(fig)
+            pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
 
     print(f'Saved {len(all_trial_ids)} trial plots to {save_path}')

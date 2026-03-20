@@ -216,10 +216,34 @@ def plot_model_vs_chance(all_res, mice, save_path='default'):
     animals = sorted(mice.keys())
 
     # collect all network architectures across mice (sorted by hidden size)
-    net_archs = sorted({k for a in animals
-                        for k in all_res[a]['full_results'] if k != 'linear'},
-                       key=lambda k: int(k[1:]))
-    labels = ['perfect', 'chance', 'linear'] + net_archs
+    net_keys = {k for a in animals
+                for k in all_res[a]['full_results'] if k != 'linear'}
+    # sort by numeric part if present, otherwise alphabetically
+    def _arch_sort_key(k):
+        digits = ''.join(c for c in k if c.isdigit())
+        return int(digits) if digits else 0
+    net_archs = sorted(net_keys, key=_arch_sort_key)
+
+    # build labels with config info (e.g. "h8\northo=0.01")
+    def _net_label(arch):
+        for a in animals:
+            fr = all_res[a]['full_results']
+            if arch in fr:
+                return fr[arch].get('config_key', arch)
+        return arch
+    net_labels = []
+    for arch in net_archs:
+        cfg_key = _net_label(arch)
+        # extract ortho/lambda from config key for display
+        parts = [arch]
+        if 'ortho' in cfg_key:
+            val = cfg_key.split('ortho')[-1]
+            parts.append(f'ortho={val}')
+        elif 'lambda' in cfg_key:
+            val = cfg_key.split('lambda')[-1]
+            parts.append(f'wd={val}')
+        net_labels.append('\n'.join(parts))
+    labels = ['perfect', 'chance', 'linear'] + net_labels
     x = np.arange(len(labels))
 
     per_mouse = []
@@ -495,7 +519,8 @@ def plot_trial_detail(trial_idx, X_raw, X_norm, y,
     if y_pred_net is not None:
         ax_pred.plot(bins, y_pred_net[mask], label=net_label, color='tab:red')
     ax_pred.set_ylabel('P(lick)')
-    ax_pred.legend(fontsize=8)
+    ax_pred.legend(fontsize=8, bbox_to_anchor=(1.02, 1), loc='upper left',
+                   borderaxespad=0)
     ax_pred.set_xlim(bins[0], bins[-1])
 
     # row 3: time-varying logit contributions (linear)
@@ -509,7 +534,8 @@ def plot_trial_detail(trial_idx, X_raw, X_norm, y,
 
     ax_time.axhline(0, color='grey', linewidth=0.5)
     ax_time.set_ylabel('Logit (linear)')
-    ax_time.legend(fontsize=8)
+    ax_time.legend(fontsize=8, bbox_to_anchor=(1.02, 1), loc='upper left',
+                   borderaxespad=0)
     ax_time.set_xlim(bins[0], bins[-1])
 
     # row 4: constant contributions bar (linear)
@@ -536,7 +562,8 @@ def plot_trial_detail(trial_idx, X_raw, X_norm, y,
             ax_abl.plot(bins, y_abl[mask], label=f'no {group_name}',
                         color=ABLATION_COLOURS[group_name], linestyle='--')
         ax_abl.set_ylabel('P(lick)')
-        ax_abl.legend(fontsize=7)
+        ax_abl.legend(fontsize=7, bbox_to_anchor=(1.02, 1), loc='upper left',
+                      borderaxespad=0)
     else:
         ax_abl.set_visible(False)
     ax_abl.set_xlabel('Time in trial (s)')
@@ -613,7 +640,7 @@ def plot_all_lick_trials(mouse, all_res, sess_idx,
                                     net_label=best_net or 'network')
             if fig is None:
                 continue
-            pdf.savefig(fig)
+            pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
 
     print(f'Saved {len(all_trial_ids)} trial plots to {save_path}')
@@ -795,19 +822,23 @@ def run_all_lick_model_analyses(results_dir=None):
 
     plot_model_vs_chance(all_res, mice)
     plot_linear_weights(all_res, mice)
-    plot_feature_ablation(all_res, mice)
+
+    # feature ablation for all architectures
+    all_archs = sorted({k for a in all_res for k in all_res[a]['full_results']})
+    for arch in all_archs:
+        plot_feature_ablation(all_res, mice, arch=arch)
 
     records = _collect_trial_losses(mice, all_res)
     plot_loss_by_trial_type(records)
-    # plot_loss_by_block(records)
-    # plot_loss_by_trial_position(records)
-    # plot_session_loss_scatter(all_res, mice)
+    plot_loss_by_block(records)
+    plot_loss_by_trial_position(records)
+    plot_session_loss_scatter(all_res, mice)
 
-    # for animal in all_res:
-    #     mouse = mice[animal]
-    #     for sess_idx in range(len(mouse['sessions_data'])):
-    #         print(f"{animal} - {mouse['session_names'][sess_idx]}")
-    #         plot_all_lick_trials(mouse, all_res, sess_idx=sess_idx)
+    for animal in all_res:
+        mouse = mice[animal]
+        for sess_idx in [0]:#range(len(mouse['sessions_data'])):
+            print(f"{animal} - {mouse['session_names'][sess_idx]}")
+            plot_all_lick_trials(mouse, all_res, sess_idx=sess_idx)
 
     # hidden unit analysis
     arch = 'h8'

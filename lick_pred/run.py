@@ -25,8 +25,22 @@ def _group_sessions_by_mouse(npx_dir, npx_only=False):
     return dict(grouped)
 
 
+def _load_existing(save_dir, animal):
+    """load existing results for one mouse, or return empty dicts"""
+    save_path = os.path.join(save_dir, f'{animal}_lick_pred.pkl')
+    if not os.path.exists(save_path):
+        return {}, {}
+    with open(save_path, 'rb') as f:
+        res = pickle.load(f)
+    return res.get('sweep_results', {}), res.get('full_results', {})
+
+
 def run_single_mouse(animal, sess_paths, save_dir, ops=LICK_PRED_OPS):
-    """run lick prediction for one mouse"""
+    """run lick prediction for one mouse
+
+    merges new results with existing ones. architectures in ops['hidden_sizes']
+    are (re)run; pre-existing results for other sizes are kept.
+    """
     print(f'\n===== {animal} ({len(sess_paths)} sessions) =====')
 
     sessions_data = []
@@ -47,8 +61,24 @@ def run_single_mouse(animal, sess_paths, save_dir, ops=LICK_PRED_OPS):
     loss_curve_dir = os.path.join(save_dir, animal, 'loss_curves')
     os.makedirs(loss_curve_dir, exist_ok=True)
 
+    # load existing and figure out what to keep
+    old_sweep, old_full = _load_existing(save_dir, animal)
+    run_sizes = set(ops['hidden_sizes'])
+
+    # keep old results for hidden sizes we're not rerunning
+    kept_sweep = {k: v for k, v in old_sweep.items()
+                  if v.get('model') == 'network'
+                  and v.get('n_hidden') not in run_sizes}
+    kept_full = {k: v for k, v in old_full.items()
+                 if k != 'linear'
+                 and k not in [f'h{nh}' for nh in run_sizes]}
+
     sweep_results, full_results = run_sweep_and_ablation(
         sessions_data, ops, save_dir=loss_curve_dir)
+
+    # merge: new results overwrite, old ones fill in the rest
+    sweep_results = {**kept_sweep, **sweep_results}
+    full_results = {**kept_full, **full_results}
 
     result = dict(
         animal=animal,

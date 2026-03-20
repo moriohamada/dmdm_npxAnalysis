@@ -157,10 +157,17 @@ def build_trial_features(row, prev_outcome, prev_event_time,
     if len(tf_20hz) == 0:
         return None, None, 0
 
-    # determine number of bins — truncate at change frame so model only
-    # sees baseline TF (it will generalise to post-change naturally)
+    # determine number of bins
+    # for change trials: include change period if change TF is small enough,
+    # otherwise truncate at change frame
     has_change = row['IsHit'] or row['IsMiss']
     change_bin = int(row['stimT'] / ops['bin_width']) if has_change else None
+
+    max_change_tf = ops.get('max_change_tf', None)
+    change_tf = row.get('Stim2TF', np.nan)
+    small_change = (max_change_tf is not None
+                    and not np.isnan(change_tf)
+                    and change_tf <= max_change_tf)
 
     if has_lick:
         trial_end = lick_t - bl_on + extend * ops['bin_width']
@@ -170,7 +177,7 @@ def build_trial_features(row, prev_outcome, prev_event_time,
         trial_end = len(tf_20hz) * ops['bin_width']
 
     n_bins = max(1, int(trial_end / ops['bin_width']))
-    if truncate_at_change and change_bin is not None:
+    if truncate_at_change and change_bin is not None and not small_change:
         n_bins = min(n_bins, change_bin)
     if n_bins < 1:
         return None, None, 0

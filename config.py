@@ -92,17 +92,19 @@ LICK_PRED_OPS = dict(
     lick_sigma_bins   = 3,             # gaussian kernel sigma in bins
     lick_extend_bins  = 5,             # extend trial 250ms past lick
     response_window   = 2.15,          # s; task response window after change onset
+    max_change_tf     = 1.5,           # Hz; include change period for changes <= this
 
     # trial history
     max_time_since_reward = 300,       # s; cap for first trial before any reward
 
     # training
-    hidden_sizes    = [8, 16, 32],
+    hidden_sizes    = [8, 32, 64, 128],
     lambdas         = [0, 1e-3, 1e-2],       # weight decay for linear model
-    ortho_lambdas   = [0, 1e-3, 1e-2, 1e-1, 1.0],  # orthogonality penalty for networks
+    ortho_lambdas   = [1e-3, 1e-2, 1e-1, 1.0],  # orthogonality penalty for networks
+    net_sweep       = 'both',                      # sweep 'ridge', 'ortho', or 'both'
     lr              = 1e-4,
     batch_size      = 4096,
-    max_epochs      = 800,
+    max_epochs      = 1000,
     sweep_epoch_frac = 0.25,           # fraction of max_epochs for quick sweep
     patience        = 50,             # early stopping patience (epochs)
     val_frac        = 0.1,            # fraction of training trials for early stopping

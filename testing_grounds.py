@@ -8,7 +8,7 @@ extract_session_data(npx_dir_ceph=PATHS['npx_dir_ceph'],
                      n_workers=4)
 
 #%% behavioural model - predict animals' behaviour, identify important variables
-# from lick_pred.run import run_lick_prediction
+from lick_pred.run import run_lick_prediction
 # run_lick_prediction(npx_dir=PATHS['npx_dir_local'],
 #                     overwrite=True)
 
