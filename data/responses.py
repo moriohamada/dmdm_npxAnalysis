@@ -38,6 +38,7 @@ def get_event_aligned_responses(
 
     psths = dict(blOn=dict(), bl=dict(), tf=dict(), ch=dict(), lick=dict(), abort=dict())
     t_ax = dict()
+    buf = ops.get('resp_buffer', 0)
 
     psth_fn = partial(compute_psth,
         X=session.fr_matrix.values,
@@ -45,7 +46,7 @@ def get_event_aligned_responses(
     )
 
     # Baseline onset
-    resp_win = (-1, 2)
+    resp_win = (-1 - buf, 2)
     valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around'])
     non_trans = session.bl_onsets['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block  = (session.bl_onsets['block'] == 'early') & non_trans
@@ -58,7 +59,7 @@ def get_event_aligned_responses(
         )
 
     # Long baseline
-    resp_win = (-1, 5)
+    resp_win = (-1 - buf, 5)
     valid    = session.bl_onsets['tr_dur'] > (resp_win[1] + ops['rmv_time_around'])
 
     for key, mask in {'early': e_block, 'late': l_block}.items():
@@ -68,7 +69,7 @@ def get_event_aligned_responses(
         )
 
     # TF pulses
-    resp_win  = (-0.5, 1.5)
+    resp_win  = (-0.5 - buf, 1.5)
     non_trans = session.tf_pulses['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block   = (session.tf_pulses['block'] == 'early') & non_trans
     l_block   = (session.tf_pulses['block'] == 'late')  & non_trans
@@ -97,7 +98,7 @@ def get_event_aligned_responses(
         )
 
     # Change onset
-    resp_win = (-0.5, 1.5)
+    resp_win = (-0.5 - buf, 1.5)
     ch_tfs = np.sort(session.ch_onsets['ch_tf'].unique())
     non_trans = session.ch_onsets['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block = (session.ch_onsets['block'] == 'early') & non_trans
@@ -121,7 +122,7 @@ def get_event_aligned_responses(
         )
 
     # Lick times
-    resp_win = (-1.5, 0.5)
+    resp_win = (-1.5 - buf, 0.5)
     non_trans = session.lick_times['tr_in_block'] > ops['ignore_first_trials_in_block']
     e_block = (session.lick_times['block'] == 'early') & non_trans
     l_block = (session.lick_times['block'] == 'late') & non_trans

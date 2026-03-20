@@ -73,21 +73,41 @@ def plot_grouped_raster(t_ax: np.ndarray,
     ax.set_xlim(t_ax[0], t_ax[-1])
 
 
-def _load_condition(psth_path: str,
-                    event_type: str,
-                    condition: str,
-                    unit_idx: int,
-                    ops: dict = ANALYSIS_OPTIONS):
-    """Load and smooth one condition, return mu, sem, raw arr, t_ax."""
-    arr, t = load_psth(psth_path, event_type, condition)
-    if arr.shape[0] == 0:
+def _extract_unit(f: h5py.File,
+                   event_type: str,
+                   condition: str,
+                   unit_idx: int,
+                   ops: dict = ANALYSIS_OPTIONS):
+    """extract, smooth, and trim one condition for a single unit from an open HDF5"""
+    key = f'{event_type}/{condition}'
+    if key not in f:
+        t = f[f't_ax/{event_type}'][:]
         nT = len(t)
         return np.zeros(nT), np.zeros(nT), np.zeros((0, nT)), t
-    sm  = ops['sp_smooth_width'] / ops['sp_bin_width']
-    smooth = causal_boxcar(arr, window_bins=sm, axis=-1)
-    mu     = np.nanmean(smooth[:, unit_idx, :], axis=0)
-    sem    = np.nanstd( smooth[:, unit_idx, :], axis=0) / np.sqrt(arr.shape[0])
-    raw    = arr[:, unit_idx, :]  # unsmoothed for raster
+
+    arr = f[key]  # (nEv, nN, nT) dataset
+    nEv = arr.shape[0]
+    t = f[f't_ax/{event_type}'][:]
+
+    if nEv == 0:
+        nT = len(t)
+        return np.zeros(nT), np.zeros(nT), np.zeros((0, nT)), t
+
+    unit_data = arr[:, unit_idx, :]  # (nEv, nT) — only read this unit
+    raw = unit_data.copy()
+
+    sm = 2 * ops['sp_smooth_width'] / ops['sp_bin_width']
+    smooth = causal_boxcar(unit_data, window_bins=sm, axis=-1)
+    mu = np.nanmean(smooth, axis=0)
+    sem = np.nanstd(smooth, axis=0) / np.sqrt(nEv)
+
+    # trim smoothing buffer
+    buf = ops.get('resp_buffer', 0)
+    if buf > 0:
+        trim = t >= t[0] + buf
+        t, mu, sem = t[trim], mu[trim], sem[trim]
+        raw = raw[:, trim]
+
     return mu, sem, raw, t
 
 
@@ -117,75 +137,77 @@ def plot_basic_psths(psth_path: str,
     c_tf    = PLOT_OPTIONS['colours']['tf']
     u       = unit_idx
 
-    # baseline
-    raster_conds = []
-    for block, color in c_block.items():
-        mu, sem, raw, t = _load_condition(psth_path, 'bl', block, u, ops)
-        plot_psth(t, mu, sem, axes[0, 0], color=color, label=block)
-        raster_conds.append((raw, color, block))
-    plot_grouped_raster(t, raster_conds, axes[1, 0])
-    axes[0, 0].set_title('Baseline onset')
-    axes[0, 0].legend(fontsize=7)
-
-    # TF pulses
-    tf_layout = {
-        1: ('earlyBlock', 'early'),
-        2: ('lateBlock',  'early'),
-        3: ('lateBlock',  'late'),
-    }
-    tf_titles = {
-        1: 'TF early-in-trial\n(early block)',
-        2: 'TF early-in-trial\n(late block)',
-        3: 'TF late-in-trial\n(late block)',
-    }
-    for col, (block, tr_phase) in tf_layout.items():
-        raster_conds = []
-        for polarity, color in c_tf.items():
-            cond = f'{block}_{tr_phase}_{polarity}'
-            mu, sem, raw, t = _load_condition(psth_path, 'tf', cond, u, ops)
-            plot_psth(t, mu, sem, axes[0, col], color=color, label=polarity)
-            raster_conds.append((raw, color, polarity))
-        plot_grouped_raster(t, raster_conds, axes[1, col])
-        axes[0, col].set_title(tf_titles[col])
-        axes[0, col].legend(fontsize=7)
-
-    # change hits, one line per TF magnitude
     with h5py.File(psth_path, 'r') as f:
-        ch_conds = list(f['ch'].keys())
-    ch_tfs = sorted({c.split('_tf')[-1] for c in ch_conds if '_tf' in c}, key=float)
-    ch_colors = list(
-        plt.cm.get_cmap(PLOT_OPTIONS['colours']['ch_tf_cmap'])(np.linspace(0.15, 0.85, len(ch_tfs))))
-    ch_colors[0] = (0.6, 0.6, 0.6, 1.0)  # grey for no-change (smallest tf)
 
-    for block, col in {'early': 4, 'late': 5}.items():
+        # baseline
         raster_conds = []
-        for tf_val, color in zip(ch_tfs, ch_colors):
-            cond = f'{block}_hit_tf{tf_val}'
-            if cond not in ch_conds:
-                continue
-            mu, sem, raw, t = _load_condition(psth_path, 'ch', cond, u, ops)
-            plot_psth(t, mu, sem, axes[0, col], color=color, label=f'tf={tf_val}')
-            raster_conds.append((raw, color, f'tf={tf_val}'))
-        plot_grouped_raster(t, raster_conds, axes[1, col])
-        axes[0, col].set_title(f'Change hits\n({block} block)')
-        axes[0, col].legend(fontsize=7)
+        for block, color in c_block.items():
+            mu, sem, raw, t = _extract_unit(f, 'bl', block, u, ops)
+            plot_psth(t, mu, sem, axes[0, 0], color=color, label=block)
+            raster_conds.append((raw, color, block))
+        plot_grouped_raster(t, raster_conds, axes[1, 0])
+        axes[0, 0].set_title('Baseline onset')
+        axes[0, 0].legend(fontsize=7)
 
-    # FAs: early/late block by color, early/late in trial solid/dashed
-    fa_layout = [
-        ('earlyBlock', 'early', '-'),
-        ('lateBlock',  'early', '-'),
-        ('lateBlock',  'late',  '--'),
-    ]
-    raster_conds = []
-    for block, tr_phase, ls in fa_layout:
-        color = c_block['early' if block == 'earlyBlock' else 'late']
-        cond  = f'{block}_{tr_phase}_fa'
-        mu, sem, raw, t = _load_condition(psth_path, 'lick', cond, u, ops)
-        plot_psth(t, mu, sem, axes[0, 6], color=color, label=f'{block} {tr_phase}', ls=ls)
-        raster_conds.append((raw, color, f'{block} {tr_phase}'))
-    plot_grouped_raster(t, raster_conds, axes[1, 6])
-    axes[0, 6].set_title('FAs')
-    axes[0, 6].legend(fontsize=7)
+        # TF pulses
+        tf_layout = {
+            1: ('earlyBlock', 'early'),
+            2: ('lateBlock',  'early'),
+            3: ('lateBlock',  'late'),
+        }
+        tf_titles = {
+            1: 'TF early-in-trial\n(early block)',
+            2: 'TF early-in-trial\n(late block)',
+            3: 'TF late-in-trial\n(late block)',
+        }
+        for col, (block, tr_phase) in tf_layout.items():
+            raster_conds = []
+            for polarity, color in c_tf.items():
+                cond = f'{block}_{tr_phase}_{polarity}'
+                mu, sem, raw, t = _extract_unit(f, 'tf', cond, u, ops)
+                plot_psth(t, mu, sem, axes[0, col], color=color, label=polarity)
+                raster_conds.append((raw, color, polarity))
+            plot_grouped_raster(t, raster_conds, axes[1, col])
+            axes[0, col].set_title(tf_titles[col])
+            axes[0, col].legend(fontsize=7)
+
+        # change hits, one line per TF magnitude
+        ch_conds = list(f['ch'].keys())
+        ch_tfs = sorted({c.split('_tf')[-1] for c in ch_conds if '_tf' in c}, key=float)
+        ch_colors = list(
+            plt.cm.get_cmap(PLOT_OPTIONS['colours']['ch_tf_cmap'])(
+                np.linspace(0.15, 0.85, len(ch_tfs))))
+        ch_colors[0] = (0.6, 0.6, 0.6, 1.0)
+
+        for block, col in {'early': 4, 'late': 5}.items():
+            raster_conds = []
+            for tf_val, color in zip(ch_tfs, ch_colors):
+                cond = f'{block}_hit_tf{tf_val}'
+                if cond not in ch_conds:
+                    continue
+                mu, sem, raw, t = _extract_unit(f, 'ch', cond, u, ops)
+                plot_psth(t, mu, sem, axes[0, col], color=color, label=f'tf={tf_val}')
+                raster_conds.append((raw, color, f'tf={tf_val}'))
+            plot_grouped_raster(t, raster_conds, axes[1, col])
+            axes[0, col].set_title(f'Change hits\n({block} block)')
+            axes[0, col].legend(fontsize=7)
+
+        # FAs: early/late block by color, early/late in trial solid/dashed
+        fa_layout = [
+            ('earlyBlock', 'early', '-'),
+            ('lateBlock',  'early', '-'),
+            ('lateBlock',  'late',  '--'),
+        ]
+        raster_conds = []
+        for block, tr_phase, ls in fa_layout:
+            color = c_block['early' if block == 'earlyBlock' else 'late']
+            cond  = f'{block}_{tr_phase}_fa'
+            mu, sem, raw, t = _extract_unit(f, 'lick', cond, u, ops)
+            plot_psth(t, mu, sem, axes[0, 6], color=color, label=f'{block} {tr_phase}', ls=ls)
+            raster_conds.append((raw, color, f'{block} {tr_phase}'))
+        plot_grouped_raster(t, raster_conds, axes[1, 6])
+        axes[0, 6].set_title('FAs')
+        axes[0, 6].legend(fontsize=7)
 
     # tidy up
     for col in range(ncol):

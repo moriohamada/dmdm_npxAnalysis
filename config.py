@@ -10,11 +10,12 @@ PATHS = dict(
 ANALYSIS_OPTIONS = dict(
     sp_bin_width     = 10 / 1000,     # s
     sp_smooth_width  = 50 / 1000,     # s; size of casual boxcar fitler
+    resp_buffer      = 500 / 1000,    # s; extra time before each PSTH window for smoothing
 
     tf_outlier = 1.0,                 # std deviations away from mean to consider an outlier
 
     min_trial_dur   = 2.0,            # s; minimum trial duration
-    rmv_time_around = 1.5,            # s; remove this time around trial,
+    rmv_time_around = 1.0,            # s; remove this time around events
 
     min_hits_in_session = 30,         # trials; ignore sessions with fewer hits than this
     ignore_first_trials_in_block = 5, # trials; ignroe first n trials after a new block
@@ -89,7 +90,7 @@ LICK_PRED_OPS = dict(
     tf_subsample    = 3,               # subsample raw 60Hz TF by this factor
 
     # target
-    lick_sigma_bins   = 3,             # gaussian kernel sigma in bins
+    lick_sigma_bins   = 5,             # gaussian kernel sigma in bins
     lick_extend_bins  = 5,             # extend trial 250ms past lick
     response_window   = 2.15,          # s; task response window after change onset
     max_change_tf     = 1.5,           # Hz; include change period for changes <= this
@@ -98,16 +99,16 @@ LICK_PRED_OPS = dict(
     max_time_since_reward = 300,       # s; cap for first trial before any reward
 
     # training
-    hidden_sizes    = [8, 32, 64, 128],
+    hidden_sizes    = [8, 16, 32, 64],
     lambdas         = [0, 1e-3, 1e-2],       # weight decay for linear model
     ortho_lambdas   = [1e-3, 1e-2, 1e-1, 1.0],  # orthogonality penalty for networks
-    net_sweep       = 'both',                      # sweep 'ridge', 'ortho', or 'both'
+    net_sweep       = 'grid',                 # sweep 'ridge', 'ortho', or 'grid' (both)
     lr              = 1e-4,
     batch_size      = 4096,
     max_epochs      = 1000,
     sweep_epoch_frac = 0.25,           # fraction of max_epochs for quick sweep
-    patience        = 50,             # early stopping patience (epochs)
-    val_frac        = 0.1,            # fraction of training trials for early stopping
+    patience        = 100,             # early stopping patience (epochs)
+    val_frac        = 0.1,             # fraction of training trials for early stopping
 )
 
 PLOT_OPTIONS = dict(

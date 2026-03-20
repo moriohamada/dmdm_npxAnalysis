@@ -21,7 +21,7 @@ DEFAULT_EVENT_SELECTION = {
     'tf':   ['earlyBlock_early_pos', 'earlyBlock_early_neg',
              'lateBlock_early_pos',  'lateBlock_early_neg',
              'lateBlock_late_pos',   'lateBlock_late_neg'],
-    'ch':   ['early_hit_tf*', 'late_hit_tf*'],
+    # 'ch':   ['early_hit_tf*', 'late_hit_tf*'],
     # 'lick': ['earlyBlock_early_fa', 'lateBlock_early_fa', 'lateBlock_late_fa'],
 }
 
@@ -133,9 +133,11 @@ def _build_concat_matrix(psth_path: str,
     return np.concatenate(blocks, axis=1), labels
 
 
-def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
+def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1,
+                    resp_buffer=0):
     """
     Load all needed mean PSTHs from the HDF5 file in a single open.
+    Trims resp_buffer (seconds) from the start of each PSTH.
     Returns:
         selection_means: dict of (event_type, cond) -> nN x nT  (for PCA input)
         projection_means: dict of (event_type, cond) -> nN x nT (for projecting)
@@ -153,6 +155,22 @@ def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
             sel_keys.add((ev_type, c))
 
     with h5py.File(psth_path, 'r') as f:
+
+        # load and trim t_axes first so we can reuse the masks
+        raw_t_axes = {}
+        trim_masks = {}
+        all_ev_types = set(ev for ev, _ in sel_keys)
+        for ev_type, _ in projection_events.items():
+            all_ev_types.add(ev_type)
+        for ev_type in all_ev_types:
+            key = f't_ax/{ev_type}'
+            if key not in f:
+                continue
+            t = downsample_bins(f[key][:], ds_factor, axis=0)
+            raw_t_axes[ev_type] = t
+            trim_masks[ev_type] = t >= t[0] + resp_buffer
+            t_axes[ev_type] = t[trim_masks[ev_type]]
+
         # load selection means (for building PCA input)
         for ev_type, cond in sel_keys:
             mean_key = f'{ev_type}_mean'
@@ -164,15 +182,16 @@ def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
             else:
                 matched = [cond] if cond in f[mean_key] else []
             for c in matched:
-                data = f[f'{mean_key}/{c}'][:]
-                selection_means[(ev_type, c)] = downsample_bins(data, ds_factor)
+                data = downsample_bins(f[f'{mean_key}/{c}'][:], ds_factor)
+                if ev_type in trim_masks:
+                    data = data[:, trim_masks[ev_type]]
+                selection_means[(ev_type, c)] = data
 
         # load projection means
         for ev_type, cond_patterns in projection_events.items():
             mean_key = f'{ev_type}_mean'
-            if mean_key not in f or f't_ax/{ev_type}' not in f:
+            if mean_key not in f or ev_type not in raw_t_axes:
                 continue
-            t_axes[ev_type] = downsample_bins(f[f't_ax/{ev_type}'][:], ds_factor, axis=0)
             available = list(f[mean_key].keys())
             for pat in cond_patterns:
                 if '*' in pat:
@@ -181,8 +200,10 @@ def _load_psth_data(psth_path, event_selection, projection_events, ds_factor=1):
                     matched = [pat] if pat in available else []
                 for c in matched:
                     if (ev_type, c) not in projection_means:
-                        data = f[f'{mean_key}/{c}'][:]
-                        projection_means[(ev_type, c)] = downsample_bins(data, ds_factor)
+                        data = downsample_bins(f[f'{mean_key}/{c}'][:], ds_factor)
+                        if ev_type in trim_masks:
+                            data = data[:, trim_masks[ev_type]]
+                        projection_means[(ev_type, c)] = data
 
     return selection_means, projection_means, t_axes
 
@@ -320,8 +341,10 @@ def extract_pcs(npx_dir: str = PATHS['npx_dir_local'],
                 del fr_df; gc.collect()
 
         # load psth data once for this session
+        buf = ops.get('resp_buffer', 0)
         sel_means, proj_means, t_axes = _load_psth_data(
-            psth_path, event_selection, DEFAULT_PROJECTION_EVENTS, ds_factor)
+            psth_path, event_selection, DEFAULT_PROJECTION_EVENTS, ds_factor,
+            resp_buffer=buf)
 
         # per-session pca
         results = pca_by_session(areas, sel_means, proj_means, t_axes,

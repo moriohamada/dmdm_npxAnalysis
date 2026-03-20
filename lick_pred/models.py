@@ -331,34 +331,32 @@ def run_sweep_and_ablation(sessions_data, ops=LICK_PRED_OPS, save_dir=None):
         if save_dir:
             _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
 
-    net_sweep = ops.get('net_sweep', 'both')  # 'ortho', 'ridge', or 'both'
+    # net_sweep: 'ortho' (wd=0), 'ridge' (ortho=0), 'grid' (all combos)
+    net_sweep = ops.get('net_sweep', 'grid')
+    ortho_vals = ops.get('ortho_lambdas', [0])
+    wd_vals = ops['lambdas']
+
     for nh in ops['hidden_sizes']:
-        if net_sweep in ('ortho', 'both'):
-            for lo in ops.get('ortho_lambdas', [0]):
-                key = f'network_h{nh}_ortho{lo}'
-                losses, loss_history = leave_one_out_cv(
-                    sessions_data, NetworkLickModel, n_hidden=nh,
-                    lambda_ortho=lo, ops=ops, max_epochs=sweep_epochs)
-                sweep_results[key] = dict(
-                    model='network', n_hidden=nh, weight_decay=0.0,
-                    lambda_ortho=lo,
-                    test_losses=losses, mean_loss=np.nanmean(losses))
-                print(f'    {key}: mean_loss={np.nanmean(losses):.4f}')
-                if save_dir:
-                    _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
-        if net_sweep in ('ridge', 'both'):
-            for wd in ops['lambdas']:
-                key = f'network_h{nh}_lambda{wd}'
-                losses, loss_history = leave_one_out_cv(
-                    sessions_data, NetworkLickModel, n_hidden=nh,
-                    weight_decay=wd, ops=ops, max_epochs=sweep_epochs)
-                sweep_results[key] = dict(
-                    model='network', n_hidden=nh, weight_decay=wd,
-                    lambda_ortho=0.0,
-                    test_losses=losses, mean_loss=np.nanmean(losses))
-                print(f'    {key}: mean_loss={np.nanmean(losses):.4f}')
-                if save_dir:
-                    _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
+        if net_sweep == 'ortho':
+            combos = [(0.0, lo) for lo in ortho_vals]
+        elif net_sweep == 'ridge':
+            combos = [(wd, 0.0) for wd in wd_vals]
+        else:  # grid
+            combos = [(wd, lo) for wd in wd_vals for lo in ortho_vals]
+
+        for wd, lo in combos:
+            key = f'network_h{nh}_wd{wd}_ortho{lo}'
+            losses, loss_history = leave_one_out_cv(
+                sessions_data, NetworkLickModel, n_hidden=nh,
+                weight_decay=wd, lambda_ortho=lo,
+                ops=ops, max_epochs=sweep_epochs)
+            sweep_results[key] = dict(
+                model='network', n_hidden=nh, weight_decay=wd,
+                lambda_ortho=lo,
+                test_losses=losses, mean_loss=np.nanmean(losses))
+            print(f'    {key}: mean_loss={np.nanmean(losses):.4f}')
+            if save_dir:
+                _save_loss_curves(loss_history, f'sweep_{key}', save_dir)
 
     # stage 2 + 3: full CV with ablation on best per architecture
     best_per_arch = _best_per_architecture(sweep_results)

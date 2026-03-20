@@ -11,10 +11,11 @@ def causal_boxcar(data, window_bins, axis=-1):
     kernel = np.ones(window_bins) / window_bins
     smoothed = lfilter(kernel, 1.0, arr, axis=axis)
 
-    # replace edge bins with original values
-    edge = [slice(None)] * arr.ndim
-    edge[axis] = slice(0, window_bins - 1)
-    smoothed[tuple(edge)] = arr[tuple(edge)]
+    # fix edge bins: rescale to account for incomplete window
+    for i in range(window_bins - 1):
+        slc = [slice(None)] * arr.ndim
+        slc[axis] = i
+        smoothed[tuple(slc)] *= window_bins / (i + 1)
 
     if is_df:
         return pd.DataFrame(smoothed, index=data.index, columns=data.columns)

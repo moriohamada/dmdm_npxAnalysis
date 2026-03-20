@@ -409,7 +409,8 @@ def _get_fr_for_pca_key(fr_full, areas, pca_key, pca_path):
 def lds_single_session(sess_dir, ops,
                        pca_keys: list[str],
                        compute_cv_r2: bool = False,
-                       keep_baseline_only: bool = True):
+                       keep_baseline_only: bool = True,
+                       overwrite: bool = False):
     """Fit LDS for one session across all pca_keys."""
     print(sess_dir)
     loaded = _load_session_fr(sess_dir, ops)
@@ -426,8 +427,8 @@ def lds_single_session(sess_dir, ops,
                                 )
     for pca_key in pca_keys:
         lds_path = Path(sess_dir) / f'lds_{pca_key}.h5'
-        # if lds_path.exists():
-        #     continue
+        if not overwrite and lds_path.exists():
+            continue
 
         fr_matrix, weights = _get_fr_for_pca_key(fr_full, areas, pca_key, pca_path)
 
@@ -459,7 +460,8 @@ def lds_single_session(sess_dir, ops,
     del fr_full; gc.collect()
 
 
-def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
+def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False,
+                        overwrite=False):
     """Estimate empirical flow for one session across all pca_keys."""
     loaded = _load_session_fr(sess_dir, ops)
     if loaded is None:
@@ -470,8 +472,8 @@ def flow_single_session(sess_dir, ops, pca_keys, compute_cv_r2=False):
 
     for pca_key in pca_keys:
         flow_path = Path(sess_dir) / f'flow_{pca_key}.h5'
-        # if flow_path.exists():
-        #     continue
+        if not overwrite and flow_path.exists():
+            continue
 
         fr_matrix, weights = _get_fr_for_pca_key(fr_full, areas, pca_key, pca_path)
         if fr_matrix is None:

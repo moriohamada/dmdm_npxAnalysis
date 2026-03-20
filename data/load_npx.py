@@ -62,12 +62,13 @@ def save_fr_matrix(fr_matrix: pd.DataFrame,
         stats_path = Path(save_path).parent / 'FR_stats.parquet'
         fr_stats.to_parquet(stats_path)
 
-def _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops):
+def _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops,
+                            overwrite=False):
     """Extract FR matrix + event-aligned responses for one session."""
     session_name = sess_folder.split('/')[-1]
     save_dir = sess_folder.replace(npx_dir_ceph, npx_dir_local)
 
-    if os.path.exists(os.path.join(save_dir, 'psths.h5')):
+    if not overwrite and os.path.exists(os.path.join(save_dir, 'psths.h5')):
         print(f'Skipping {session_name} - already extracted')
         return
 
@@ -102,7 +103,8 @@ def _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops):
 def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
                          npx_dir_local: str = PATHS['npx_dir_local'],
                          ops: dict = ANALYSIS_OPTIONS,
-                         n_workers: int = 1):
+                         n_workers: int = 1,
+                         overwrite: bool = False):
     """
     Loop through each session and:
     1) extract firing rate matrix for entire session
@@ -120,11 +122,13 @@ def extract_session_data(npx_dir_ceph: str = PATHS['npx_dir_ceph'],
 
     if n_workers <= 1:
         for sess_folder in sess_folders:
-            _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops)
+            _process_single_session(sess_folder, npx_dir_ceph, npx_dir_local, ops,
+                                    overwrite=overwrite)
     else:
         worker = partial(_process_single_session,
                          npx_dir_ceph=npx_dir_ceph,
                          npx_dir_local=npx_dir_local,
-                         ops=ops)
+                         ops=ops,
+                         overwrite=overwrite)
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
             pool.map(worker, sess_folders)

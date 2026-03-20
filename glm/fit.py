@@ -412,10 +412,10 @@ def load_glm_inputs(sess_dir):
 
 #%% local prep
 
-def prepare_session(sess_dir, ceph_dir):
+def prepare_session(sess_dir, ceph_dir, overwrite=False):
     """build and save GLM inputs for one session"""
     sess_dir = Path(sess_dir)
-    if (sess_dir / 'glm_design.npy').exists():
+    if not overwrite and (sess_dir / 'glm_design.npy').exists():
         print(f'  already prepped, skipping')
         return
 

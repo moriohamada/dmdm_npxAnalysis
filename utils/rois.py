@@ -18,9 +18,9 @@ AREA_GROUPS = {
     'cerebellum':     ['CUL4 5', 'SIM', 'ANcr1', 'ANcr2', 'CENT',
                         'FN', 'IP', 'DN', 'FL', 'PFL',
                         'DEC', 'NOD', 'LING', 'CUN', 'COPY', 'CB'],
-    #
-    # 'frontal_motor':  ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'ORB', 'MOp', 'AI',
-    #                     'CP', 'ACB', 'GPe', 'GPi', 'SNr', 'SNc', 'MD', 'VAL'],
+
+    'frontal_motor':  ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'ORB', 'MOp', 'AI',
+                        'CP', 'ACB', 'GPe', 'GPi', 'SNr', 'SNc', 'MD', 'VAL'],
 }
 
 # all areas that appear in at least one group

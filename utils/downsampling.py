@@ -50,7 +50,7 @@ def _downsample_session_wrapper(args):
     downsample_session(*args)
 
 
-def save_downsampled_fr(npx_dir, ops=ANALYSIS_OPTIONS, n_workers=1):
+def save_downsampled_fr(npx_dir, ops=ANALYSIS_OPTIONS, n_workers=1, overwrite=False):
     """
     Pre-downsample all FR_matrix.parquet files and save as FR_matrix_ds.parquet.
     Skips sessions that already have a downsampled file.
@@ -74,7 +74,7 @@ def save_downsampled_fr(npx_dir, ops=ANALYSIS_OPTIONS, n_workers=1):
 
             if not os.path.exists(fr_path):
                 continue
-            if os.path.exists(ds_path):
+            if not overwrite and os.path.exists(ds_path):
                 print(f'    Data already downsampled - skipping...')
                 continue
 

@@ -5,7 +5,8 @@ from data.load_npx import extract_session_data
 extract_session_data(npx_dir_ceph=PATHS['npx_dir_ceph'],
                      npx_dir_local=PATHS['npx_dir_local'],
                      ops=ANALYSIS_OPTIONS,
-                     n_workers=4)
+                     n_workers=4,
+                     overwrite=True)
 
 #%% behavioural model - predict animals' behaviour, identify important variables
 from lick_pred.run import run_lick_prediction
@@ -65,6 +66,12 @@ from population.pca import extract_pcs
 extract_pcs(npx_dir=PATHS['npx_dir_local'],
             ops=ANALYSIS_OPTIONS)
 
+#%% PC 'psths'
+from population.plotting import plot_all_pc_psths
+plot_all_pc_psths(npx_dir=PATHS['npx_dir_local'],
+                  plots_dir=PATHS['plots_dir'],
+                  ops=ANALYSIS_OPTIONS)
+
 #%% Linear dynamical systems analysis
 from population.dynamical import run_lds_analysis
 run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
@@ -93,6 +100,8 @@ for psth_path in psth_paths:
                           ops=ANALYSIS_OPTIONS,
                           save_dir=str(save_dir))
 
+
+
 # #%% Visualise empirical flow fields
 #
 # for psth_path in psth_paths:
@@ -109,27 +118,27 @@ for psth_path in psth_paths:
 #%% SAE
 
 
-#%%
-
-import os
-import pickle
-
-npx_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/'
-
-all_areas = set()
-for subj in os.listdir(npx_dir):
-  subj_dir = os.path.join(npx_dir, subj)
-  if not os.path.isdir(subj_dir):
-      continue
-  for sess in os.listdir(subj_dir):
-      pkl_path = os.path.join(subj_dir, sess, 'session.pkl')
-      if not os.path.exists(pkl_path):
-          continue
-      with open(pkl_path, 'rb') as f:
-          s = pickle.load(f)
-      if s.unit_info is not None:
-          all_areas.update(s.unit_info['brain_region_comb'].values)
-
-for a in sorted(all_areas):
-  print(a)
+# #%%
+#
+# import os
+# import pickle
+#
+# npx_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/'
+#
+# all_areas = set()
+# for subj in os.listdir(npx_dir):
+#   subj_dir = os.path.join(npx_dir, subj)
+#   if not os.path.isdir(subj_dir):
+#       continue
+#   for sess in os.listdir(subj_dir):
+#       pkl_path = os.path.join(subj_dir, sess, 'session.pkl')
+#       if not os.path.exists(pkl_path):
+#           continue
+#       with open(pkl_path, 'rb') as f:
+#           s = pickle.load(f)
+#       if s.unit_info is not None:
+#           all_areas.update(s.unit_info['brain_region_comb'].values)
+#
+# for a in sorted(all_areas):
+#   print(a)
 

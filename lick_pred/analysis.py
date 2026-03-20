@@ -234,9 +234,12 @@ def plot_model_vs_chance(all_res, mice, save_path='default'):
     net_labels = []
     for arch in net_archs:
         cfg_key = _net_label(arch)
-        # extract ortho/lambda from config key for display
         parts = [arch]
-        if 'ortho' in cfg_key:
+        if '_wd' in cfg_key and '_ortho' in cfg_key:
+            wd = cfg_key.split('_wd')[1].split('_ortho')[0]
+            lo = cfg_key.split('_ortho')[1]
+            parts.append(f'wd={wd} ortho={lo}')
+        elif 'ortho' in cfg_key:
             val = cfg_key.split('ortho')[-1]
             parts.append(f'ortho={val}')
         elif 'lambda' in cfg_key:
@@ -375,12 +378,13 @@ def plot_linear_weights(all_res, mice, save_path='default'):
 
 
 def plot_feature_ablation(all_res, mice, arch='linear', save_path='default'):
-    """bar plot of mean ablation loss increase per feature group, across mice"""
+    """feature ablation: thin grey line per mouse, thick black average"""
     if save_path == 'default':
         os.makedirs(SAVE_DIR, exist_ok=True)
         save_path = os.path.join(SAVE_DIR, f'feature_ablation_{arch}.png')
     animals = sorted(mice.keys())
     groups = list(ABLATION_GROUPS.keys())
+    x = np.arange(len(groups))
 
     per_mouse = np.zeros((len(animals), len(groups)))
     for i, animal in enumerate(animals):
@@ -388,15 +392,14 @@ def plot_feature_ablation(all_res, mice, arch='linear', save_path='default'):
         for j, g in enumerate(groups):
             per_mouse[i, j] = np.nanmean(abl[g])
 
-    means = per_mouse.mean(axis=0)
-    sems = per_mouse.std(axis=0) / np.sqrt(len(animals))
-    order = np.argsort(means)[::-1]
-
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.barh(range(len(groups)), means[order], xerr=sems[order], capsize=3)
-    ax.set_yticks(range(len(groups)))
-    ax.set_yticklabels([groups[i] for i in order])
-    ax.set_xlabel('Loss increase (ablation)')
+    for row in per_mouse:
+        ax.plot(x, row, color='grey', alpha=0.3, linewidth=0.8)
+    ax.plot(x, np.nanmean(per_mouse, axis=0), color='k', linewidth=2.5)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(groups, rotation=30, ha='right')
+    ax.set_ylabel('Loss increase (ablation)')
     ax.set_title(f'{arch} model')
 
     plt.tight_layout()

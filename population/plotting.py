@@ -10,9 +10,11 @@ from matplotlib.lines import Line2D
 from pathlib import Path
 sns.set_style("whitegrid")
 
-from config import ANALYSIS_OPTIONS, PLOT_OPTIONS
+from config import ANALYSIS_OPTIONS, PLOT_OPTIONS, PATHS
 from data.session import Session
-from utils.rois import in_any_area, in_group
+from single_unit.psths import plot_psth
+from utils.downsampling import downsample_bins
+from utils.rois import AREA_GROUPS, in_any_area, in_group
 from utils.smoothing import causal_boxcar
 from population.dynamical import CONDITIONS
 
@@ -34,6 +36,8 @@ def _load_session(sess_dir, pca_key):
     sess_data = Session.load(str(sess_dir / 'session.pkl'))
     areas = sess_data.unit_info['brain_region_comb'].values
     group = pca_key.split('_', 1)[1]
+    if group != 'all' and group not in AREA_GROUPS:
+        return None, None, None, None, None
     area_mask = in_any_area(areas) if group == 'all' else in_group(areas, group)
 
     with h5py.File(pca_path, 'r') as f:
@@ -525,3 +529,198 @@ def plot_session_dynamics(sess_dir, pca_key='event_all',
     plot_tf_trajectories(sess_dir, pca_key, ops, pcs=pcs, save_path=paths['tf_pulses'])
     plot_bl_trajectories(sess_dir, pca_key, ops, pcs=pcs, save_path=paths['bl_trajectories'])
     plot_lick_trajectories(sess_dir, pca_key, ops, pcs=pcs, save_path=paths['lick_trajectories'])
+
+
+#%%
+
+def _load_all_projected(psth_path, area_mask, weights, ds_factor):
+    """
+    load single-trial PSTHs for all event types in one file open,
+    project through PC weights, and downsample
+    """
+    event_keys = {
+        'bl':   ['early', 'late'],
+        'tf':   ['earlyBlock_early_pos', 'earlyBlock_early_neg',
+                 'lateBlock_early_pos', 'lateBlock_early_neg',
+                 'lateBlock_late_pos', 'lateBlock_late_neg'],
+        'ch':   None,  # discover from file
+        'lick': ['earlyBlock_early_fa', 'lateBlock_early_fa', 'lateBlock_late_fa'],
+    }
+    pcs = tuple(range(weights.shape[1]))
+    W = weights[:, list(pcs)].T  # (n_pcs, nN)
+
+    projected = {}  # ev_type -> {cond: (nEv, n_pcs, nT_ds)}
+    t_axes = {}
+
+    with h5py.File(psth_path, 'r') as f:
+        for ev_type, keys in event_keys.items():
+            if ev_type not in f or f't_ax/{ev_type}' not in f:
+                continue
+            t_axes[ev_type] = downsample_bins(f[f't_ax/{ev_type}'][:], ds_factor, axis=0)
+            if keys is None:
+                keys = list(f[ev_type].keys())
+            proj_ev = {}
+            for key in keys:
+                if f'{ev_type}/{key}' not in f:
+                    continue
+                data = f[f'{ev_type}/{key}'][:]  # (nEv, nN, nT)
+                if data.shape[0] == 0:
+                    continue
+                data = data[:, area_mask, :]
+                if data.shape[1] != weights.shape[0]:
+                    continue
+                data = downsample_bins(data, ds_factor)
+                proj_ev[key] = np.einsum('pn,ent->ept', W, data)
+            projected[ev_type] = proj_ev
+
+    return projected, t_axes
+
+
+def plot_pc_psths(sess_dir, pca_key='event_all', ops=ANALYSIS_OPTIONS, save_dir=None):
+    """
+    projected PSTHs for each PC, mirroring single-unit layout.
+    one figure per PC, 1 x 7 cols: bl | TF x3 | ch x2 | FAs
+    """
+    sess_dir = Path(sess_dir)
+    sess_data, area_mask, weights, _, _ = _load_session(sess_dir, pca_key)
+    if sess_data is None:
+        return
+
+    n_pcs = weights.shape[1]
+    psth_path = str(sess_dir / 'psths.h5')
+    ds_factor = round(ops['pop_bin_width'] / ops['sp_bin_width'])
+
+    with h5py.File(sess_dir / 'pca.h5', 'r') as f:
+        var_explained = f[pca_key]['var_explained'][:]
+
+    projected, t_axes = _load_all_projected(psth_path, area_mask, weights, ds_factor)
+    bl_proj = projected.get('bl', {})
+    tf_proj = projected.get('tf', {})
+    ch_proj = projected.get('ch', {})
+    fa_proj = projected.get('lick', {})
+    t_bl = t_axes.get('bl')
+    t_tf = t_axes.get('tf')
+    t_ch = t_axes.get('ch')
+    t_lick = t_axes.get('lick')
+
+    # change hit colours by TF magnitude
+    ch_tfs = sorted({k.split('_tf')[-1] for k in ch_proj if '_tf' in k}, key=float)
+    n_ch = max(len(ch_tfs), 1)
+    ch_colors = list(plt.cm.get_cmap(PLOT_OPTIONS['colours']['ch_tf_cmap'])(
+        np.linspace(0.15, 0.85, n_ch)))
+    if ch_tfs:
+        ch_colors[0] = (0.6, 0.6, 0.6, 1.0)
+
+    c_block = PLOT_OPTIONS['colours']['block']
+    c_tf = PLOT_OPTIONS['colours']['tf']
+
+    for pc_idx in range(n_pcs):
+        ncol = 7
+        fig, axes = plt.subplots(1, ncol, figsize=(ncol * 3, 3),
+                                 constrained_layout=True)
+
+        def _plot(ax, proj_dict, key, t_ax, color, label, ls='-'):
+            if key not in proj_dict:
+                return
+            data = proj_dict[key][:, pc_idx, :]  # (nEv, nT)
+            mu = data.mean(axis=0)
+            sem = data.std(axis=0) / np.sqrt(data.shape[0])
+            plot_psth(t_ax, mu, sem, ax, color=color, label=label, ls=ls)
+
+        # col 0: baseline
+        for block, color in c_block.items():
+            _plot(axes[0], bl_proj, block, t_bl, color, block)
+        axes[0].set_title('Baseline onset')
+
+        # cols 1-3: TF pulses
+        tf_layout = {
+            1: ('earlyBlock', 'early', 'TF early-in-trial\n(early block)'),
+            2: ('lateBlock',  'early', 'TF early-in-trial\n(late block)'),
+            3: ('lateBlock',  'late',  'TF late-in-trial\n(late block)'),
+        }
+        for col, (block, tr_phase, title) in tf_layout.items():
+            for polarity, color in c_tf.items():
+                _plot(axes[col], tf_proj, f'{block}_{tr_phase}_{polarity}',
+                      t_tf, color, polarity)
+            axes[col].set_title(title)
+
+        # cols 4-5: change hits
+        for block, col in {'early': 4, 'late': 5}.items():
+            for tf_val, color in zip(ch_tfs, ch_colors):
+                _plot(axes[col], ch_proj, f'{block}_hit_tf{tf_val}',
+                      t_ch, color, f'tf={tf_val}')
+            axes[col].set_title(f'Change hits\n({block} block)')
+
+        # col 6: FAs
+        fa_layout = [
+            ('earlyBlock', 'early', '-'),
+            ('lateBlock',  'early', '-'),
+            ('lateBlock',  'late',  '--'),
+        ]
+        for block, tr_phase, ls in fa_layout:
+            color = c_block['early' if block == 'earlyBlock' else 'late']
+            _plot(axes[6], fa_proj, f'{block}_{tr_phase}_fa',
+                  t_lick, color, f'{block} {tr_phase}', ls=ls)
+        axes[6].set_title('FAs')
+
+        # tidy up
+        for col in range(ncol):
+            axes[col].spines[['top', 'right']].set_visible(False)
+            if col > 0:
+                axes[col].set_ylabel('')
+        axes[0].set_ylabel('PC projection (a.u.)')
+
+        var_pct = var_explained[pc_idx] * 100
+        fig.suptitle(f'{sess_data.animal}_{sess_data.name} — '
+                     f'PC{pc_idx + 1} ({var_pct:.1f}% var, {pca_key})')
+
+        if save_dir:
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            fig.savefig(Path(save_dir) / f'pc_{pc_idx + 1:02d}.png',
+                        dpi=150, bbox_inches='tight')
+            plt.close(fig)
+        else:
+            plt.show()
+
+
+def _plot_pc_psths_worker(args):
+    """worker for parallelising plot_pc_psths across sessions"""
+    sess_dir, pca_key, ops, save_dir = args
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+            plot_pc_psths(sess_dir, pca_key=pca_key, ops=ops, save_dir=save_dir)
+    except Exception as e:
+        print(f'  {Path(sess_dir).name} / {pca_key} failed: {e}')
+    finally:
+        plt.close('all')
+
+
+def plot_all_pc_psths(npx_dir=PATHS['npx_dir_local'],
+                      plots_dir=PATHS['plots_dir'],
+                      ops=ANALYSIS_OPTIONS,
+                      n_workers=4):
+    """plot projected PSTHs for all PCs, all pca keys, all sessions"""
+    from utils.filing import get_response_files
+    from concurrent.futures import ProcessPoolExecutor
+
+    # build job list
+    jobs = []
+    psth_paths = get_response_files(npx_dir)
+    for psth_path in psth_paths:
+        sess_dir = Path(psth_path).parent
+        pca_path = sess_dir / 'pca.h5'
+        if not pca_path.exists():
+            continue
+        with h5py.File(pca_path, 'r') as f:
+            pca_keys = list(f.keys())
+        for pca_key in pca_keys:
+            save_dir = Path(plots_dir) / 'pc_psths' / sess_dir.parent.name / sess_dir.name / pca_key
+            jobs.append((str(sess_dir), pca_key, ops, str(save_dir)))
+
+    print(f'{len(jobs)} jobs across {len(psth_paths)} sessions')
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        for i, _ in enumerate(pool.map(_plot_pc_psths_worker, jobs)):
+            if (i + 1) % 10 == 0 or i + 1 == len(jobs):
+                print(f'  {i + 1}/{len(jobs)} done')
