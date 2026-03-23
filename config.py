@@ -100,21 +100,21 @@ LICK_PRED_OPS = dict(
     max_time_since_reward = 300,       # s; cap for first trial before any reward
 
     # training
-    hidden_sizes    = [8, 16, 32, 64],
+    hidden_sizes    = [8, 16, 32, 64, 128],
     lambdas         = [0, 1e-3, 1e-2],       # weight decay for linear model
     ortho_lambdas   = [1e-3, 1e-2, 1e-1, 1.0],  # orthogonality penalty for networks
     net_sweep       = 'grid',                 # sweep 'ridge', 'ortho', or 'grid' (both)
     lr              = 1e-4,
     batch_size      = 4096,
     max_epochs      = 1000,
-    sweep_epoch_frac = 0.25,           # fraction of max_epochs for quick sweep
-    patience        = 100,             # early stopping patience (epochs)
+    sweep_epoch_frac = 0.2,           # fraction of max_epochs for quick sweep
+    patience        = 50,             # early stopping patience (epochs)
     val_frac        = 0.1,             # fraction of training trials for early stopping
 )
 
 DEMIXING_OPTIONS = dict(
     model_type = 'sae',               # 'sae' or 'lfads'
-    latent_dim = 20,                  # number of latent dimensions
+    latent_dim = 25,                  # number of latent dimensions
     rnn_dim    = 100,                 # RNN hidden size (CausalLFADS only)
 
     loss        = 'MSE',
@@ -122,7 +122,7 @@ DEMIXING_OPTIONS = dict(
     orth_weight = 0,
     lr          = 1e-4,
     optimizer   = 'Adam',
-    epochs      = 500,
+    epochs      = 200,
     batch_size  = 10,
     test_frac   = 0.2,
 )

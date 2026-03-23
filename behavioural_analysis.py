@@ -62,6 +62,7 @@ from lick_pred.run import run_lick_prediction
 # from lick_pred.run import _group_sessions_by_mouse, run_single_mouse
 # from multiprocessing import Pool
 #
+
 # ops = {**LICK_PRED_OPS, 'max_epochs': 250, 'patience': 15}
 # save_dir = '/tmp/lick_pred_test'
 #
@@ -72,5 +73,5 @@ from lick_pred.run import run_lick_prediction
 # with Pool(4) as pool:
 #     pool.map(_run, sorted(grouped.items()))
 
-# from lick_pred.analysis import run_all_lick_model_analyses
-# run_all_lick_model_analyses()
+from lick_pred.analysis import run_all_lick_model_analyses
+run_all_lick_model_analyses()

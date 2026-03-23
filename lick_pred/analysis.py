@@ -322,7 +322,11 @@ def plot_linear_weights(all_res, mice, save_path='default'):
 
     for row, animal in enumerate(animals):
         weights = all_weights[row]
-        ablation = _fix_old_ablation(all_res[animal]['full_results']['linear']['ablation'])
+
+        ablation = {}
+        if 'ablation' in all_res[animal]['full_results'].get('linear', {}):
+            ablation = _fix_old_ablation(
+                all_res[animal]['full_results']['linear']['ablation'])
 
         axes[row, 0].plot(t_ax, weights[:N_TF_HIST])
         axes[row, 0].axhline(0, color='k', linewidth=0.5)
@@ -331,7 +335,9 @@ def plot_linear_weights(all_res, mice, save_path='default'):
         bar_vals = [weights[other_features[name]].mean() for name in other_names]
         colours = []
         for name in other_names:
-            # map individual features to their ablation group
+            if not ablation:
+                colours.append('grey')
+                continue
             if name in ablation:
                 abl_key = name
             elif name in ('block',):
@@ -386,15 +392,20 @@ def plot_feature_ablation(all_res, mice, arch='linear', save_path='default'):
     groups = list(ABLATION_GROUPS.keys())
     x = np.arange(len(groups))
 
-    per_mouse = np.zeros((len(animals), len(groups)))
+    per_mouse = np.full((len(animals), len(groups)), np.nan)
     for i, animal in enumerate(animals):
+        if arch not in all_res[animal]['full_results']:
+            continue
+        if 'ablation' not in all_res[animal]['full_results'][arch]:
+            continue
         abl = _fix_old_ablation(all_res[animal]['full_results'][arch]['ablation'])
         for j, g in enumerate(groups):
             per_mouse[i, j] = np.nanmean(abl[g])
 
     fig, ax = plt.subplots(figsize=(6, 4))
     for row in per_mouse:
-        ax.plot(x, row, color='grey', alpha=0.3, linewidth=0.8)
+        if not np.all(np.isnan(row)):
+            ax.plot(x, row, color='grey', alpha=0.3, linewidth=0.8)
     ax.plot(x, np.nanmean(per_mouse, axis=0), color='k', linewidth=2.5)
 
     ax.set_xticks(x)

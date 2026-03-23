@@ -68,14 +68,21 @@ from utils.filing import get_response_files
 from population.plotting import plot_session_dynamics
 
 
+import h5py
 psth_paths = get_response_files(PATHS['npx_dir_local'])
 for psth_path in psth_paths:
     sess_dir = Path(psth_path).parent
-    save_dir = Path(PATHS['plots_dir']) / 'lds' / sess_dir.parent.name / sess_dir.name
-    plot_session_dynamics(sess_dir,
-                          pca_key='event_all',
-                          ops=ANALYSIS_OPTIONS,
-                          save_dir=str(save_dir))
+    pca_path = sess_dir / 'pca.h5'
+    if not pca_path.exists():
+        continue
+    with h5py.File(pca_path, 'r') as f:
+        pca_keys = list(f.keys())
+    for pca_key in pca_keys:
+        save_dir = Path(PATHS['plots_dir']) / 'lds' / sess_dir.parent.name / sess_dir.name / pca_key
+        plot_session_dynamics(sess_dir,
+                              pca_key=pca_key,
+                              ops=ANALYSIS_OPTIONS,
+                              save_dir=str(save_dir))
 
 
 
@@ -96,6 +103,7 @@ for psth_path in psth_paths:
 from config import DEMIXING_OPTIONS
 from demixing.run import run_demixing
 run_demixing(npx_dir=PATHS['npx_dir_local'],
+             overwrite=True,
              ops=DEMIXING_OPTIONS)
 
 #%% Demixing — latent PSTHs
