@@ -151,10 +151,10 @@ DEMIXING_OPTIONS = dict(
 BLOCK_MOD_OPTIONS = dict(
     sliding_window_ms = 100,            # ms; centred window width for denoising (try 50-200)
     tf_resp_win       = (0.1, 0.5),     # s; response window for tuning curves
-    n_tf_bins         = 15,             # quantile bins for tuning curves (equal trial count)
-    n_permutations    = 1000,           # shuffles for significance tests
+    n_tf_bins         = 12,             # quantile bins for tuning curves (equal pulses)
+    n_permutations    = 500,            # shuffles for significance tests
     n_fake_licks_per_session = None,    # None = match real lick count
-    plot_during_extraction = True,      # for debugging
+    plot_during_extraction = False,      # for debugging
 )
 
 PLOT_OPTIONS = dict(

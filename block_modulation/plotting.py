@@ -10,10 +10,10 @@ from pathlib import Path
 
 sns.set_style("whitegrid")
 
-from config import PATHS, ANALYSIS_OPTIONS, PLOT_OPTIONS, BLOCK_MOD_OPTIONS
+from config import PATHS, ANALYSIS_OPTIONS, PLOT_OPTIONS
 from data.load_responses import load_psth_mean
 from utils.filing import get_response_files
-from utils.smoothing import centred_boxcar, causal_boxcar
+from utils.smoothing import causal_boxcar
 
 
 EARLY_COL = PLOT_OPTIONS['colours']['block']['early']
@@ -38,7 +38,6 @@ def _load_all_tuning_results(npx_dir):
 
 #%% analysis 1: tuning curves
 
-TF_XLIM = (-0.5, 0.5)
 PSTH_SMOOTH_BINS = int(round(
     2 * ANALYSIS_OPTIONS['sp_smooth_width'] / ANALYSIS_OPTIONS['sp_bin_width']))
 
@@ -72,7 +71,7 @@ def _draw_panel(ax, x, pop_mean, group_means, colour, label=None):
     for gm in group_means:
         ax.plot(x, gm, color=colour, alpha=thin_alpha, linewidth=0.7)
     ax.plot(x, pop_mean, color=colour, linewidth=2.5, label=label)
-    ax.set_xlim(TF_XLIM)
+
     ax.axhline(0, color='grey', linewidth=0.5, linestyle='--')
     ax.axvline(0, color='grey', linewidth=0.5, linestyle='--')
 
@@ -164,24 +163,29 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
 
     # collect pre-binned data from each session
     session_binned = []
+    session_bin_centres = []
     session_sig = []
     session_gains = []
     session_meta = []
 
     for result in all_results:
         session_binned.append(result['binned'])
+        session_bin_centres.append(result['bin_centres'])
         session_sig.append(result['gain_p_tf'] < 0.05)
-        session_gains.append(np.mean(result['gain'], axis=1))
+        session_gains.append(result['gain_pooled'])
         session_meta.append((result['animal'], result['session']))
+
+    # use mean bin centres across sessions as shared x-axis
+    bin_centres = np.nanmean(session_bin_centres, axis=0)
 
     # --- per-session ---
     for i, (binned, sig, gains, (animal, sess)) in enumerate(
             zip(session_binned, session_sig, session_gains, session_meta)):
-        n = binned['early'].shape[1]
-        group_idx = [np.array([u]) for u in range(n)]
+        n_units = binned['early'].shape[1]
+        group_idx = [np.array([u]) for u in range(n_units)]
         sp = save_dir / animal / sess / 'tuning_curves.png' if save_dir else None
-        fig = _make_tuning_figure(binned, group_idx, sig, gains,
-                                   f'{animal}/{sess}', sp)
+        fig = _make_tuning_figure(binned, session_bin_centres[i], group_idx,
+                                   sig, gains, f'{animal}/{sess}', sp)
         plt.close(fig)
 
     # --- per-animal ---
@@ -213,7 +217,8 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         animal_groups[animal] = groups
 
         sp = save_dir / animal / 'tuning_curves.png' if save_dir else None
-        fig = _make_tuning_figure(ab, groups, a_sig, a_gains, animal, sp)
+        fig = _make_tuning_figure(ab, bin_centres, groups, a_sig, a_gains,
+                                   animal, sp)
         plt.close(fig)
 
     # --- grand average ---
@@ -231,34 +236,41 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         offset += n
 
     sp = save_dir / 'tuning_curves_grand.png' if save_dir else None
-    fig = _make_tuning_figure(grand, grand_groups, grand_sig, grand_gains,
-                               'Grand average', sp)
+    fig = _make_tuning_figure(grand, bin_centres, grand_groups, grand_sig,
+                               grand_gains, 'Grand average', sp)
     plt.close(fig)
 
 
 #%% per-neuron tuning figures
 
-def _plot_single_neuron(n, tc, tf_psths, fa_psths, unit_info, gains_pooled,
-                         sig, save_path=None):
+def _plot_single_neuron(n, tc, tc_sem, bin_centres, tf_psths, fa_psths,
+                         unit_info, gains, offsets, gain_p_block, gain_diff_p,
+                         offset_diff_p, save_path=None):
     """
     single neuron figure: tuning curve + TF PSTH + FA PSTH.
     tc: {block: (n_bins, nN)} pre-binned tuning curves
-    tf_psths: {block: (nN, nT), 't_ax': array} or None
-    fa_psths: {block: (nN, nT) or None, 't_ax': array} or None
+    tc_sem: {block: (n_bins, nN)} SEM per bin
+    bin_centres: (n_bins,) median TF per bin
+    gains: (nN, 2) per-block gains, offsets: (nN, 2) per-block offsets
+    gain_p_block: (nN, 2) per-block gain p-values
+    gain_diff_p: (nN,) gain block difference p-values
+    offset_diff_p: (nN,) offset block difference p-values
     """
     area = unit_info.iloc[n].get('brain_region_comb', '?') if hasattr(unit_info, 'iloc') else '?'
-    pref = 'fast' if gains_pooled[n] > 0 else 'slow'
-    sig_str = 'sig' if sig[n] else 'n.s.'
+    pref = 'fast' if (gains[n, 0] + gains[n, 1]) > 0 else 'slow'
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    # panel 0: tuning curve
+    # panel 0: tuning curve with SEM bands and linear fits
     ax = axes[0]
-    for block, colour in [('early', EARLY_COL), ('late', LATE_COL)]:
-        curve = _smooth_tuning(tc[block][:, n])
-        ax.plot(TF_X, curve[TF_MASK], color=colour, linewidth=1.5,
-                label=f'{block} block')
-    ax.set_xlim(TF_XLIM)
+    for block, colour, bi in [('early', EARLY_COL, 0), ('late', LATE_COL, 1)]:
+        y = tc[block][:, n]
+        sem = tc_sem[block][:, n]
+        ax.plot(bin_centres, y, color=colour, linewidth=1.5, label=f'{block} block')
+        ax.fill_between(bin_centres, y - sem, y + sem, color=colour, alpha=0.2)
+        fit_y = gains[n, bi] * bin_centres + offsets[n, bi]
+        ax.plot(bin_centres, fit_y, color=colour, linewidth=1, linestyle='--')
+
     ax.set_xlabel('TF (log2 octaves)')
     ax.set_ylabel('Response (z-scored FR)')
     ax.set_title('TF tuning curve')
@@ -300,8 +312,12 @@ def _plot_single_neuron(n, tc, tf_psths, fa_psths, unit_info, gains_pooled,
     ax.set_xlabel('Time from FA lick (s)')
     ax.set_title('FA-aligned PSTH')
 
-    fig.suptitle(f'{area} | unit {n} | gain={gains_pooled[n]:.3f} ({sig_str}) | {pref}-pref',
-                 fontsize=10)
+    fig.suptitle(
+        f'{area} | unit {n} | early: g={gains[n,0]:.3f} (p={gain_p_block[n,0]:.3f}) | '
+        f'late: g={gains[n,1]:.3f} (p={gain_p_block[n,1]:.3f}) | '
+        f'gain diff p={gain_diff_p[n]:.3f} | offset diff p={offset_diff_p[n]:.3f} | '
+        f'{pref}-pref',
+        fontsize=9)
     plt.tight_layout()
 
     if save_path:
@@ -337,6 +353,8 @@ def _load_session_psths(sess_dir):
             for pol in ['pos', 'neg']:
                 cond = f'{block_prefix}_early_{pol}'
                 m, s, t = load_psth_mean(psth_path, 'tf', cond)
+                if m is None:
+                    raise ValueError(f'no events for {cond}')
                 m, s, t = _smooth_and_trim(m, s, t)
                 tf_data[f'{block}_{pol}'] = m
                 tf_data[f'{block}_{pol}_sem'] = s
@@ -354,6 +372,8 @@ def _load_session_psths(sess_dir):
                          ('late', 'lateBlock_early_fa')]:
         try:
             m, s, t = load_psth_mean(psth_path, 'lick', cond)
+            if m is None:
+                continue
             m, s, t = _smooth_and_trim(m, s, t)
             fa_data[block] = m
             fa_data[block + '_sem'] = s
@@ -378,18 +398,24 @@ def plot_session_su_tuning(result, sess_dir, save_dir=None):
     animal = result['animal']
     sess = result['session']
     tc = result['binned']
+    tc_sem = result['binned_sem']
+    bin_centres = result['bin_centres']
     unit_info = result['unit_info']
-    gains_pooled = np.mean(result['gain'], axis=1)
-    sig = result['gain_p_tf'] < 0.05
-    n_neurons = len(gains_pooled)
+    gains = result['gain']
+    offsets = result['offset']
+    gain_p_block = result['gain_p_block']
+    gain_diff_p = result['gain_diff_p']
+    offset_diff_p = result['offset_diff_p']
+    n_neurons = gains.shape[0]
 
     tf_psths, fa_psths = _load_session_psths(sess_dir)
 
     for n in range(n_neurons):
         sp = (save_dir / 'su_tuning' / animal / sess / f'unit_{n:04d}.png'
               if save_dir else None)
-        _plot_single_neuron(n, tc, tf_psths, fa_psths, unit_info,
-                             gains_pooled, sig, sp)
+        _plot_single_neuron(n, tc, tc_sem, bin_centres, tf_psths, fa_psths,
+                             unit_info, gains, offsets, gain_p_block,
+                             gain_diff_p, offset_diff_p, sp)
 
 
 def plot_single_unit_tuning(npx_dir=PATHS['npx_dir_local'], save_dir=None):
@@ -418,39 +444,56 @@ def plot_single_unit_tuning(npx_dir=PATHS['npx_dir_local'], save_dir=None):
 
 def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
     """
-    gain and offset summaries: scatter centrepiece with null band,
-    flanked by difference histograms
+    gain and offset summaries.
+    row 1: all units - gain diff histogram, gain scatter, offset diff histogram
+    row 2: TF-responsive only - gain scatter, offset scatter, gain/offset diff by pref
     """
     all_results = _load_all_tuning_results(npx_dir)
     all_gain = []
     all_offset = []
     all_gain_diff_p = []
     all_offset_diff_p = []
+    all_gain_p_tf = []
+    all_gain_pooled = []
 
     for result in all_results:
         all_gain.append(result['gain'])
         all_offset.append(result['offset'])
         all_gain_diff_p.append(result['gain_diff_p'])
         all_offset_diff_p.append(result['offset_diff_p'])
+        all_gain_p_tf.append(result['gain_p_tf'])
+        all_gain_pooled.append(result['gain_pooled'])
 
     gain = np.concatenate(all_gain)            # (nN_total, 2)
     offset = np.concatenate(all_offset)
     gain_diff_p = np.concatenate(all_gain_diff_p)
     offset_p = np.concatenate(all_offset_diff_p)
+    gain_p_tf = np.concatenate(all_gain_p_tf)
+    gain_pooled = np.concatenate(all_gain_pooled)
     gain_diff = gain[:, 0] - gain[:, 1]
     offset_diff = offset[:, 0] - offset[:, 1]
-    mean_gains = np.mean(gain, axis=1)
 
+    # all-units masks (block diff significance)
     sig = gain_diff_p < 0.05
     nonsig = ~sig
+    mean_gains = np.mean(gain, axis=1)
     fast_sig = sig & (mean_gains > 0)
     slow_sig = sig & (mean_gains < 0)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6),
-                              gridspec_kw={'width_ratios': [1, 2, 1]})
+    # TF-responsive masks (pooled gain significance + pref from pooled gain)
+    tf_resp = gain_p_tf < 0.05
+    fast_resp = tf_resp & (gain_pooled > 0)
+    slow_resp = tf_resp & (gain_pooled < 0)
+    n_tf = tf_resp.sum()
+    n_fast = fast_resp.sum()
+    n_slow = slow_resp.sum()
 
-    # left: gain difference histogram
-    ax = axes[0]
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+
+    #%% row 1: all units
+
+    # top left: gain difference histogram
+    ax = axes[0, 0]
     ax.hist(gain_diff, bins=50, color='grey', alpha=0.7, edgecolor='black',
             linewidth=0.5)
     if sig.any():
@@ -461,13 +504,11 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
                label=f'median = {np.nanmedian(gain_diff):.4f}')
     ax.set_xlabel('Gain difference (early - late)')
     ax.set_ylabel('Number of units')
-    ax.set_title('TF gain: block difference')
+    ax.set_title('All units: gain block difference')
     ax.legend(fontsize=8)
 
-    # centre: early vs late gain scatter (centrepiece)
-    ax = axes[1]
-
-    # null band: 95% range of gain differences for non-significant units
+    # top centre: early vs late gain scatter (all units)
+    ax = axes[0, 1]
     nonsig_diffs = gain_diff[nonsig]
     if len(nonsig_diffs) > 10:
         band = np.nanpercentile(np.abs(nonsig_diffs), 95)
@@ -492,12 +533,12 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
     ax.set_ylim(lims)
     ax.set_xlabel('Gain (early block)')
     ax.set_ylabel('Gain (late block)')
-    ax.set_title(f'TF gain: early vs late (n={len(gain)})')
+    ax.set_title(f'All units: gain early vs late (n={len(gain)})')
     ax.set_aspect('equal')
     ax.legend(fontsize=7, loc='upper left')
 
-    # right: offset difference histogram
-    ax = axes[2]
+    # top right: offset difference histogram
+    ax = axes[0, 2]
     ax.hist(offset_diff, bins=50, color='grey', alpha=0.7, edgecolor='black',
             linewidth=0.5)
     sig_off = offset_p < 0.05
@@ -509,8 +550,65 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
                label=f'median = {np.nanmedian(offset_diff):.4f}')
     ax.set_xlabel('Offset difference (early - late)')
     ax.set_ylabel('Number of units')
-    ax.set_title('TF offset: block difference')
+    ax.set_title('All units: offset block difference')
     ax.legend(fontsize=8)
+
+    #%% row 2: TF-responsive units only
+
+    # helper for early-vs-late scatter with fast/slow colouring
+    def _scatter_early_late(ax, vals, fast_mask, slow_mask, xlabel, ylabel, title):
+        if fast_mask.any():
+            ax.scatter(vals[fast_mask, 0], vals[fast_mask, 1], s=15, alpha=0.5,
+                       color=FAST_COL, label=f'Fast (n={fast_mask.sum()})', zorder=2)
+        if slow_mask.any():
+            ax.scatter(vals[slow_mask, 0], vals[slow_mask, 1], s=15, alpha=0.5,
+                       color=SLOW_COL, label=f'Slow (n={slow_mask.sum()})', zorder=2)
+        lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
+                max(ax.get_xlim()[1], ax.get_ylim()[1])]
+        ax.plot(lims, lims, color='black', linewidth=1, linestyle='--', zorder=1)
+        ax.set_xlim(lims)
+        ax.set_ylim(lims)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.set_aspect('equal')
+        ax.legend(fontsize=7)
+
+    # bottom left: gain scatter (TF-responsive)
+    ax = axes[1, 0]
+    _scatter_early_late(ax, gain[tf_resp], fast_resp[tf_resp], slow_resp[tf_resp],
+                        'Gain (early block)', 'Gain (late block)',
+                        f'TF-responsive: gain (n={n_tf})')
+
+    # bottom centre: offset scatter (TF-responsive)
+    ax = axes[1, 1]
+    _scatter_early_late(ax, offset[tf_resp], fast_resp[tf_resp], slow_resp[tf_resp],
+                        'Offset (early block)', 'Offset (late block)',
+                        f'TF-responsive: offset (n={n_tf})')
+
+    # bottom right: gain and offset diff distributions by pref
+    ax = axes[1, 2]
+    if n_fast > 0:
+        ax.hist(gain_diff[fast_resp], bins=30, color=FAST_COL, alpha=0.4,
+                edgecolor=FAST_COL, linewidth=0.5,
+                label=f'Gain diff - fast (n={n_fast})')
+    if n_slow > 0:
+        ax.hist(gain_diff[slow_resp], bins=30, color=SLOW_COL, alpha=0.4,
+                edgecolor=SLOW_COL, linewidth=0.5,
+                label=f'Gain diff - slow (n={n_slow})')
+    if n_fast > 0:
+        ax.hist(offset_diff[fast_resp], bins=30, color=FAST_COL, alpha=0.4,
+                edgecolor=FAST_COL, linewidth=0.5, linestyle='--', hatch='//',
+                label=f'Offset diff - fast')
+    if n_slow > 0:
+        ax.hist(offset_diff[slow_resp], bins=30, color=SLOW_COL, alpha=0.4,
+                edgecolor=SLOW_COL, linewidth=0.5, linestyle='--', hatch='//',
+                label=f'Offset diff - slow')
+    ax.axvline(0, color='black', linewidth=1, linestyle='--')
+    ax.set_xlabel('Difference (early - late)')
+    ax.set_ylabel('Number of units')
+    ax.set_title('TF-responsive: gain & offset diffs by pref')
+    ax.legend(fontsize=7)
 
     plt.tight_layout()
 
@@ -678,7 +776,7 @@ def plot_motor_projection(npx_dir=PATHS['npx_dir_local'], save_dir=None):
                    extent=[t_lick[0], t_lick[-1], t_tf[0], t_tf[-1]])
     ax.set_xlabel('Pre-lick time (s)')
     ax.set_ylabel('Post-pulse time (s)')
-    ax.set_title('Difference (early − late)')
+    ax.set_title('Difference (early - late)')
     ax.axhline(0, color='white', linewidth=0.5, linestyle='--')
     ax.axvline(0, color='white', linewidth=0.5, linestyle='--')
     plt.colorbar(im, ax=ax, shrink=0.8)
@@ -713,7 +811,8 @@ def plot_motor_projection(npx_dir=PATHS['npx_dir_local'], save_dir=None):
     # bottom middle: motor subspace N per animal
     ax = axes[1, 1]
     n_motors = [results[a]['n_motor'] for a in animals]
-    ax.bar(range(len(animals)), n_motors, color='grey', edgecolor='black')
+    ax.scatter(range(len(animals)), n_motors, color='grey', edgecolor='black',
+               s=40, zorder=3)
     ax.set_xticks(range(len(animals)))
     ax.set_xticklabels(animals, rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('N motor dimensions')

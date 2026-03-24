@@ -193,22 +193,26 @@ def bin_responses_by_tf(responses, tf_vals, edges):
     bin per-trial responses using pre-computed bin edges.
     responses: (nEv, nN), tf_vals: (nEv,)
     edges: (n_bins + 1,) bin edges
-    returns: binned (n_bins, nN), bin_centres (n_bins,) median TF per bin
+    returns: binned (n_bins, nN), bin_sem (n_bins, nN), bin_centres (n_bins,)
     """
     n_bins = len(edges) - 1
     n_neurons = responses.shape[1]
     bin_idx = np.digitize(tf_vals, edges[1:-1])  # 0 to n_bins-1
 
     binned = np.full((n_bins, n_neurons), np.nan)
+    bin_sem = np.full((n_bins, n_neurons), np.nan)
     bin_centres = np.full(n_bins, np.nan)
 
     for b in range(n_bins):
         mask = bin_idx == b
-        if mask.sum() > 0:
+        count = mask.sum()
+        if count > 0:
             binned[b] = np.nanmean(responses[mask], axis=0)
             bin_centres[b] = np.median(tf_vals[mask])
+            if count > 1:
+                bin_sem[b] = np.nanstd(responses[mask], axis=0, ddof=1) / np.sqrt(count)
 
-    return binned, bin_centres
+    return binned, bin_sem, bin_centres
 
 
 #%% analysis 1: single-unit TF tuning curves by block
@@ -258,8 +262,15 @@ def extract_tuning_curves(sess_dir,
     n_perm = bm_ops['n_permutations']
 
     # already smoothed and time-averaged in _load_all_tf_trials
-    block_mean_resp = {block: data[block]['mean_resp'] for block in ['early', 'late']}
-    block_tf = {block: data[block]['tf_vals'] for block in ['early', 'late']}
+    # drop events with any NaN (response window fell outside FR matrix)
+    block_mean_resp = {}
+    block_tf = {}
+    for block in ['early', 'late']:
+        resp = data[block]['mean_resp']
+        tf = data[block]['tf_vals']
+        valid = ~np.any(np.isnan(resp), axis=1)
+        block_mean_resp[block] = resp[valid]
+        block_tf[block] = tf[valid]
 
     n_neurons = block_mean_resp['early'].shape[1]
 
@@ -271,23 +282,39 @@ def extract_tuning_curves(sess_dir,
         gains[:, bi] = g
         offsets[:, bi] = o
 
-    # test 1: TF encoding significance (shuffle TF across pooled trials)
+    # test 1a: per-block gain significance (shuffle TF within each block)
+    gain_p_block = np.ones((n_neurons, 2))
+    for bi, block in enumerate(['early', 'late']):
+        tf_vals = block_tf[block]
+        resp = block_mean_resp[block]
+        real_g = gains[:, bi]
+
+        tf_centered = tf_vals - tf_vals.mean()
+        ss_x = tf_centered @ tf_centered
+
+        if ss_x > 0:
+            shuf_tf = np.array([np.random.permutation(tf_vals)
+                                for _ in range(n_perm)])
+            shuf_centered = shuf_tf - tf_vals.mean()
+            null_g = (shuf_centered @ resp) / ss_x
+            gain_p_block[:, bi] = np.mean(
+                np.abs(null_g) >= np.abs(real_g), axis=0)
+
+    # test 1b: pooled gain significance (shuffle TF across both blocks)
     all_resp = np.concatenate([block_mean_resp['early'],
-                               block_mean_resp['late']], axis=0)  # (nEv_total, nN)
+                               block_mean_resp['late']], axis=0)
     all_tf = np.concatenate([block_tf['early'], block_tf['late']])
     n_total = len(all_tf)
 
-    real_gains_pooled, _ = _vectorised_ols(all_tf, all_resp)  # (nN,)
+    real_gains_pooled, _ = _vectorised_ols(all_tf, all_resp)
 
-    tf_mean = all_tf.mean()
-    tf_var = all_tf.var()
-    resp_mean = all_resp.mean(axis=0)  # (nN,)
+    tf_centered = all_tf - all_tf.mean()
+    ss_x = tf_centered @ tf_centered
 
-    # all permutations as a single matrix multiply
     shuf_tf = np.array([np.random.permutation(all_tf)
-                        for _ in range(n_perm)])  # (n_perm, n_total)
-    null_gains = (shuf_tf @ all_resp / n_total
-                  - tf_mean * resp_mean) / tf_var  # (n_perm, nN)
+                        for _ in range(n_perm)])
+    shuf_centered = shuf_tf - all_tf.mean()
+    null_gains = (shuf_centered @ all_resp) / ss_x
     gain_p_tf = np.mean(np.abs(null_gains) >= np.abs(real_gains_pooled), axis=0)
 
     # test 2: block difference (shuffle block labels)
@@ -318,21 +345,26 @@ def extract_tuning_curves(sess_dir,
     edges = np.percentile(all_tf_pooled, np.linspace(0, 100, n_bins + 1))
 
     binned = {}
+    binned_sem = {}
     bin_centres = None
     for block in ['early', 'late']:
-        b, c = bin_responses_by_tf(block_mean_resp[block], block_tf[block], edges)
+        b, s, c = bin_responses_by_tf(block_mean_resp[block], block_tf[block], edges)
         binned[block] = b
+        binned_sem[block] = s
         if bin_centres is None:
             bin_centres = c
 
     results = {
         'gain': gains,
         'offset': offsets,
+        'gain_pooled': real_gains_pooled,  # (nN,) pooled gain across blocks
+        'gain_p_block': gain_p_block,      # (nN, 2) per-block gain p-values
         'gain_p_tf': gain_p_tf,
         'gain_diff_p': gain_diff_p,
         'offset_diff_p': offset_diff_p,
-        'binned': binned,           # {block: (n_bins, nN)}
-        'bin_centres': bin_centres,  # (n_bins,) median TF per bin
+        'binned': binned,                  # {block: (n_bins, nN)}
+        'binned_sem': binned_sem,          # {block: (n_bins, nN)}
+        'bin_centres': bin_centres,        # (n_bins,) median TF per bin
         'unit_info': session.unit_info,
         'animal': session.animal,
         'session': session.name,
@@ -438,7 +470,6 @@ def compute_coding_rotation(npx_dir=PATHS['npx_dir_local'],
         # build pseudo-population mean responses per TF per block
         # shape: (n_tf_values, n_neurons_total, n_time)
         pseudo_pop = {}
-        pseudo_pop_all_trials = {}  # for permutation test - need trial-level
 
         for block in ['early', 'late']:
             session_means = []
@@ -457,111 +488,100 @@ def compute_coding_rotation(npx_dir=PATHS['npx_dir_local'],
             # concatenate neurons across sessions: (n_tf, total_nN, nT)
             pseudo_pop[block] = np.concatenate(session_means, axis=1)
 
-        # compute coding vectors at each time bin
+        # vectorised coding vector regression across all time bins
+        # valid mask is constant across time (NaN pattern is per TF x session)
         n_neurons_total = pseudo_pop['early'].shape[1]
+        n_tf = len(all_tf_unique)
+
+        def _coding_vectors_vectorised(pop):
+            """
+            compute coding vector at each time bin via vectorised OLS.
+            pop: (n_tf, nN, nT). returns (nT, nN) coding vectors (gain per neuron).
+            """
+            valid = ~np.any(np.isnan(pop[:, :, 0]), axis=1)  # same for all t
+            if valid.sum() < 3:
+                return np.full((n_time, n_neurons_total), np.nan)
+            tf_v = all_tf_unique[valid]
+            tf_c = tf_v - tf_v.mean()
+            ss = tf_c @ tf_c
+            if ss == 0:
+                return np.full((n_time, n_neurons_total), np.nan)
+            # pop[valid] is (n_valid, nN, nT) -> reshape to (n_valid, nN*nT)
+            resp_v = pop[valid]
+            n_valid = resp_v.shape[0]
+            resp_flat = resp_v.reshape(n_valid, -1)  # (n_valid, nN*nT)
+            gains_flat = (tf_c @ resp_flat) / ss     # (nN*nT,)
+            return gains_flat.reshape(n_neurons_total, n_time).T  # (nT, nN)
+
         coding_vectors = {}
         for block in ['early', 'late']:
-            vectors = np.zeros((n_time, n_neurons_total))
-            for t in range(n_time):
-                # at each time bin, regress mean response against TF
-                resp_at_t = pseudo_pop[block][:, :, t]  # (n_tf, nN)
-                valid = ~np.any(np.isnan(resp_at_t), axis=1)
-                if valid.sum() < 3:
-                    vectors[t] = np.nan
-                    continue
-                X = np.column_stack([all_tf_unique[valid],
-                                     np.ones(valid.sum())])
-                beta = np.linalg.lstsq(X, resp_at_t[valid], rcond=None)[0]
-                vectors[t] = beta[0]
-            coding_vectors[block] = vectors
+            coding_vectors[block] = _coding_vectors_vectorised(pseudo_pop[block])
 
-        # between-block angle and cosine similarity at each time bin
-        cosine_sim = np.zeros(n_time)
-        angle = np.zeros(n_time)
-        magnitude = {'early': np.zeros(n_time), 'late': np.zeros(n_time)}
+        # vectorised cosine similarity and angle between blocks
+        # coding_vectors[block] is (nT, nN)
+        v_e = coding_vectors['early']
+        v_l = coding_vectors['late']
+        magnitude = {
+            'early': np.linalg.norm(v_e, axis=1),
+            'late': np.linalg.norm(v_l, axis=1),
+        }
 
-        for t in range(n_time):
-            v_early = coding_vectors['early'][t]
-            v_late = coding_vectors['late'][t]
+        dot_el = np.sum(v_e * v_l, axis=1)
+        denom = magnitude['early'] * magnitude['late']
+        valid_t = denom > 0
+        cosine_sim = np.full(n_time, np.nan)
+        cosine_sim[valid_t] = np.clip(dot_el[valid_t] / denom[valid_t], -1, 1)
+        angle = np.full(n_time, np.nan)
+        angle[valid_t] = np.degrees(np.arccos(cosine_sim[valid_t]))
 
-            norm_e = np.linalg.norm(v_early)
-            norm_l = np.linalg.norm(v_late)
-            magnitude['early'][t] = norm_e
-            magnitude['late'][t] = norm_l
-
-            if norm_e > 0 and norm_l > 0:
-                cos = np.dot(v_early, v_late) / (norm_e * norm_l)
-                cos = np.clip(cos, -1, 1)
-                cosine_sim[t] = cos
-                angle[t] = np.degrees(np.arccos(cos))
-            else:
-                cosine_sim[t] = np.nan
-                angle[t] = np.nan
-
-        # within-block temporal evolution: angle between t and t+1
+        # within-block temporal evolution
         within_block_rotation = {}
         for block in ['early', 'late']:
-            rot = np.zeros(n_time - 1)
-            for t in range(n_time - 1):
-                v1 = coding_vectors[block][t]
-                v2 = coding_vectors[block][t + 1]
-                n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
-                if n1 > 0 and n2 > 0:
-                    cos = np.clip(np.dot(v1, v2) / (n1 * n2), -1, 1)
-                    rot[t] = np.degrees(np.arccos(cos))
-                else:
-                    rot[t] = np.nan
+            v = coding_vectors[block]
+            v1, v2 = v[:-1], v[1:]
+            n1 = np.linalg.norm(v1, axis=1)
+            n2 = np.linalg.norm(v2, axis=1)
+            ok = (n1 > 0) & (n2 > 0)
+            rot = np.full(n_time - 1, np.nan)
+            cos = np.clip(np.sum(v1[ok] * v2[ok], axis=1) / (n1[ok] * n2[ok]),
+                          -1, 1)
+            rot[ok] = np.degrees(np.arccos(cos))
             within_block_rotation[block] = rot
 
-        # null distribution: shuffle block labels on trial-averaged data
-        null_cosine = np.zeros((n_perm, n_time))
+        # null distribution: shuffle block labels, vectorised
+        # for each TF value, randomly swap early/late means
+        # swap_mask: (n_perm, n_tf) boolean
+        swap_mask = np.random.rand(n_perm, n_tf) > 0.5
 
-        # pool the per-TF means across blocks for shuffling
-        # pseudo_pop[block] is (n_tf, nN, nT)
-        # for each TF value, we have the early-block mean and late-block mean
-        # shuffling block = randomly assigning these two means to "block A" vs "block B"
+        pop_e = pseudo_pop['early']  # (n_tf, nN, nT)
+        pop_l = pseudo_pop['late']
+
+        null_cosine = np.full((n_perm, n_time), np.nan)
         for p in range(n_perm):
-            shuf_pop = {'early': np.empty_like(pseudo_pop['early']),
-                        'late': np.empty_like(pseudo_pop['late'])}
-            for i in range(len(all_tf_unique)):
-                if np.random.rand() > 0.5:
-                    shuf_pop['early'][i] = pseudo_pop['late'][i]
-                    shuf_pop['late'][i] = pseudo_pop['early'][i]
-                else:
-                    shuf_pop['early'][i] = pseudo_pop['early'][i]
-                    shuf_pop['late'][i] = pseudo_pop['late'][i]
+            swap = swap_mask[p]  # (n_tf,) boolean
+            shuf_e = pop_e.copy()
+            shuf_l = pop_l.copy()
+            shuf_e[swap] = pop_l[swap]
+            shuf_l[swap] = pop_e[swap]
 
-            for t in range(n_time):
-                shuf_vectors = {}
-                for block in ['early', 'late']:
-                    resp_at_t = shuf_pop[block][:, :, t]
-                    valid = ~np.any(np.isnan(resp_at_t), axis=1)
-                    if valid.sum() < 3:
-                        shuf_vectors[block] = np.zeros(n_neurons_total)
-                        continue
-                    X = np.column_stack([all_tf_unique[valid],
-                                         np.ones(valid.sum())])
-                    beta = np.linalg.lstsq(X, resp_at_t[valid], rcond=None)[0]
-                    shuf_vectors[block] = beta[0]
+            sv_e = _coding_vectors_vectorised(shuf_e)  # (nT, nN)
+            sv_l = _coding_vectors_vectorised(shuf_l)
 
-                v1, v2 = shuf_vectors['early'], shuf_vectors['late']
-                n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
-                if n1 > 0 and n2 > 0:
-                    null_cosine[p, t] = np.clip(
-                        np.dot(v1, v2) / (n1 * n2), -1, 1)
-                else:
-                    null_cosine[p, t] = np.nan
+            ne = np.linalg.norm(sv_e, axis=1)
+            nl = np.linalg.norm(sv_l, axis=1)
+            ok = (ne > 0) & (nl > 0)
+            null_cosine[p, ok] = np.clip(
+                np.sum(sv_e[ok] * sv_l[ok], axis=1) / (ne[ok] * nl[ok]),
+                -1, 1)
 
-        # p-value at each time bin
-        cosine_p = np.zeros(n_time)
-        for t in range(n_time):
-            null_vals = null_cosine[:, t]
-            valid_null = null_vals[~np.isnan(null_vals)]
-            if len(valid_null) > 0:
-                # low cosine = more rotation = interesting
-                cosine_p[t] = np.mean(valid_null <= cosine_sim[t])
-            else:
-                cosine_p[t] = np.nan
+        # p-value at each time bin (low cosine = more rotation = interesting)
+        valid_null = ~np.isnan(null_cosine)
+        null_count = valid_null.sum(axis=0)
+        cosine_p = np.full(n_time, np.nan)
+        has_null = null_count > 0
+        cosine_p[has_null] = np.nansum(
+            null_cosine[:, has_null] <= cosine_sim[has_null],
+            axis=0) / null_count[has_null]
 
         all_results[animal] = {
             't_ax': t_ax,
@@ -781,34 +801,24 @@ def compute_motor_projection(npx_dir=PATHS['npx_dir_local'],
         heatmaps_motor = {}
         heatmaps_nonmotor = {}
 
+        # normalise lick directions at each time point: (nN, nT_lick)
+        lick_norms = np.linalg.norm(lick_even_pop, axis=0, keepdims=True)
+        lick_norms[lick_norms == 0] = 1.0
+        lick_normed = lick_even_pop / lick_norms
+
+        # normalise non-motor components: (n_tf_nonmotor, nN)
+        nm_norms = np.linalg.norm(nonmotor_components, axis=1, keepdims=True)
+        nm_norms[nm_norms == 0] = 1.0
+        nm_normed = nonmotor_components / nm_norms
+
         for block in ['early', 'late']:
             tf_block = tf_pop[block].T  # (nT_tf, nN)
 
-            # motor projection: for each (t_tf, t_lick), project TF response
-            # onto lick direction at that time
-            motor_heatmap = np.zeros((n_tf_time, n_lick_time))
-            for t_lick in range(n_lick_time):
-                lick_dir = lick_even_pop[:, t_lick]  # (nN,)
-                lick_norm = np.linalg.norm(lick_dir)
-                if lick_norm > 0:
-                    lick_dir_normed = lick_dir / lick_norm
-                else:
-                    lick_dir_normed = lick_dir
-                for t_tf in range(n_tf_time):
-                    motor_heatmap[t_tf, t_lick] = np.dot(
-                        tf_block[t_tf], lick_dir_normed)
-            heatmaps_motor[block] = motor_heatmap
+            # motor: (nT_tf, nN) @ (nN, nT_lick) -> (nT_tf, nT_lick)
+            heatmaps_motor[block] = tf_block @ lick_normed
 
-            # non-motor projection: project onto non-motor TF dimensions
-            nonmotor_heatmap = np.zeros((n_tf_time, n_tf_nonmotor))
-            for d in range(n_tf_nonmotor):
-                direction = nonmotor_components[d]
-                norm = np.linalg.norm(direction)
-                if norm > 0:
-                    direction = direction / norm
-                for t_tf in range(n_tf_time):
-                    nonmotor_heatmap[t_tf, d] = np.dot(tf_block[t_tf], direction)
-            heatmaps_nonmotor[block] = nonmotor_heatmap
+            # non-motor: (nT_tf, nN) @ (n_tf_nonmotor, nN).T -> (nT_tf, n_tf_nonmotor)
+            heatmaps_nonmotor[block] = tf_block @ nm_normed.T
 
         all_results[animal] = {
             'tf_t_ax': tf_t_ax,
