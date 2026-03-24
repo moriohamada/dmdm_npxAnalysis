@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.signal import lfilter
+from scipy.ndimage import uniform_filter1d
 
 
 def causal_boxcar(data, window_bins, axis=-1):
@@ -20,6 +21,27 @@ def causal_boxcar(data, window_bins, axis=-1):
     if is_df:
         return pd.DataFrame(smoothed, index=data.index, columns=data.columns)
     return smoothed
+
+def centred_boxcar(data, window_bins, axis=-1):
+    """centred (non-causal) boxcar smooth, nan-aware"""
+    arr = np.asarray(data, dtype=float)
+    window_bins = int(round(window_bins))
+    if window_bins <= 1:
+        return arr.copy()
+    # ensure odd window for symmetric centering
+    if window_bins % 2 == 0:
+        window_bins += 1
+    valid = ~np.isnan(arr)
+    arr_filled = np.where(valid, arr, 0.0)
+    sums = uniform_filter1d(arr_filled, size=window_bins, axis=axis,
+                            mode='constant', cval=0.0)
+    counts = uniform_filter1d(valid.astype(float), size=window_bins, axis=axis,
+                              mode='constant', cval=0.0)
+    with np.errstate(invalid='ignore'):
+        result = sums / counts
+    result[counts == 0] = np.nan
+    return result
+
 
 def causal_gaussian(data, sigma_bins, truncate=3.0):
     """

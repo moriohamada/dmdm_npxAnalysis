@@ -55,12 +55,6 @@ run_lds_analysis(npx_dir=PATHS['npx_dir_local'],
                  ops=ANALYSIS_OPTIONS,
                  n_workers=4)
 
-#%% Empirical flow fields
-#
-# run_flow_analysis(npx_dir=PATHS['npx_dir_local'],
-#                   ops=ANALYSIS_OPTIONS,
-#                   n_workers=4)
-
 #%% Visualise LDS trajectories + flow fields
 
 from pathlib import Path
@@ -85,28 +79,46 @@ for psth_path in psth_paths:
                               save_dir=str(save_dir))
 
 
+#%% Tuning curves
+from config import PATHS, ANALYSIS_OPTIONS
 
-# #%% Visualise empirical flow fields
-#
-# for psth_path in psth_paths:
-#     sess_dir = Path(psth_path).parent
-#     for event_type in ['tf', 'bl', 'lick']:
-#         save_path = (Path(PATHS['plots_dir']) / 'flow' / sess_dir.parent.name
-#                      / sess_dir.name / f'flow_{event_type}.png')
-#         plot_empirical_flow(sess_dir,
-#                             pca_key='event_all',
-#                             event_type=event_type,
-#                             ops=ANALYSIS_OPTIONS,
-#                             save_path=str(save_path))
+from config import BLOCK_MOD_OPTIONS
+from block_modulation.analysis import extract_all_tuning_curves
+extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
+                          ops=ANALYSIS_OPTIONS,
+                          bm_ops=BLOCK_MOD_OPTIONS)
 
-#%% Demixing — train and save per session
+from block_modulation.plotting import plot_tuning_curves, plot_gain_offset_distributions
+block_mod_plot_dir = Path(PATHS['plots_dir']) / 'block_modulation'
+plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
+plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
+
+#%% TF coding dim rotation
+from block_modulation.analysis import compute_coding_rotation
+compute_coding_rotation(npx_dir=PATHS['npx_dir_local'],
+                        ops=ANALYSIS_OPTIONS,
+                        bm_ops=BLOCK_MOD_OPTIONS)
+
+from block_modulation.plotting import plot_coding_rotation
+plot_coding_rotation(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
+
+#%% motor dim extraction + tf resps
+from block_modulation.analysis import compute_motor_projection
+compute_motor_projection(npx_dir=PATHS['npx_dir_local'],
+                         ops=ANALYSIS_OPTIONS,
+                         bm_ops=BLOCK_MOD_OPTIONS)
+
+from block_modulation.plotting import plot_motor_projection
+plot_motor_projection(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
+
+#%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS
 from demixing.run import run_demixing
 run_demixing(npx_dir=PATHS['npx_dir_local'],
              overwrite=True,
              ops=DEMIXING_OPTIONS)
 
-#%% Demixing — latent PSTHs
+#%% Demixing - latent PSTHs
 from data.session import Session
 from demixing.analysis import load_latents
 from demixing.plotting import plot_latent_psths
@@ -124,7 +136,7 @@ for psth_path in psth_paths:
     fig = plot_latent_psths(latent_data.z_all, latent_data, session, ops=ANALYSIS_OPTIONS)
     fig.savefig(save_dir / 'latent_psths.png', dpi=150, bbox_inches='tight')
 
-#%% Demixing — predict licking from latents
+#%% Demixing - predict licking from latents
 from demixing.lick_prediction import run_latent_lick_prediction
 run_latent_lick_prediction(npx_dir=PATHS['npx_dir_local'],
                            ops=DEMIXING_OPTIONS)

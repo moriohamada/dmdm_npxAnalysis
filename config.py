@@ -1,3 +1,4 @@
+import numpy as np
 
 PATHS = dict(
     npx_dir_ceph  = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
@@ -14,7 +15,7 @@ ANALYSIS_OPTIONS = dict(
 
     tf_outlier = 1.0,                 # std deviations away from mean to consider an outlier
 
-    min_trial_dur   = 2.0,            # s; minimum trial duration
+    min_trial_dur   = 1.5,            # s; minimum trial duration
     rmv_time_around_move = 1.5,       # s; remove this time around aborts/licks
     rmv_time_around_bl = 1.0,         # s; remove this time from baseline.
 
@@ -47,6 +48,26 @@ ANALYSIS_OPTIONS = dict(
     flow_n_bins = 15,             # bins per dimension for flow field
     flow_min_count = 50,          # minimum time bin pairs per grid bin to estimate flow
 
+    # Behavioural analysis
+    change_tfs    = [1, 1.25, 1.35, 1.5, 2, 4],
+    change_wins   = {'early': [3, 8], 'late': [10.5, 15.5]},
+    ignore_trial_start  = 2,              # s; ignore FAs in first seconds of trial
+    ignore_first_sessions = 2,            # ignore first N sessions after introducing blocks
+
+    smooth_tf          = 5,               # samples; moving average for lick-triggered analyses
+    frame_rate         = 60,
+    tf_sample_step     = 3,               # subsample every 3 frames
+    tf_sample_rate     = 20,              # Hz; = 60/3
+    n_pre_lick_samples = 40,              # 2s at 20Hz
+
+    hazard_bin_size = 0.5,                # s
+    hazard_bin_step = 0.1,                # s
+
+    tf_pulse_bin_centres = np.arange(-1, 1, .025),
+    tf_pulse_bin_width   = 0.1,           # octaves
+    tf_pulse_lick_win    = [0.2, 1.5],    # s; time after TF pulse to count as 'licked'
+
+    sig_thresh = 0.05,
 )
 
 GLM_OPTIONS = dict(
@@ -127,6 +148,15 @@ DEMIXING_OPTIONS = dict(
     test_frac   = 0.2,
 )
 
+BLOCK_MOD_OPTIONS = dict(
+    sliding_window_ms = 100,            # ms; centred window width for denoising (try 50-200)
+    tf_resp_win       = (0.1, 0.5),     # s; response window for tuning curves
+    n_tf_bins         = 15,             # quantile bins for tuning curves (equal trial count)
+    n_permutations    = 1000,           # shuffles for significance tests
+    n_fake_licks_per_session = None,    # None = match real lick count
+    plot_during_extraction = True,      # for debugging
+)
+
 PLOT_OPTIONS = dict(
     colours = dict(
         block = {
@@ -139,6 +169,11 @@ PLOT_OPTIONS = dict(
             'neg': ( 57/255, 106/255, 177/255),  # Blue
         },
 
+        tf_pref = {
+            'fast': (204/255,  37/255,  41/255),  # Red
+            'slow': ( 57/255, 106/255, 177/255),  # Blue
+        },
+
         ch_tf_cmap = 'viridis',
     ),
 
@@ -147,38 +182,4 @@ PLOT_OPTIONS = dict(
     # (bl, lick)
 )
 
-import numpy as np
-
-BEHAVIOUR_PATHS = dict(
-    by_subj = '/media/morio/Data_Fast/dmdm_temporalExpectation/by_subj/',
-    behaviour_mat = '/media/morio/Data_Fast/dmdm_temporalExpectation/behaviour_extended.mat',
-)
-
-BEHAVIOUR_PARAMS = dict(
-    change_tfs    = [1, 1.25, 1.35, 1.5, 2, 4],
-    change_wins   = {'early': [3, 8], 'late': [10.5, 15.5]},
-    exp_change_time    = 8,              # s; split trial into early and late
-    ignore_trial_start = 2,              # s; ignore FAs in first seconds of trial
-    min_trial_dur      = 2,              # s
-    rmv_time_around    = 1.5,            # s
-
-    min_hits_in_session       = 30,
-    ignore_first_sessions     = 2,       # ignore first N sessions after introducing blocks
-    ignore_first_block_trials = 5,
-
-    smooth_tf          = 5,              # samples; moving average for lick-triggered analyses
-    frame_rate         = 60,
-    tf_sample_step     = 3,              # subsample every 3 frames
-    tf_sample_rate     = 20,             # Hz; = 60/3
-    n_pre_lick_samples = 40,             # 2s at 20Hz
-
-    hazard_bin_size = 0.5,               # s
-    hazard_bin_step = 0.1,               # s
-
-    tf_pulse_bin_centres = np.arange(-1, 1, .025),
-    tf_pulse_bin_width   = 0.1,          # octaves
-    tf_pulse_lick_win    = [0.2, 1.5],   # s; time after TF pulse to count as 'licked'
-
-    sig_thresh = 0.05,
-)
 

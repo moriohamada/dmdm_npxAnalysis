@@ -1,5 +1,5 @@
 from pathlib import Path
-from config import PATHS, BEHAVIOUR_PARAMS
+from config import PATHS
 
 plot_dir = Path(PATHS['plots_dir']) / 'behaviour'
 plot_dir.mkdir(parents=True, exist_ok=True)

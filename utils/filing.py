@@ -2,6 +2,7 @@
 useful functions for navigating directories, getting paths for relevant files etc.
 """
 import os
+from pathlib import Path
 import pandas as pd
 
 
@@ -26,6 +27,19 @@ def get_response_files(npx_dir: str):
                 psth_paths.append(os.path.join(sess_folder, 'psths.h5'))
 
     return psth_paths
+
+def get_session_dirs_by_animal(npx_dir: str):
+    """group session directories by animal, returns {animal: [sess_dir, ...]}"""
+    psth_paths = get_response_files(npx_dir)
+    animals = {}
+    for path in psth_paths:
+        sess_dir = Path(path).parent
+        animal = sess_dir.parent.name
+        if animal not in animals:
+            animals[animal] = []
+        animals[animal].append(sess_dir)
+    return animals
+
 
 def get_session_files(npx_dir: str,
                       npx_only = True):

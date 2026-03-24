@@ -10,12 +10,12 @@ from pathlib import Path
 from sklearn.decomposition import PCA
 from scipy.ndimage import uniform_filter1d
 
-from config import PATHS, BEHAVIOUR_PARAMS
+from config import PATHS, ANALYSIS_OPTIONS
 
 BEHAVIOUR_DATA_DIR = os.path.join(PATHS['npx_dir_local'], 'behaviour')
 
 
-def build_dfs_from_sessions(npx_dir, config=BEHAVIOUR_PARAMS):
+def build_dfs_from_sessions(npx_dir, config=ANALYSIS_OPTIONS):
     """
     build {subject: trials_df} dict from npx session files.
     maps column names to match what the analysis functions expect:
@@ -55,7 +55,7 @@ def build_dfs_from_sessions(npx_dir, config=BEHAVIOUR_PARAMS):
     return dfs_by_subj
 
 
-def filter_sessions(dfs, config=BEHAVIOUR_PARAMS):
+def filter_sessions(dfs, config=ANALYSIS_OPTIONS):
     """remove early sessions and sessions with too few hits"""
     df_filtered = dfs.copy()
     for subj in df_filtered:
@@ -68,23 +68,21 @@ def filter_sessions(dfs, config=BEHAVIOUR_PARAMS):
             if df.loc[sess_mask, 'IsHit'].sum() < config['min_hits_in_session']:
                 rmv_idx.extend(df[sess_mask].index)
         rmv_idx.extend(
-            df[df['tr_in_block'] < config['ignore_first_block_trials']].index)
+            df[df['tr_in_block'] < config['ignore_first_trials_in_block']].index)
         df_filtered[subj] = df.drop(set(rmv_idx))
     return df_filtered
 
 
-def convert_tf_to_octaves(dfs, baseline=1.0):
-    df_converted = dfs.copy()
-    for subj in df_converted:
-        df = df_converted[subj]
-        df['stim_TF'] = df['stim_TF'].apply(lambda tf: np.log2(np.array(tf) / baseline))
-        df_converted[subj] = df
-    return df_converted
+def _strip_and_convert_tf(tf_raw):
+    """strip grey-screen zeros from raw TF array and convert to log2 octaves"""
+    tf_raw = np.array(tf_raw)
+    tf_stim = tf_raw[tf_raw > 0]
+    return np.log2(tf_stim)
 
 
 #%% psychometrics
 
-def extract_psychometric(dfs, config=BEHAVIOUR_PARAMS):
+def extract_psychometric(dfs, config=ANALYSIS_OPTIONS):
     """extract hit rate and RTs for changes across conditions"""
     change_tfs = config['change_tfs']
     n_subj, n_chs = len(dfs), len(change_tfs)
@@ -119,12 +117,13 @@ def extract_psychometric(dfs, config=BEHAVIOUR_PARAMS):
 
 #%% lick-triggered stimulus
 
-def extract_perilick_info(dfs, config=BEHAVIOUR_PARAMS):
+def extract_perilick_info(dfs, config=ANALYSIS_OPTIONS):
     """extract peri-lick TF sequences for each trial across all subjects"""
     n_samples = config.get('n_pre_lick_samples', 40)
     frame_step = config.get('tf_sample_step', 3)
     frame_rate = config.get('frame_rate', 60)
     smooth_size = config['smooth_tf']
+    smooth_origin = int(-(smooth_size - 1) / 2)
 
     all_lick_info = {}
 
@@ -144,18 +143,16 @@ def extract_perilick_info(dfs, config=BEHAVIOUR_PARAMS):
             else:
                 continue
 
-            tf_seq = uniform_filter1d(
-                row['stim_TF'], size=smooth_size,
-                origin=int(-(smooth_size - 1) / 2))
-            tag_seq = row['stim_tag']
+            tf_oct = _strip_and_convert_tf(row['stim_TF'])
+            tf_smooth = uniform_filter1d(tf_oct, size=smooth_size,
+                                         origin=smooth_origin)
 
             if not np.isnan(lick_time):
-                stim_on_frame = np.argmax(np.array(tag_seq) != 'G')
-                lick_frame = stim_on_frame + round(lick_time * frame_rate) - 1
-                all_sample_frames = np.arange(stim_on_frame, len(tf_seq), frame_step)
+                lick_frame = round(lick_time * frame_rate) - 1
+                all_sample_frames = np.arange(0, len(tf_smooth), frame_step)
                 valid = all_sample_frames[all_sample_frames <= lick_frame]
                 first = max(0, len(valid) - n_samples)
-                stim_before = np.array(tf_seq)[valid[first:]]
+                stim_before = tf_smooth[valid[first:]]
                 pad = n_samples - len(stim_before)
                 if pad > 0:
                     stim_before = np.concatenate([np.full(pad, np.nan), stim_before])
@@ -180,10 +177,10 @@ def extract_perilick_info(dfs, config=BEHAVIOUR_PARAMS):
     return all_lick_info
 
 
-def extract_elts(lick_triggered_data, config=BEHAVIOUR_PARAMS):
+def extract_elts(lick_triggered_data, config=ANALYSIS_OPTIONS):
     """extract early-lick-triggered TF sequences for 3 conditions"""
     t_early = config['ignore_trial_start']
-    t_split = config['exp_change_time']
+    t_split = config['tr_split_time']
 
     conditions = {
         'earlyBlock_early': lambda row: (row['hazardblock'] == 'early'
@@ -199,6 +196,11 @@ def extract_elts(lick_triggered_data, config=BEHAVIOUR_PARAMS):
     lts = {cond: {} for cond in conditions}
 
     for subj, df in lick_triggered_data.items():
+        if df.empty:
+            for cond in conditions:
+                lts[cond][subj] = np.full(
+                    (0, config.get('n_pre_lick_samples', 40)), np.nan)
+            continue
         for cond, cond_fn in conditions.items():
             mask = df.apply(cond_fn, axis=1)
             trials = df.loc[mask, 'stimBefore'].values
@@ -210,7 +212,7 @@ def extract_elts(lick_triggered_data, config=BEHAVIOUR_PARAMS):
     return lts
 
 
-def calculate_elta(lts, config=BEHAVIOUR_PARAMS):
+def calculate_elta(lts, config=ANALYSIS_OPTIONS):
     """average early-lick-triggered TF across subjects for each condition"""
     elta = {}
     for cond, subj_data in lts.items():
@@ -228,7 +230,7 @@ def calculate_elta(lts, config=BEHAVIOUR_PARAMS):
     return elta
 
 
-def parallel_analysis(data, actual_ev, config=BEHAVIOUR_PARAMS, n_iter=100):
+def parallel_analysis(data, actual_ev, config=ANALYSIS_OPTIONS, n_iter=100):
     """parallel analysis using synthetic stimuli matching the generative process"""
     n_trials, n_features = data.shape
     smooth_size = config['smooth_tf']
@@ -244,13 +246,13 @@ def parallel_analysis(data, actual_ev, config=BEHAVIOUR_PARAMS, n_iter=100):
         pca_rand.fit(raw)
         random_evs[i] = pca_rand.explained_variance_ratio_
 
-    random_ev_thresh = np.percentile(random_evs, config['sig_thresh'], axis=0)
+    random_ev_thresh = np.percentile(random_evs, 100 * (1 - config['sig_thresh']), axis=0)
     n_sig = int(np.sum(actual_ev > random_ev_thresh))
 
     return n_sig, random_ev_thresh
 
 
-def calculate_eltc(lts, config=BEHAVIOUR_PARAMS):
+def calculate_eltc(lts, config=ANALYSIS_OPTIONS):
     """run PCA per subject on lick-triggered stimuli for each condition"""
     eltc = {}
     for cond, subj_data in lts.items():
@@ -284,7 +286,7 @@ def calculate_eltc(lts, config=BEHAVIOUR_PARAMS):
     return eltc
 
 
-def extract_baseline_projections(dfs, eltc, config=BEHAVIOUR_PARAMS,
+def extract_baseline_projections(dfs, eltc, config=ANALYSIS_OPTIONS,
                                  n_components=3, lookahead=1.0, stepsize=5):
     """slide 1s windows across pre-change baseline, project onto top PCs"""
     from numpy.lib.stride_tricks import sliding_window_view
@@ -307,9 +309,9 @@ def extract_baseline_projections(dfs, eltc, config=BEHAVIOUR_PARAMS,
             all_licked = []
 
             for _, row in df.iterrows():
-                tf = uniform_filter1d(
-                    np.array(row['stim_TF']),
-                    size=smooth_size, origin=smooth_origin)
+                tf_oct = _strip_and_convert_tf(row['stim_TF'])
+                tf = uniform_filter1d(tf_oct, size=smooth_size,
+                                      origin=smooth_origin)
                 sampled = tf[::frame_step]
 
                 change_sample = min(int(row['stimT'] * sample_rate), len(sampled))
@@ -384,7 +386,7 @@ def align_eltc(eltc, projections):
 
 #%% hazard rates
 
-def calculate_el_hazard(dfs, config=BEHAVIOUR_PARAMS):
+def calculate_el_hazard(dfs, config=ANALYSIS_OPTIONS):
     """FA hazard rate over baseline period, by block"""
     bin_size = config.get('hazard_bin_size', 0.5)
     bin_step = config.get('hazard_bin_step', 0.1)
@@ -432,7 +434,7 @@ def calculate_el_hazard(dfs, config=BEHAVIOUR_PARAMS):
 
 #%% pulse-aligned lick probability
 
-def _extract_tf_pulses(dfs, config=BEHAVIOUR_PARAMS):
+def _extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
     frame_step = config.get('tf_sample_step', 3)
     frame_rate = config.get('frame_rate', 60)
     sample_rate = 1 / (frame_step / frame_rate)
@@ -440,7 +442,12 @@ def _extract_tf_pulses(dfs, config=BEHAVIOUR_PARAMS):
     all_dfs = []
 
     for subj, df in dfs.items():
-        tf_subsampled = [np.array(tf)[::frame_step] for tf in df['stim_TF'].values]
+        if df.empty:
+            continue
+        tf_subsampled = [_strip_and_convert_tf(tf)[::frame_step]
+                         for tf in df['stim_TF'].values]
+        if len(tf_subsampled) == 0:
+            continue
         max_len = max(len(t) for t in tf_subsampled)
         tf_mat = np.full((len(df), max_len), np.nan)
         for i, t in enumerate(tf_subsampled):
@@ -481,13 +488,13 @@ def _binomial_ci(k, n, alpha=0.05):
     return lo, hi
 
 
-def calculate_pulse_lick_prob(dfs, config=BEHAVIOUR_PARAMS):
+def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
     """for each TF stimulus, ask: did a lick follow within the lick window?"""
     bin_centres = np.array(config.get('tf_pulse_bin_centres',
                                       np.arange(-0.5, 0.55, 0.1)))
     half_width = config.get('tf_pulse_bin_width', 0.2) / 2
     lick_win = config.get('tf_pulse_lick_win', [0.25, 1.0])
-    time_split = config.get('exp_change_time', 8.0)
+    time_split = config.get('tr_split_time', 8.0)
     n_bins = len(bin_centres)
 
     stim_df = _extract_tf_pulses(dfs, config)
@@ -574,7 +581,7 @@ def _load(name, data_dir=BEHAVIOUR_DATA_DIR):
 #%% run all
 
 def extract_all_behavioural(npx_dir=PATHS['npx_dir_local'],
-                            config=BEHAVIOUR_PARAMS,
+                            config=ANALYSIS_OPTIONS,
                             overwrite=False):
     """extract and save all behavioural analyses"""
     data_dir = os.path.join(npx_dir, 'behaviour')
@@ -588,8 +595,8 @@ def extract_all_behavioural(npx_dir=PATHS['npx_dir_local'],
         _save(result, name, data_dir)
         return result
 
-    dfs = _cached('dfs_processed', lambda: convert_tf_to_octaves(
-        filter_sessions(build_dfs_from_sessions(npx_dir, config), config)))
+    dfs = _cached('dfs_processed', lambda:
+        filter_sessions(build_dfs_from_sessions(npx_dir, config), config))
 
     psycho_chrono = _cached('psychometric',
                             lambda: extract_psychometric(dfs, config))

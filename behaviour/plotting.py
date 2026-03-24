@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.ndimage import uniform_filter1d
 
-from config import BEHAVIOUR_PARAMS, PLOT_OPTIONS
+from config import ANALYSIS_OPTIONS, PLOT_OPTIONS
 
 
 def _rgb(colour_tuple, scale=1.0):
@@ -28,7 +28,7 @@ def _block_rgba(block, alpha, scale=1.0):
     return _rgba(PLOT_OPTIONS['colours']['block'][block], alpha, scale)
 
 
-def plot_psychometric(psycho_or_chrono, config=BEHAVIOUR_PARAMS):
+def plot_psychometric(psycho_or_chrono, config=ANALYSIS_OPTIONS):
     change_tfs = config['change_tfs']
 
     if np.nanmax(psycho_or_chrono.flatten()) > 1:
@@ -63,7 +63,7 @@ def plot_psychometric(psycho_or_chrono, config=BEHAVIOUR_PARAMS):
     return fig
 
 
-def plot_elta(elta, config=BEHAVIOUR_PARAMS):
+def plot_elta(elta, config=ANALYSIS_OPTIONS):
     """average early-lick-triggered TF for each condition"""
     n_samples = config.get('n_pre_lick_samples', 40)
     sample_rate = config.get('tf_sample_rate', 20)
@@ -107,7 +107,7 @@ PC_COLOURS = ['rgb(31,119,180)', 'rgb(255,127,14)', 'rgb(44,160,44)',
               'rgb(214,39,40)', 'rgb(148,103,189)']
 
 
-def plot_eltc(eltc, config=BEHAVIOUR_PARAMS, n_components=3, show_parallel=True):
+def plot_eltc(eltc, config=ANALYSIS_OPTIONS, n_components=3, show_parallel=True):
     """PCA components and scree plots for each condition"""
     n_samples = config.get('n_pre_lick_samples', 20)
     sample_rate = config.get('tf_sample_rate', 20)
@@ -203,7 +203,7 @@ def plot_eltc(eltc, config=BEHAVIOUR_PARAMS, n_components=3, show_parallel=True)
     return fig
 
 
-def plot_eltc_comparison(eltc, config=BEHAVIOUR_PARAMS, n_components=3):
+def plot_eltc_comparison(eltc, config=ANALYSIS_OPTIONS, n_components=3):
     """each PC as a subplot, all conditions overlaid"""
     n_samples = config.get('n_pre_lick_samples', 20)
     sample_rate = config.get('tf_sample_rate', 20)
@@ -257,7 +257,7 @@ def plot_eltc_comparison(eltc, config=BEHAVIOUR_PARAMS, n_components=3):
     return fig
 
 
-def plot_el_hazard_rates(hazard_rates, config=BEHAVIOUR_PARAMS):
+def plot_el_hazard_rates(hazard_rates, config=ANALYSIS_OPTIONS):
     line_specs = {
         'early': {'n_key': 'early_n', 'dash': 'solid', 'label': 'Early block'},
         'late': {'n_key': 'late_n', 'dash': 'solid', 'label': 'Late block'},
@@ -344,7 +344,7 @@ def plot_el_hazard_rates(hazard_rates, config=BEHAVIOUR_PARAMS):
     return fig
 
 
-def plot_pulse_aligned_lick_prob(pulse_lick_prob, config=BEHAVIOUR_PARAMS):
+def plot_pulse_aligned_lick_prob(pulse_lick_prob, config=ANALYSIS_OPTIONS):
     line_specs = {
         'early': {'cond_key': 'earlyBlock_earlyTrial', 'dash': 'solid',
                   'label': 'Early block'},

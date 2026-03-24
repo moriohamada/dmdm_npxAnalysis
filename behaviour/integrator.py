@@ -11,7 +11,7 @@ from itertools import product
 from scipy.stats import gaussian_kde
 from joblib import Parallel, delayed
 
-from config import BEHAVIOUR_PARAMS
+from config import ANALYSIS_OPTIONS
 
 
 SEARCH_PARAMS = {
@@ -22,7 +22,7 @@ SEARCH_PARAMS = {
 }
 
 
-def clean_df(df, min_rt=BEHAVIOUR_PARAMS['ignore_trial_start'],
+def clean_df(df, min_rt=ANALYSIS_OPTIONS['ignore_trial_start'],
              include_non_fa=True):
     """keep FA trials (with RT filter) and optionally non-FA trials"""
     fa_mask = df['IsFA'] & (df['rt_FA'] > min_rt) & (df['rt_FA'] <= 8)
@@ -52,7 +52,7 @@ def get_rt_kernel(df, fast_tfs=(2.0, 4.0)):
     return gaussian_kde(rts)
 
 
-def precompute_tf_matrix(df, config=BEHAVIOUR_PARAMS, max_time=8.0):
+def precompute_tf_matrix(df, config=ANALYSIS_OPTIONS, max_time=8.0):
     """build stimulus matrices for the integrator simulation"""
     frame_step = config.get('tf_sample_step', 3)
     frame_rate = config.get('frame_rate', 60)
@@ -80,7 +80,7 @@ def precompute_tf_matrix(df, config=BEHAVIOUR_PARAMS, max_time=8.0):
 
 def simulate_behaviour(real_tf_dev, is_synthetic, trial_lengths, max_samples,
                        threshold=1.0, gain=1.0, tau=0.1, sigma=0.0, N=5000,
-                       config=BEHAVIOUR_PARAMS):
+                       config=ANALYSIS_OPTIONS):
     """vectorised leaky integrator simulation across all trials"""
     frame_step = config.get('tf_sample_step', 3)
     frame_rate = config.get('frame_rate', 60)
