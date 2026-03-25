@@ -80,35 +80,35 @@ for psth_path in psth_paths:
 
 
 #%% Tuning curves
-from config import PATHS, ANALYSIS_OPTIONS
-
-from config import BLOCK_MOD_OPTIONS
-from block_modulation.analysis import extract_all_tuning_curves
+from config import PATHS, ANALYSIS_OPTIONS, TUNING_CURVE_OPS, CODING_DIM_OPS
+from pathlib import Path
+from tuning_curves.analysis import extract_all_tuning_curves
 extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
                           ops=ANALYSIS_OPTIONS,
-                          bm_ops=BLOCK_MOD_OPTIONS)
+                          bm_ops=TUNING_CURVE_OPS,
+                          overwrite=True)
 
-from block_modulation.plotting import plot_tuning_curves, plot_gain_offset_distributions
+from tuning_curves.plotting import plot_tuning_curves, plot_gain_offset_distributions
 block_mod_plot_dir = Path(PATHS['plots_dir']) / 'block_modulation'
 plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
 plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
 
 #%% TF coding dim rotation
-from block_modulation.analysis import compute_coding_rotation
+from coding_dims.analysis import compute_coding_rotation
 compute_coding_rotation(npx_dir=PATHS['npx_dir_local'],
                         ops=ANALYSIS_OPTIONS,
-                        bm_ops=BLOCK_MOD_OPTIONS)
+                        bm_ops=CODING_DIM_OPS)
 
-from block_modulation.plotting import plot_coding_rotation
+from coding_dims.plotting import plot_coding_rotation
 plot_coding_rotation(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
 
 #%% motor dim extraction + tf resps
-from block_modulation.analysis import compute_motor_projection
+from coding_dims.analysis import compute_motor_projection
 compute_motor_projection(npx_dir=PATHS['npx_dir_local'],
                          ops=ANALYSIS_OPTIONS,
-                         bm_ops=BLOCK_MOD_OPTIONS)
+                         bm_ops=CODING_DIM_OPS)
 
-from block_modulation.plotting import plot_motor_projection
+from coding_dims.plotting import plot_motor_projection
 plot_motor_projection(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
 
 #%% Demixing - train and save per session

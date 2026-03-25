@@ -9,8 +9,10 @@ focussing on effects of behavioural and neural correlates of temporal expectatio
 data/                    data loading/handling: sessions, FR matrices, event timings, PSTHs
 utils/                   shared utility functions
 behaviour/               behavioural analyses
+tuning_curves/           single-unit TF tuning curves by block (OLS, permutation tests, quantile-binned curves)
+coding_dims/             coding dimension rotation and motor projection analyses
 lick_pred/               lick prediction model
-glm/                     Poisson GLM 
+glm/                     Poisson GLM
 single_unit/             unit preferences (TF selectivity, block/lick modulation) and PSTH plots
 population/              PCA, lds, population plots
 demixing/                SAE and causal LFADS
@@ -40,6 +42,19 @@ behavioural_analysis.py  behavioural analysis runner script
 6. PCA on event-aligned population responses
 7. LDS
 8. Latent factor analysis w SAE/modified LFADS
+
+### Tuning curves (`tuning_curves/`)
+
+Single-unit TF tuning curves by block. OLS fit of firing rate vs TF value per block, with permutation tests for per-block gain significance, pooled TF encoding, and block difference (gain and offset). Quantile-binned tuning curves with SEM error bands. TF-responsive = significant gain in either block at p < 0.025. Results saved per session (`tuning_curves.pkl`). Uses all TF pulses (not just outliers), loaded from downsampled FR matrix. Config: `TUNING_CURVE_OPS`.
+
+### Coding dimensions (`coding_dims/`)
+
+Two analyses comparing TF coding between early/late hazard-rate blocks:
+
+1. **Coding dimension rotation** - time-resolved TF coding vector (pseudo-population regression) per block, measuring between-block cosine similarity/angle over post-pulse time. Null distribution from block-label shuffling.
+2. **Motor dimension projection** - PCA motor subspace from lick-aligned activity (even/odd cross-validation, fake-lick null), TF responses projected onto motor and non-motor dimensions per block.
+
+Results saved per animal (`coding_rotation.pkl`, `motor_projection.pkl`). Uses outlier TFs from psths.h5. Config: `CODING_DIM_OPS`.
 
 
 #### Data notes

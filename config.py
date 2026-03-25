@@ -51,7 +51,7 @@ ANALYSIS_OPTIONS = dict(
     # Behavioural analysis
     change_tfs    = [1, 1.25, 1.35, 1.5, 2, 4],
     change_wins   = {'early': [3, 8], 'late': [10.5, 15.5]},
-    ignore_trial_start  = 2,              # s; ignore FAs in first seconds of trial
+    ignore_trial_start  = 2,               # s; ignore FAs in first seconds of trial
     ignore_first_sessions = 2,            # ignore first N sessions after introducing blocks
 
     smooth_tf          = 5,               # samples; moving average for lick-triggered analyses
@@ -148,13 +148,18 @@ DEMIXING_OPTIONS = dict(
     test_frac   = 0.2,
 )
 
-BLOCK_MOD_OPTIONS = dict(
-    sliding_window_ms = 100,            # ms; centred window width for denoising (try 50-200)
+TUNING_CURVE_OPS = dict(
     tf_resp_win       = (0.1, 0.5),     # s; response window for tuning curves
     n_tf_bins         = 12,             # quantile bins for tuning curves (equal pulses)
     n_permutations    = 500,            # shuffles for significance tests
+    plot_during_extraction = False,
+)
+
+CODING_DIM_OPS = dict(
+    sliding_window_ms = 100,            # ms; causal boxcar width for FR smoothing
+    n_permutations    = 500,            # shuffles for significance tests
     n_fake_licks_per_session = None,    # None = match real lick count
-    plot_during_extraction = False,      # for debugging
+    plot_during_extraction = False,
 )
 
 PLOT_OPTIONS = dict(
