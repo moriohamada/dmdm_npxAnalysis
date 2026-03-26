@@ -89,27 +89,27 @@ extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
                           overwrite=True)
 
 from tuning_curves.plotting import plot_tuning_curves, plot_gain_offset_distributions
-block_mod_plot_dir = Path(PATHS['plots_dir']) / 'block_modulation'
-plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
-plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
+tc_plot_dir = Path(PATHS['plots_dir']) / 'tuning_curves'
+plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
+plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 
-#%% TF coding dim rotation
-from coding_dims.analysis import compute_coding_rotation
-compute_coding_rotation(npx_dir=PATHS['npx_dir_local'],
-                        ops=ANALYSIS_OPTIONS,
-                        bm_ops=CODING_DIM_OPS)
+#%% TF coding dimensions
+from config import CODING_DIM_OPS
+from coding_dims.analysis import extract_tf_dimensions
+extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
+                      ops=ANALYSIS_OPTIONS,
+                      bm_ops=CODING_DIM_OPS)
 
-from coding_dims.plotting import plot_coding_rotation
-plot_coding_rotation(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
-
-#%% motor dim extraction + tf resps
-from coding_dims.analysis import compute_motor_projection
-compute_motor_projection(npx_dir=PATHS['npx_dir_local'],
+#%% motor coding dimensions
+from coding_dims.analysis import extract_motor_dimensions
+extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
                          ops=ANALYSIS_OPTIONS,
                          bm_ops=CODING_DIM_OPS)
 
-from coding_dims.plotting import plot_motor_projection
-plot_motor_projection(npx_dir=PATHS['npx_dir_local'], save_dir=str(block_mod_plot_dir))
+#%% cross-type analysis
+from coding_dims.analysis import extract_cross_type_analysis
+extract_cross_type_analysis(npx_dir=PATHS['npx_dir_local'],
+                            bm_ops=CODING_DIM_OPS)
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS

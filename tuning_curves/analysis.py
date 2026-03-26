@@ -73,7 +73,7 @@ def _load_all_tf_resps(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=TUNING_CURVE_OPS):
     # filters
     non_trans = all_tf['tr_in_block'] > ops['ignore_first_trials_in_block']
     early_tr = ((all_tf['tr_time'] > ops['rmv_time_around_bl']) &
-                (all_tf['tr_time'] < ops['tr_split_time']))
+                (all_tf['tr_time'] < bm_ops['trial_split_time']))
     t_to_event = np.fmin(all_tf['time_to_lick'], all_tf['time_to_abort'])
     valid = ((all_tf['tr_time'] > ops['rmv_time_around_bl']) &
              (t_to_event > ops['rmv_time_around_move']))
@@ -136,6 +136,19 @@ def bin_responses_by_tf(responses, tf_vals, edges):
             bin_centres[b] = np.median(tf_vals[mask])
             if count > 1:
                 bin_sem[b] = np.nanstd(responses[mask], axis=0, ddof=1) / np.sqrt(count)
+
+    # smooth across bins with [.25, .5, .25] kernel, renormalised at edges
+    for col in range(n_neurons):
+        valid = ~np.isnan(binned[:, col])
+        if valid.sum() >= 3:
+            vals = binned[valid, col].copy()
+            n_v = len(vals)
+            smoothed = np.empty(n_v)
+            smoothed[0] = (0.5 * vals[0] + 0.25 * vals[1]) / 0.75
+            smoothed[-1] = (0.25 * vals[-2] + 0.5 * vals[-1]) / 0.75
+            for i in range(1, n_v - 1):
+                smoothed[i] = 0.25 * vals[i-1] + 0.5 * vals[i] + 0.25 * vals[i+1]
+            binned[valid, col] = smoothed
 
     return binned, bin_sem, bin_centres
 
@@ -204,6 +217,20 @@ def extract_tuning_curves(sess_dir,
             print(f'    skipping: only {len(block_tf[block])} valid {block}-block events '
                   f'(need {min_events})')
             return None
+
+    # subsample larger block to match smaller block
+    n_early = len(block_tf['early'])
+    n_late = len(block_tf['late'])
+    if n_early != n_late:
+        rng = np.random.default_rng(0)
+        if n_early > n_late:
+            idx = rng.choice(n_early, size=n_late, replace=False)
+            block_mean_resp['early'] = block_mean_resp['early'][idx]
+            block_tf['early'] = block_tf['early'][idx]
+        else:
+            idx = rng.choice(n_late, size=n_early, replace=False)
+            block_mean_resp['late'] = block_mean_resp['late'][idx]
+            block_tf['late'] = block_tf['late'][idx]
 
     n_neurons = block_mean_resp['early'].shape[1]
 
@@ -319,7 +346,7 @@ def extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
         for sess_dir in sess_dirs:
             print(f'{animal}/{sess_dir.name}')
             tc_path = sess_dir / 'tuning_curves.pkl'
-            if tc_path.exists() & overwrite==False:
+            if tc_path.exists() and not overwrite:
                 print(f'    tuning curves already extracted.')
                 continue
             results = extract_tuning_curves(sess_dir, ops, bm_ops)
@@ -333,7 +360,7 @@ def extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
                 import gc
                 import matplotlib.pyplot as plt
                 from tuning_curves.plotting import plot_session_su_tuning
-                plots_dir = str(Path(PATHS['plots_dir']) / 'block_modulation')
+                plots_dir = str(Path(PATHS['plots_dir']) / 'tuning_curves')
                 plot_session_su_tuning(results, sess_dir, save_dir=plots_dir)
                 plt.close('all')
                 gc.collect()
@@ -343,7 +370,7 @@ def extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
             import matplotlib.pyplot as plt
             from tuning_curves.plotting import (plot_tuning_curves,
                                                     plot_gain_offset_distributions)
-            plots_dir = str(Path(PATHS['plots_dir']) / 'block_modulation')
+            plots_dir = str(Path(PATHS['plots_dir']) / 'tuning_curves')
             plot_tuning_curves(npx_dir=npx_dir, save_dir=plots_dir)
             plot_gain_offset_distributions(npx_dir=npx_dir, save_dir=plots_dir)
             plt.close('all')

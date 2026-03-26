@@ -149,17 +149,26 @@ DEMIXING_OPTIONS = dict(
 )
 
 TUNING_CURVE_OPS = dict(
-    tf_resp_win       = (0.1, 0.5),     # s; response window for tuning curves
-    n_tf_bins         = 12,             # quantile bins for tuning curves (equal pulses)
+    tf_resp_win       = (0.1, 0.4),     # s; response window for tuning curves
+    n_tf_bins         = 15,             # quantile bins for tuning curves (equal pulses)
     n_permutations    = 500,            # shuffles for significance tests
     plot_during_extraction = False,
+    trial_split_time  = 5,
 )
 
 CODING_DIM_OPS = dict(
     sliding_window_ms = 100,            # ms; causal boxcar width for FR smoothing
     n_permutations    = 500,            # shuffles for significance tests
-    n_fake_licks_per_session = None,    # None = match real lick count
     plot_during_extraction = False,
+    trial_split_time  = 5,              # s; only use TF pulses before this time
+
+    # TF coding direction windows (s, relative to pulse onset)
+    tf_coding_windows = [(0.1, 0.3), (0.3, 0.5)],
+
+    # premotor coding direction windows (s, relative to lick onset)
+    motor_coding_windows = [(-1.0, -0.6), (-0.5, -0.1), (-0.25, 0.0)],
+    motor_baseline_window = (-1.5, -1.0),
+    motor_denoise_pcs = 10,
 )
 
 PLOT_OPTIONS = dict(
@@ -183,8 +192,7 @@ PLOT_OPTIONS = dict(
     ),
 
     smooth_window_short = 250 / 1000,  # s; causal boxcar window for short trajectories (TF, blOn)
-    smooth_window_long  = 500 / 1000,  # s; causal boxcar window for long trajectories
-    # (bl, lick)
+    smooth_window_long  = 500 / 1000,  # s; causal boxcar window for long trajectories (bl, lick)
 )
 
 

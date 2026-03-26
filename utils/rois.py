@@ -18,7 +18,9 @@ AREA_GROUPS = {
     'cerebellum':     ['CUL4 5', 'SIM', 'ANcr1', 'ANcr2', 'CENT',
                         'FN', 'IP', 'DN', 'FL', 'PFL',
                         'DEC', 'NOD', 'LING', 'CUN', 'COPY', 'CB'],
-
+    'pfc':            ['ACA', 'PL', 'ILA', 'ORB', 'FRP'],
+    'mos':            ['MOs'],
+    'striatum':       ['CP'],
     'frontal_motor':  ['FRP', 'MOs', 'ACA', 'PL', 'ILA', 'ORB', 'MOp', 'AI',
                         'CP', 'ACB', 'GPe', 'GPi', 'SNr', 'SNc', 'MD', 'VAL'],
 }

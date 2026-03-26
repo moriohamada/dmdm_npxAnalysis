@@ -60,7 +60,7 @@ def _get_group_averages(data, group_indices, unit_mask=None):
     else:
         d = data
         groups = [np.nanmean(d[:, idx], axis=1) for idx in group_indices]
-    pop = np.nanmean(d, axis=1)
+    pop = np.nanmean(np.column_stack(groups), axis=1)
     return pop, groups
 
 
@@ -85,6 +85,8 @@ def _make_tuning_figure(binned, bin_centres, group_indices, sig_mask,
     """
     x = bin_centres
     valid_x = x[~np.isnan(x)]
+    if len(valid_x) < 2:
+        return None
     margin = (valid_x[-1] - valid_x[0]) * 0.05
     x_lim = (valid_x[0] - margin, valid_x[-1] + margin)
     n_units = binned['early'].shape[1]
@@ -98,17 +100,20 @@ def _make_tuning_figure(binned, bin_centres, group_indices, sig_mask,
     for block in ['early', 'late']:
         norm[block] = binned[block] - np.nanmean(binned[block], axis=0, keepdims=True)
 
-    fig, axes = plt.subplots(3, 4, figsize=(20, 12))
+    fig, axes = plt.subplots(3, 6, figsize=(30, 12))
 
     row_labels = ['Early block', 'Late block', 'Difference (early - late)']
     col_labels = ['All units', 'All units (normalised)',
                   f'TF-responsive (n={n_sig})',
-                  f'TF-responsive (normalised)']
+                  f'TF-responsive (normalised)',
+                  f'Composite F-S (n={n_sig})',
+                  f'Composite F-S (normalised)']
     block_colours = {'early': EARLY_COL, 'late': LATE_COL, 'diff': 'black'}
 
-    for col in range(4):
+    for col in range(6):
         is_norm = col % 2 == 1
-        is_sig = col >= 2
+        is_split = col in (2, 3)
+        is_composite = col in (4, 5)
         data_dict = norm if is_norm else binned
 
         for row in range(3):
@@ -120,12 +125,7 @@ def _make_tuning_figure(binned, bin_centres, group_indices, sig_mask,
             else:
                 data = data_dict['early'] - data_dict['late']
 
-            if not is_sig:
-                colour = block_colours.get(
-                    'early' if row == 0 else ('late' if row == 1 else 'diff'))
-                pop, groups = _get_group_averages(data, group_indices)
-                _draw_panel(ax, x, pop, groups, colour)
-            else:
+            if is_split:
                 if n_fast > 0:
                     pop, groups = _get_group_averages(data, group_indices, fast_mask)
                     _draw_panel(ax, x, pop, groups, FAST_COL,
@@ -136,7 +136,17 @@ def _make_tuning_figure(binned, bin_centres, group_indices, sig_mask,
                                 label=f'Slow (n={n_slow})' if row == 0 else None)
                 if row == 0:
                     ax.legend(fontsize=7)
-
+            elif is_composite:
+                if n_sig > 0:
+                    colour = block_colours.get(
+                        'early' if row == 0 else ('late' if row == 1 else 'diff'))
+                    pop, groups = _get_group_averages(data, group_indices, sig_mask)
+                    _draw_panel(ax, x, pop, groups, colour)
+            else:
+                colour = block_colours.get(
+                    'early' if row == 0 else ('late' if row == 1 else 'diff'))
+                pop, groups = _get_group_averages(data, group_indices)
+                _draw_panel(ax, x, pop, groups, colour)
 
             ax.set_xlim(x_lim)
             if row == 0:
@@ -181,24 +191,25 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         session_gains.append(result['gain_pooled'])
         ui = result['unit_info']
         session_areas.append(ui['brain_region_comb'].values
-                             if hasattr(ui, 'brain_region_comb') else
+                             if 'brain_region_comb' in ui.columns else
                              np.array(['?'] * result['binned']['early'].shape[1]))
         session_meta.append((result['animal'], result['session']))
 
     # use mean bin centres across sessions as shared x-axis
     bin_centres = np.nanmean(session_bin_centres, axis=0)
+    #
+    # # per session
+    # for i, (binned, sig, gains, (animal, sess)) in enumerate(
+    #         zip(session_binned, session_sig, session_gains, session_meta)):
+    #     n_units = binned['early'].shape[1]
+    #     group_idx = [np.array([u]) for u in range(n_units)]
+    #     sp = save_dir / animal / sess / 'tuning_curves.png' if save_dir else None
+    #     fig = _make_tuning_figure(binned, session_bin_centres[i], group_idx,
+    #                                sig, gains, f'{animal}/{sess}', sp)
+    #     if fig is not None:
+    #         plt.close(fig)
 
-    # --- per-session ---
-    for i, (binned, sig, gains, (animal, sess)) in enumerate(
-            zip(session_binned, session_sig, session_gains, session_meta)):
-        n_units = binned['early'].shape[1]
-        group_idx = [np.array([u]) for u in range(n_units)]
-        sp = save_dir / animal / sess / 'tuning_curves.png' if save_dir else None
-        fig = _make_tuning_figure(binned, session_bin_centres[i], group_idx,
-                                   sig, gains, f'{animal}/{sess}', sp)
-        plt.close(fig)
-
-    # --- per-animal ---
+    # per animal
     animals = {}
     for i, (animal, _) in enumerate(session_meta):
         animals.setdefault(animal, []).append(i)
@@ -225,13 +236,41 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         animal_sig[animal] = a_sig
         animal_gains[animal] = a_gains
         animal_groups[animal] = groups
+        animal_areas = np.concatenate([session_areas[i] for i in sess_idx_list])
 
         sp = save_dir / animal / 'tuning_curves.png' if save_dir else None
         fig = _make_tuning_figure(ab, bin_centres, groups, a_sig, a_gains,
                                    animal, sp)
-        plt.close(fig)
+        if fig is not None:
+            plt.close(fig)
 
-    # --- grand average ---
+        # per area group within this animal
+        for group_name in AREA_GROUPS:
+            area_mask = in_group(animal_areas, group_name)
+            if area_mask.sum() < 5:
+                continue
+            area_binned = {block: ab[block][:, area_mask] for block in ['early', 'late']}
+            area_sig_a = a_sig[area_mask]
+            area_gains_a = a_gains[area_mask]
+
+            area_groups = []
+            offset = 0
+            for i in sess_idx_list:
+                sess_mask = in_group(session_areas[i], group_name)
+                n = sess_mask.sum()
+                if n > 0:
+                    area_groups.append(np.arange(offset, offset + n))
+                offset += n
+
+            sp = (save_dir / animal / f'tuning_curves_{group_name}.png'
+                  if save_dir else None)
+            fig = _make_tuning_figure(area_binned, bin_centres, area_groups,
+                                       area_sig_a, area_gains_a,
+                                       f'{animal} - {group_name} (n={area_mask.sum()})', sp)
+            if fig is not None:
+                plt.close(fig)
+
+    # grand average
     animal_list = list(animals.keys())
     grand = {block: np.concatenate([animal_binned[a][block] for a in animal_list], axis=1)
              for block in ['early', 'late']}
@@ -253,9 +292,10 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
     sp = save_dir / 'tuning_curves_grand.png' if save_dir else None
     fig = _make_tuning_figure(grand, bin_centres, grand_groups, grand_sig,
                                grand_gains, 'Grand average', sp)
-    plt.close(fig)
+    if fig is not None:
+        plt.close(fig)
 
-    # --- per area group ---
+    # per area group
     for group_name in AREA_GROUPS:
         area_mask = in_group(grand_areas, group_name)
         if area_mask.sum() < 5:
@@ -281,7 +321,8 @@ def plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         fig = _make_tuning_figure(area_binned, bin_centres, area_groups,
                                    area_sig, area_gains,
                                    f'{group_name} (n={area_mask.sum()})', sp)
-        plt.close(fig)
+        if fig is not None:
+            plt.close(fig)
 
 
 #%% per-neuron tuning figures
@@ -487,44 +528,21 @@ def plot_single_unit_tuning(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         plot_session_su_tuning(result, sess_dir, save_dir)
 
 
-def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
+def _make_gain_offset_figure(gain, offset, gain_diff_p, offset_p, gain_p_block,
+                             gain_pooled, title, save_path=None):
     """
-    gain and offset summaries.
-    row 1: all units - gain diff histogram, gain scatter, offset diff histogram
+    gain and offset summaries for a set of units.
+    row 1: all units - gain scatter, offset scatter, gain diff hist, offset diff hist
     row 2: TF-responsive only - gain scatter, offset scatter, gain/offset diff by pref
     """
-    all_results = _load_all_tuning_results(npx_dir)
-    all_gain = []
-    all_offset = []
-    all_gain_diff_p = []
-    all_offset_diff_p = []
-    all_gain_p_block = []
-    all_gain_pooled = []
-
-    for result in all_results:
-        all_gain.append(result['gain'])
-        all_offset.append(result['offset'])
-        all_gain_diff_p.append(result['gain_diff_p'])
-        all_offset_diff_p.append(result['offset_diff_p'])
-        all_gain_p_block.append(result['gain_p_block'])
-        all_gain_pooled.append(result['gain_pooled'])
-
-    gain = np.concatenate(all_gain)            # (nN_total, 2)
-    offset = np.concatenate(all_offset)
-    gain_diff_p = np.concatenate(all_gain_diff_p)
-    offset_p = np.concatenate(all_offset_diff_p)
-    gain_p_block = np.concatenate(all_gain_p_block)  # (nN_total, 2)
-    gain_pooled = np.concatenate(all_gain_pooled)
     gain_diff = gain[:, 0] - gain[:, 1]
     offset_diff = offset[:, 0] - offset[:, 1]
 
-    # all-units masks (block diff significance)
     sig = gain_diff_p < 0.05
     nonsig = ~sig
     fast_sig = sig & (gain_pooled > 0)
     slow_sig = sig & (gain_pooled < 0)
 
-    # TF-responsive: significant gain in either block (.025 - roughly gives .05 FWER)
     tf_resp = (gain_p_block[:, 0] < 0.025) | (gain_p_block[:, 1] < 0.025)
     fast_resp = tf_resp & (gain_pooled > 0)
     slow_resp = tf_resp & (gain_pooled < 0)
@@ -534,14 +552,27 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
 
     fig, axes = plt.subplots(2, 4, figsize=(24, 12))
 
-    # helper for early-vs-late scatter with fast/slow colouring
-    def _scatter_early_late(ax, vals, fast_mask, slow_mask, xlabel, ylabel, title):
+    def _scatter_early_late(ax, vals, fast_mask, slow_mask, xlabel, ylabel, ttl):
+        other = ~(fast_mask | slow_mask)
+        if other.any():
+            ax.scatter(vals[other, 0], vals[other, 1], s=8, alpha=0.3,
+                       color='grey', zorder=1)
         if fast_mask.any():
             ax.scatter(vals[fast_mask, 0], vals[fast_mask, 1], s=15, alpha=0.5,
                        color=FAST_COL, label=f'Fast (n={fast_mask.sum()})', zorder=2)
+            ax.scatter(np.nanmean(vals[fast_mask, 0]), np.nanmean(vals[fast_mask, 1]),
+                       s=120, color=FAST_COL, edgecolor='black', linewidth=1.5,
+                       marker='D', zorder=5)
         if slow_mask.any():
             ax.scatter(vals[slow_mask, 0], vals[slow_mask, 1], s=15, alpha=0.5,
                        color=SLOW_COL, label=f'Slow (n={slow_mask.sum()})', zorder=2)
+            ax.scatter(np.nanmean(vals[slow_mask, 0]), np.nanmean(vals[slow_mask, 1]),
+                       s=120, color=SLOW_COL, edgecolor='black', linewidth=1.5,
+                       marker='D', zorder=5)
+        if other.any():
+            ax.scatter(np.nanmean(vals[other, 0]), np.nanmean(vals[other, 1]),
+                       s=120, color='grey', edgecolor='black', linewidth=1.5,
+                       marker='D', zorder=5)
         lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
                 max(ax.get_xlim()[1], ax.get_ylim()[1])]
         ax.plot(lims, lims, color='black', linewidth=1, linestyle='--', zorder=1)
@@ -549,13 +580,12 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
         ax.set_ylim(lims)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
+        ax.set_title(ttl)
         ax.set_aspect('equal')
         ax.legend(fontsize=7)
 
     #%% row 1: all units
 
-    # gain scatter (all units, coloured by sig gain diff)
     ax = axes[0, 0]
     ax.scatter(gain[nonsig, 0], gain[nonsig, 1], s=8, alpha=0.3,
                color='grey', label=f'n.s. gain diff (n={nonsig.sum()})', zorder=1)
@@ -565,6 +595,20 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
     if slow_sig.any():
         ax.scatter(gain[slow_sig, 0], gain[slow_sig, 1], s=12, alpha=0.5,
                    color=SLOW_COL, label=f'Sig gain diff, slow (n={slow_sig.sum()})', zorder=3)
+    # mean markers
+    if fast_resp.any():
+        ax.scatter(np.nanmean(gain[fast_resp, 0]), np.nanmean(gain[fast_resp, 1]),
+                   s=120, color=FAST_COL, edgecolor='black', linewidth=1.5,
+                   marker='D', zorder=5)
+    if slow_resp.any():
+        ax.scatter(np.nanmean(gain[slow_resp, 0]), np.nanmean(gain[slow_resp, 1]),
+                   s=120, color=SLOW_COL, edgecolor='black', linewidth=1.5,
+                   marker='D', zorder=5)
+    non_resp = ~tf_resp
+    if non_resp.any():
+        ax.scatter(np.nanmean(gain[non_resp, 0]), np.nanmean(gain[non_resp, 1]),
+                   s=120, color='grey', edgecolor='black', linewidth=1.5,
+                   marker='D', zorder=5)
     lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
             max(ax.get_xlim()[1], ax.get_ylim()[1])]
     ax.plot(lims, lims, color='black', linewidth=1, linestyle='--', zorder=2)
@@ -576,15 +620,34 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
     ax.set_aspect('equal')
     ax.legend(fontsize=7, loc='upper left')
 
-    # offset scatter (all units, coloured by sig offset diff)
     ax = axes[0, 1]
     sig_off = offset_p < 0.05
     nonsig_off = ~sig_off
-    ax.scatter(offset[nonsig_off, 0], offset[nonsig_off, 1], s=8, alpha=0.3,
-               color='grey', label=f'n.s. (n={nonsig_off.sum()})', zorder=1)
-    if sig_off.any():
-        ax.scatter(offset[sig_off, 0], offset[sig_off, 1], s=12, alpha=0.5,
-                   color=EARLY_COL, label=f'Sig offset diff (n={sig_off.sum()})', zorder=3)
+    fast_sig_off = tf_resp & sig_off & (gain_pooled > 0)
+    slow_sig_off = tf_resp & sig_off & (gain_pooled < 0)
+    other_off = ~(fast_sig_off | slow_sig_off)
+    ax.scatter(offset[other_off, 0], offset[other_off, 1], s=8, alpha=0.3,
+               color='grey', label=f'Other (n={other_off.sum()})', zorder=1)
+    if fast_sig_off.any():
+        ax.scatter(offset[fast_sig_off, 0], offset[fast_sig_off, 1], s=12, alpha=0.5,
+                   color=FAST_COL, label=f'TF-resp + sig, fast (n={fast_sig_off.sum()})', zorder=3)
+    if slow_sig_off.any():
+        ax.scatter(offset[slow_sig_off, 0], offset[slow_sig_off, 1], s=12, alpha=0.5,
+                   color=SLOW_COL, label=f'TF-resp + sig, slow (n={slow_sig_off.sum()})', zorder=3)
+    # mean markers
+    if fast_resp.any():
+        ax.scatter(np.nanmean(offset[fast_resp, 0]), np.nanmean(offset[fast_resp, 1]),
+                   s=120, color=FAST_COL, edgecolor='black', linewidth=1.5,
+                   marker='D', zorder=5)
+    if slow_resp.any():
+        ax.scatter(np.nanmean(offset[slow_resp, 0]), np.nanmean(offset[slow_resp, 1]),
+                   s=120, color=SLOW_COL, edgecolor='black', linewidth=1.5,
+                   marker='D', zorder=5)
+    non_resp = ~tf_resp
+    if non_resp.any():
+        ax.scatter(np.nanmean(offset[non_resp, 0]), np.nanmean(offset[non_resp, 1]),
+                   s=120, color='grey', edgecolor='black', linewidth=1.5,
+                   marker='D', zorder=5)
     lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
             max(ax.get_xlim()[1], ax.get_ylim()[1])]
     ax.plot(lims, lims, color='black', linewidth=1, linestyle='--', zorder=2)
@@ -596,84 +659,147 @@ def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None
     ax.set_aspect('equal')
     ax.legend(fontsize=7, loc='upper left')
 
-    # gain diff histogram (all units)
     ax = axes[0, 2]
-    ax.hist(gain_diff, bins=50, color='grey', alpha=0.7, edgecolor='black',
-            linewidth=0.5)
+    w_all = np.ones_like(gain_diff) / len(gain_diff)
+    ax.hist(gain_diff, bins=50, weights=w_all, color='grey', alpha=0.7,
+            edgecolor='black', linewidth=0.5)
     if sig.any():
-        ax.hist(gain_diff[sig], bins=50, color=EARLY_COL, alpha=0.7,
+        w_sig = np.ones(sig.sum()) / sig.sum()
+        ax.hist(gain_diff[sig], bins=50, weights=w_sig, color=EARLY_COL, alpha=0.5,
                 label=f'p < 0.05 (n={sig.sum()})')
     ax.axvline(0, color='black', linewidth=1, linestyle='--')
-    ax.axvline(np.nanmedian(gain_diff), color='red', linewidth=1.5,
-               label=f'median = {np.nanmedian(gain_diff):.4f}')
+    ax.axvline(np.nanmean(gain_diff), color='red', linewidth=1.5,
+               label=f'mean = {np.nanmean(gain_diff):.4f}')
     ax.set_xlabel('Gain difference (early - late)')
-    ax.set_ylabel('Number of units')
+    ax.set_ylabel('Probability')
     ax.set_title('All units: gain diff')
     ax.legend(fontsize=8)
 
-    # offset diff histogram (all units)
     ax = axes[0, 3]
-    ax.hist(offset_diff, bins=50, color='grey', alpha=0.7, edgecolor='black',
-            linewidth=0.5)
+    w_all_off = np.ones_like(offset_diff) / len(offset_diff)
+    ax.hist(offset_diff, bins=50, weights=w_all_off, color='grey', alpha=0.7,
+            edgecolor='black', linewidth=0.5)
     if sig_off.any():
-        ax.hist(offset_diff[sig_off], bins=50, color=EARLY_COL, alpha=0.7,
+        w_sig_off = np.ones(sig_off.sum()) / sig_off.sum()
+        ax.hist(offset_diff[sig_off], bins=50, weights=w_sig_off, color=EARLY_COL, alpha=0.5,
                 label=f'p < 0.05 (n={sig_off.sum()})')
     ax.axvline(0, color='black', linewidth=1, linestyle='--')
-    ax.axvline(np.nanmedian(offset_diff), color='red', linewidth=1.5,
-               label=f'median = {np.nanmedian(offset_diff):.4f}')
+    ax.axvline(np.nanmean(offset_diff), color='red', linewidth=1.5,
+               label=f'mean = {np.nanmean(offset_diff):.4f}')
     ax.set_xlabel('Offset difference (early - late)')
-    ax.set_ylabel('Number of units')
+    ax.set_ylabel('Probability')
     ax.set_title('All units: offset diff')
     ax.legend(fontsize=8)
 
     #%% row 2: TF-responsive units only
 
-    # gain scatter (TF-responsive, by pref)
     ax = axes[1, 0]
     _scatter_early_late(ax, gain[tf_resp], fast_resp[tf_resp], slow_resp[tf_resp],
                         'Gain (early block)', 'Gain (late block)',
                         f'TF-responsive: gain (n={n_tf})')
 
-    # offset scatter (TF-responsive, by pref)
     ax = axes[1, 1]
     _scatter_early_late(ax, offset[tf_resp], fast_resp[tf_resp], slow_resp[tf_resp],
                         'Offset (early block)', 'Offset (late block)',
                         f'TF-responsive: offset (n={n_tf})')
 
-    # gain diff by pref (TF-responsive)
     ax = axes[1, 2]
     if n_fast > 0:
-        ax.hist(gain_diff[fast_resp], bins=30, color=FAST_COL, alpha=0.5,
+        w_fast = np.ones(n_fast) / n_fast
+        ax.hist(gain_diff[fast_resp], bins=30, weights=w_fast, color=FAST_COL, alpha=0.5,
                 label=f'Fast (n={n_fast})')
+        ax.axvline(np.nanmean(gain_diff[fast_resp]), color=FAST_COL, linewidth=2,
+                   linestyle='-', label=f'Fast mean = {np.nanmean(gain_diff[fast_resp]):.4f}')
     if n_slow > 0:
-        ax.hist(gain_diff[slow_resp], bins=30, color=SLOW_COL, alpha=0.5,
+        w_slow = np.ones(n_slow) / n_slow
+        ax.hist(gain_diff[slow_resp], bins=30, weights=w_slow, color=SLOW_COL, alpha=0.5,
                 label=f'Slow (n={n_slow})')
+        ax.axvline(np.nanmean(gain_diff[slow_resp]), color=SLOW_COL, linewidth=2,
+                   linestyle='-', label=f'Slow mean = {np.nanmean(gain_diff[slow_resp]):.4f}')
     ax.axvline(0, color='black', linewidth=1, linestyle='--')
     ax.set_xlabel('Gain difference (early - late)')
-    ax.set_ylabel('Number of units')
+    ax.set_ylabel('Probability')
     ax.set_title('TF-responsive: gain diff by pref')
     ax.legend(fontsize=7)
 
-    # offset diff by pref (TF-responsive)
     ax = axes[1, 3]
     if n_fast > 0:
-        ax.hist(offset_diff[fast_resp], bins=30, color=FAST_COL, alpha=0.5,
+        w_fast = np.ones(n_fast) / n_fast
+        ax.hist(offset_diff[fast_resp], bins=30, weights=w_fast, color=FAST_COL, alpha=0.5,
                 label=f'Fast (n={n_fast})')
+        ax.axvline(np.nanmean(offset_diff[fast_resp]), color=FAST_COL, linewidth=2,
+                   linestyle='-', label=f'Fast mean = {np.nanmean(offset_diff[fast_resp]):.4f}')
     if n_slow > 0:
-        ax.hist(offset_diff[slow_resp], bins=30, color=SLOW_COL, alpha=0.5,
+        w_slow = np.ones(n_slow) / n_slow
+        ax.hist(offset_diff[slow_resp], bins=30, weights=w_slow, color=SLOW_COL, alpha=0.5,
                 label=f'Slow (n={n_slow})')
+        ax.axvline(np.nanmean(offset_diff[slow_resp]), color=SLOW_COL, linewidth=2,
+                   linestyle='-', label=f'Slow mean = {np.nanmean(offset_diff[slow_resp]):.4f}')
     ax.axvline(0, color='black', linewidth=1, linestyle='--')
     ax.set_xlabel('Offset difference (early - late)')
-    ax.set_ylabel('Number of units')
+    ax.set_ylabel('Probability')
     ax.set_title('TF-responsive: offset diff by pref')
     ax.legend(fontsize=7)
 
+    fig.suptitle(title)
     plt.tight_layout()
 
-    if save_dir:
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_dir / 'gain_offset_distributions.png',
-                    dpi=300, bbox_inches='tight')
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
 
     return fig
+
+
+def plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
+    """
+    gain and offset summaries: grand average + per area group
+    """
+    all_results = _load_all_tuning_results(npx_dir)
+    all_gain = []
+    all_offset = []
+    all_gain_diff_p = []
+    all_offset_diff_p = []
+    all_gain_p_block = []
+    all_gain_pooled = []
+    all_areas = []
+
+    for result in all_results:
+        all_gain.append(result['gain'])
+        all_offset.append(result['offset'])
+        all_gain_diff_p.append(result['gain_diff_p'])
+        all_offset_diff_p.append(result['offset_diff_p'])
+        all_gain_p_block.append(result['gain_p_block'])
+        all_gain_pooled.append(result['gain_pooled'])
+        ui = result['unit_info']
+        all_areas.append(ui['brain_region_comb'].values
+                         if 'brain_region_comb' in ui.columns else
+                         np.array(['?'] * result['gain'].shape[0]))
+
+    gain = np.concatenate(all_gain)
+    offset = np.concatenate(all_offset)
+    gain_diff_p = np.concatenate(all_gain_diff_p)
+    offset_p = np.concatenate(all_offset_diff_p)
+    gain_p_block = np.concatenate(all_gain_p_block)
+    gain_pooled = np.concatenate(all_gain_pooled)
+    areas = np.concatenate(all_areas)
+
+    save_dir = Path(save_dir) if save_dir else None
+
+    # grand
+    sp = save_dir / 'gain_offset_distributions.png' if save_dir else None
+    fig = _make_gain_offset_figure(gain, offset, gain_diff_p, offset_p,
+                                    gain_p_block, gain_pooled, 'Grand average', sp)
+    plt.close(fig)
+
+    # per area group
+    for group_name in AREA_GROUPS:
+        mask = in_group(areas, group_name)
+        if mask.sum() < 10:
+            continue
+        sp = (save_dir / f'gain_offset_{group_name}.png' if save_dir else None)
+        fig = _make_gain_offset_figure(
+            gain[mask], offset[mask], gain_diff_p[mask], offset_p[mask],
+            gain_p_block[mask], gain_pooled[mask],
+            f'{group_name} (n={mask.sum()})', sp)
+        plt.close(fig)
