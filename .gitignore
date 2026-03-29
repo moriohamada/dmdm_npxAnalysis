@@ -3,3 +3,5 @@
 /docs/
 .idea/
 __pycache__/
+/coding_dims/ANALYSIS_DESCRIPTION.md
+/test.py

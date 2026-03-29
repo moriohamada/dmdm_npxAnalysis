@@ -2,6 +2,7 @@
 glm kernel plots per neuron
 """
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 sns.set_style("whitegrid")
 
 from config import GLM_OPTIONS, PLOT_OPTIONS
-from glm.fit import extract_kernels
+from neuron_prediction.glm.fit import extract_kernels
 
 
 def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
@@ -18,7 +19,7 @@ def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
     """plot all GLM kernels for one neuron"""
     kernels = extract_kernels(weights, col_map)
 
-    fig, axes = plt.subplots(2, 4, figsize=(20, 7))
+    fig, axes = plt.subplots(2, 2, figsize=(12, 7))
     axes = axes.ravel()
 
     # panel 0: baseline TF
@@ -67,47 +68,6 @@ def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
         ax.plot(t, w, 'k', lw=1.5)
     ax.axhline(0, color='grey', lw=0.5)
     ax.set_title('Trial start')
-    ax.set_xlabel('Time (s)')
-
-    # panel 4: air-puff, reward, abort
-    ax = axes[4]
-    event_preds = [('air_puff', 'orange', 'air-puff'),
-                   ('reward', 'green', 'reward'),
-                   ('abort', 'red', 'abort')]
-    for name, colour, label in event_preds:
-        if name in kernels:
-            t, w = kernels[name]
-            ax.plot(t, w, color=colour, lw=1.2, label=label)
-    ax.axhline(0, color='grey', lw=0.5)
-    ax.set_title('Air-puff / reward / abort')
-    ax.set_xlabel('Time (s)')
-    ax.legend(fontsize=7)
-
-    # panel 5: face motion energy
-    ax = axes[5]
-    if 'face_me' in kernels:
-        t, w = kernels['face_me']
-        ax.plot(t, w, 'k', lw=1.5)
-    ax.axhline(0, color='grey', lw=0.5)
-    ax.set_title('Face motion energy')
-    ax.set_xlabel('Time (s)')
-
-    # panel 6: running
-    ax = axes[6]
-    if 'running' in kernels:
-        t, w = kernels['running']
-        ax.plot(t, w, 'k', lw=1.5)
-    ax.axhline(0, color='grey', lw=0.5)
-    ax.set_title('Running wheel')
-    ax.set_xlabel('Time (s)')
-
-    # panel 7: pupil
-    ax = axes[7]
-    if 'pupil' in kernels:
-        t, w = kernels['pupil']
-        ax.plot(t, w, 'k', lw=1.5)
-    ax.axhline(0, color='grey', lw=0.5)
-    ax.set_title('Pupil')
     ax.set_xlabel('Time (s)')
 
     # title

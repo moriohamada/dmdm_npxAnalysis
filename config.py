@@ -85,25 +85,52 @@ GLM_OPTIONS = dict(
     kern_abort       = (-1.25, 0.25),
     kern_face_me     = (-0.05, 0.8),
     kern_running     = (-0.05, 0.8),
-    kern_pupil       = (-0.75, 0.75),
+    # kern_pupil removed - data contains NaNs across sessions
 
     n_phase_bins = 12,
-
-    # CV
-    n_outer_folds = 10,
-    n_inner_folds = 10,
 
     # unit classification thresholds
     min_r = 0.2,
     lesion_alpha = 0.01,
 
     # predictor groups to lesion together for unit classification
-    # correlated predictors removed together to avoid compensation
     lesion_groups = {
-        'tf':        ['tf', 'phase_up', 'phase_down'],
-        'lick_prep': ['lick_prep'],
-        'lick_exec': ['lick_exec', 'face_me', 'running'],
+        'tf':            ['tf'],
+        'lick_prep':     ['lick_prep'],
+        'lick_exec':     ['lick_exec'],
+        'time_in_trial': ['time_ramp'],
+        'block':         ['block'],
     },
+
+    # group lasso regularisation
+    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2, 1e-1],
+
+    # cross-validation
+    n_folds = 10,
+)
+
+NETWORK_OPTIONS = dict(
+    # architecture
+    hidden_sizes = [0, 8, 16, 32, 64],  # 0 = PoissonLinear (no hidden layer)
+
+    # regularisation
+    group_lasso_lambdas = [0, 1e-3, 1e-2, 1e-1],
+    ortho_lambdas       = [0, 1e-3, 1e-2, 1e-1],
+
+    # training
+    lr          = 1e-4,
+    batch_size  = 4096,
+    max_epochs  = 5000,
+    patience    = 200,
+    val_frac    = 0.1,
+
+    # CV (must match GLM for fair comparison)
+    n_outer_folds = 10,
+    n_inner_folds = 3,
+
+    # neuron selection
+    min_r       = 0.2,
+    require_tf  = False,
 )
 
 LICK_PRED_OPS = dict(

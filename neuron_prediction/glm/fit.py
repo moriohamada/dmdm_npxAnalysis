@@ -8,9 +8,19 @@ import os
 import gc
 from pathlib import Path
 
+import torch
+import torch.nn as nn
+
 from config import PATHS, ANALYSIS_OPTIONS, GLM_OPTIONS
 from data.session import Session
 from utils.filing import load_fr_matrix
+from neuron_prediction.data import (
+    load_glm_inputs, get_trial_fold_indices, neuron_seed,
+    normalise_design_matrix,
+)
+from neuron_prediction.evaluate import pearson_r, lesion_design_matrix
+from neuron_prediction.network.model import PoissonLinear
+from neuron_prediction.network.fit import train_one
 
 
 #%% spike counts
@@ -306,15 +316,6 @@ def build_predictor_spec(session, has_eye_cam=True):
         spec.append((f'change_tf{ch_tf}', ops['kern_change']))
     spec.append(('lick_prep', ops['kern_lick_prep']))
     spec.append(('lick_exec', ops['kern_lick_exec']))
-    spec.append(('air_puff', ops['kern_air_puff']))
-    spec.append(('reward', ops['kern_reward']))
-    spec.append(('abort', ops['kern_abort']))
-    spec.append(('phase_up', None))
-    spec.append(('phase_down', None))
-    if has_eye_cam:
-        spec.append(('face_me', ops['kern_face_me']))
-        spec.append(('pupil', ops['kern_pupil']))
-    spec.append(('running', ops['kern_running']))
 
     return spec
 
@@ -339,18 +340,6 @@ def build_design_matrix(session, t_ax, eye_cam_times):
 
     base_signals['lick_prep'] = _build_lick_prep_predictor(session, t_ax)
     base_signals['lick_exec'] = _build_lick_exec_predictor(session, t_ax)
-    base_signals['air_puff'] = _build_air_puff_predictor(session, t_ax)
-    base_signals['reward'] = _build_reward_predictor(session, t_ax)
-    base_signals['abort'] = _build_abort_predictor(session, t_ax)
-    base_signals['running'] = _build_running_predictor(session, t_ax)
-
-    phase = _build_phase_predictors(session, t_ax)
-    base_signals['phase_up'] = phase['phase_up']
-    base_signals['phase_down'] = phase['phase_down']
-
-    if eye_cam_times is not None:
-        base_signals['face_me'] = _build_face_me_predictor(session, eye_cam_times, t_ax)
-        base_signals['pupil'] = _build_pupil_predictor(session, eye_cam_times, t_ax)
 
     # assemble: time-shift where needed, concatenate
     has_eye_cam = eye_cam_times is not None
@@ -396,18 +385,6 @@ def save_glm_inputs(sess_dir, counts, X, col_map, t_ax, valid_mask):
     np.save(sess_dir / 'glm_valid.npy', valid_mask)
     with open(sess_dir / 'glm_spec.pkl', 'wb') as f:
         pickle.dump(col_map, f)
-
-
-def load_glm_inputs(sess_dir):
-    """load prepped GLM data"""
-    sess_dir = Path(sess_dir)
-    counts = np.load(sess_dir / 'glm_counts.npy')
-    X = np.load(sess_dir / 'glm_design.npy')
-    t_ax = np.load(sess_dir / 'glm_t_ax.npy')
-    valid_mask = np.load(sess_dir / 'glm_valid.npy')
-    with open(sess_dir / 'glm_spec.pkl', 'rb') as f:
-        col_map = pickle.load(f)
-    return counts, X, col_map, t_ax, valid_mask
 
 
 #%% local prep
@@ -499,23 +476,6 @@ def build_job_map(npx_dir=PATHS['npx_dir_local'], output_path=None):
 
 #%% GLM fitting
 
-def _eval_r(y_true, y_pred):
-    """pearson r, or nan if degenerate"""
-    from scipy.stats import pearsonr
-    if len(y_true) < 5 or np.std(y_true) == 0 or np.std(y_pred) == 0:
-        return np.nan
-    return pearsonr(y_true, y_pred.ravel())[0]
-
-
-def _lesion_design_matrix(X, predictor_names, col_map):
-    """zero out columns belonging to a list of predictors"""
-    X_les = X.copy()
-    for name, (col_slice, _) in col_map.items():
-        if name in predictor_names:
-            X_les[:, col_slice] = 0
-    return X_les
-
-
 def build_event_masks(session, t_ax):
     """build boolean masks marking relevant time windows for each lesion group
 
@@ -555,129 +515,200 @@ def build_event_masks(session, t_ax):
     return masks
 
 
-def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
+#%% GLM fitting
+
+def _predict_counts(model, X):
+    """run forward pass, return predicted counts as numpy"""
+    device = next(model.parameters()).device
+    model.eval()
+    with torch.no_grad():
+        X_t = torch.tensor(X, dtype=torch.float32, device=device)
+        return torch.exp(model(X_t)).cpu().numpy()
+
+
+def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
                ops=GLM_OPTIONS):
-    """fit full + lesioned poisson GLMs for one neuron
+    """fit poisson GLM with group lasso for one neuron
 
-    counts_1d: (T,) spike counts
-    X: (T, P) design matrix
-    col_map: dict mapping predictor name -> (col_slice, lags)
-    valid_mask: (T,) bool - bins to include in fitting
-    event_masks: dict mapping group name -> (T,) bool for window-specific eval
+    1. grid search over lambda: for each lambda, fit 10 folds, pick
+       lambda with best mean test r
+    2. lesion analysis: reuse best-lambda fold models, zero out each
+       predictor group, evaluate on same test sets
+    3. refit on all data with best lambda for kernel extraction
+
+    fold_ids: (T,) int array from get_trial_fold_indices. bins with
+        fold_id == -1 are excluded from all fitting and evaluation.
+    event_masks: dict of (T,) bool arrays for windowed evaluation
+        (keys: tf, lick_prep, lick_exec). only used for those three
+        groups; time_in_trial and block use whole-trial r.
+
+    returns dict with weights, bias, best_lambda, fold_ids, full_r,
+    windowed r, and lesioned r per group. returns None if no valid
+    data to fit.
     """
-    import glmnet
+    from config import NETWORK_OPTIONS
 
-    n_folds = ops['n_outer_folds']
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
+    n_folds = ops['n_folds']
+    lambdas = ops['group_lasso_lambdas']
 
-    # restrict to valid bins
-    X_v = X[valid_mask]
-    y_v = counts_1d[valid_mask].astype(np.float64)
-    T_v = len(y_v)
+    # windowed groups get event-mask evaluation, others get whole-trial
+    windowed_groups = {'tf', 'lick_prep', 'lick_exec'}
 
-    # random fold assignment over valid bins
-    fold_ids = np.tile(np.arange(n_folds), T_v // n_folds + 1)[:T_v]
-    np.random.shuffle(fold_ids)
+    # mask to valid bins only
+    valid = fold_ids >= 0
+    X_v = X[valid]
+    y_v = counts_1d[valid].astype(np.float64)
+    folds_v = fold_ids[valid]
 
-    full_r = np.full(n_folds, np.nan)
-    lesioned_r = {name: np.full(n_folds, np.nan) for name in group_names}
-    full_r_window = {name: np.full(n_folds, np.nan) for name in group_names}
-    lesioned_r_window = {name: np.full(n_folds, np.nan) for name in group_names}
-
-    # pre-compute valid-bin event masks
     ev_masks_v = {}
     if event_masks is not None:
-        for gname in group_names:
+        for gname in windowed_groups:
             if gname in event_masks:
-                ev_masks_v[gname] = event_masks[gname][valid_mask]
+                ev_masks_v[gname] = event_masks[gname][valid]
 
-    for k in range(n_folds):
-        test_mask = fold_ids == k
-        train_mask = ~test_mask
+    #%% lambda selection
+    lambda_scores = {}
+    lambda_models = {}
 
-        X_train, y_train = X_v[train_mask], y_v[train_mask]
-        X_test, y_test = X_v[test_mask], y_v[test_mask]
+    for lam in lambdas:
+        fold_r = np.full(n_folds, np.nan)
+        fold_models = {}
 
-        if y_train.sum() == 0 or y_test.sum() == 0:
-            continue
+        for k in range(n_folds):
+            test_mask = folds_v == k
+            train_mask = ~test_mask
+            if test_mask.sum() == 0 or train_mask.sum() == 0:
+                continue
 
-        # fit full model with inner CV for lambda
-        model = glmnet.ElasticNet(alpha=0, n_splits=ops['n_inner_folds'],
-                                   family='poisson')
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-        full_r[k] = _eval_r(y_test, y_pred)
+            X_train, X_test, _, _ = normalise_design_matrix(
+                X_v[train_mask], X_v[test_mask], col_map)
+            y_train, y_test = y_v[train_mask], y_v[test_mask]
 
-        # window-specific evaluation of full model
-        for gname in group_names:
+            if y_train.sum() == 0 or y_test.sum() == 0:
+                continue
+
+            model = PoissonLinear(X_train.shape[1])
+            model, _ = train_one(model, X_train, y_train, col_map,
+                                 NETWORK_OPTIONS, lambda_gl=lam)
+            y_pred = _predict_counts(model, X_test)
+            fold_r[k] = pearson_r(y_test, y_pred)
+            fold_models[k] = model
+
+        mean_r = np.nanmean(fold_r)
+        lambda_scores[lam] = mean_r
+        lambda_models[lam] = fold_models
+        print(f'  lambda={lam:.0e}: mean r={mean_r:.4f}')
+
+    # guard against all-NaN (e.g. silent neuron)
+    if all(np.isnan(v) for v in lambda_scores.values()):
+        return None
+
+    best_lambda = max(lambda_scores, key=lambda_scores.get)
+    best_models = lambda_models[best_lambda]
+    print(f'  best lambda: {best_lambda:.0e}')
+
+    #%% evaluate best-lambda models: full + lesioned
+    full_r = np.full(n_folds, np.nan)
+    full_r_window = {g: np.full(n_folds, np.nan) for g in windowed_groups}
+    lesioned_r = {g: np.full(n_folds, np.nan) for g in group_names}
+
+    for k, model in best_models.items():
+        test_mask = folds_v == k
+        X_train_raw, X_test_raw = X_v[~test_mask], X_v[test_mask]
+        _, X_test, _, _ = normalise_design_matrix(
+            X_train_raw, X_test_raw, col_map)
+        y_test = y_v[test_mask]
+
+        # full model
+        y_pred = _predict_counts(model, X_test)
+        full_r[k] = pearson_r(y_test, y_pred)
+
+        # windowed full model r
+        for gname in windowed_groups:
             if gname in ev_masks_v:
-                win_mask = ev_masks_v[gname][test_mask]
-                if win_mask.sum() >= 5:
-                    full_r_window[gname][k] = _eval_r(
-                        y_test[win_mask], y_pred.ravel()[win_mask])
+                win = ev_masks_v[gname][test_mask]
+                if win.sum() >= 5:
+                    full_r_window[gname][k] = pearson_r(
+                        y_test[win], y_pred[win])
 
         # lesioned models
         for gname, pred_list in lesion_groups.items():
-            X_train_les = _lesion_design_matrix(X_train, pred_list, col_map)
-            X_test_les = _lesion_design_matrix(X_test, pred_list, col_map)
+            X_les = lesion_design_matrix(X_test, pred_list, col_map)
+            y_les = _predict_counts(model, X_les)
 
-            model_les = glmnet.ElasticNet(alpha=0, n_splits=ops['n_inner_folds'],
-                                           family='poisson')
-            model_les.fit(X_train_les, y_train)
-            y_pred_les = model_les.predict(X_test_les)
-            lesioned_r[gname][k] = _eval_r(y_test, y_pred_les)
+            if gname in windowed_groups and gname in ev_masks_v:
+                win = ev_masks_v[gname][test_mask]
+                if win.sum() >= 5:
+                    lesioned_r[gname][k] = pearson_r(
+                        y_test[win], y_les[win])
+            else:
+                lesioned_r[gname][k] = pearson_r(y_test, y_les)
 
-            if gname in ev_masks_v:
-                win_mask = ev_masks_v[gname][test_mask]
-                if win_mask.sum() >= 5:
-                    lesioned_r_window[gname][k] = _eval_r(
-                        y_test[win_mask], y_pred_les.ravel()[win_mask])
+    #%% refit on all valid data for kernel extraction
+    X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
+    final_model = PoissonLinear(X_v.shape[1])
+    final_model, _ = train_one(final_model, X_all, y_v, col_map,
+                               NETWORK_OPTIONS, lambda_gl=best_lambda)
 
-    # fit full model on all valid data for kernel extraction
-    full_model = glmnet.ElasticNet(alpha=0, n_splits=ops['n_inner_folds'],
-                                    family='poisson')
-    full_model.fit(X_v, y_v)
-
+    #%% assemble results
     result = {
-        'weights': full_model.coef_,
-        'intercept': full_model.intercept_,
+        'weights': final_model.linear.weight.detach().cpu().numpy().ravel(),
+        'bias': final_model.linear.bias.detach().cpu().numpy().ravel(),
+        'best_lambda': np.array(best_lambda),
+        'fold_ids': fold_ids,
         'full_r': full_r,
-        'lambda_best': full_model.lambda_best_,
     }
+    for gname in windowed_groups:
+        result[f'full_r_window_{gname}'] = full_r_window[gname]
     for gname in group_names:
         result[f'lesioned_r_{gname}'] = lesioned_r[gname]
-        result[f'full_r_window_{gname}'] = full_r_window[gname]
-        result[f'lesioned_r_window_{gname}'] = lesioned_r_window[gname]
 
     return result
 
 
 def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
-    """load prepped data, fit one neuron, save results"""
-    counts, X, col_map, t_ax, valid_mask = load_glm_inputs(sess_dir)
-    y = counts[neuron_idx]
+    """load prepped data, fit one neuron, save results to glm_results/"""
+    sess_dir = Path(sess_dir)
+    counts, X, col_map, t_ax, valid_mask = load_glm_inputs(str(sess_dir))
 
-    sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
+    sess = Session.load(str(sess_dir / 'session.pkl'))
     event_masks = build_event_masks(sess, t_ax)
 
-    result = fit_neuron(y, X, col_map, valid_mask, event_masks, ops)
+    fold_ids = get_trial_fold_indices(
+        sess.trials, t_ax, ops['n_folds'],
+        seed=neuron_seed(str(sess_dir), neuron_idx),
+        ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
-    results_dir = Path(sess_dir) / 'glm_results'
+    print(f'Fitting neuron {neuron_idx} '
+          f'({(fold_ids >= 0).sum()} valid bins, '
+          f'{len(set(fold_ids[fold_ids >= 0]))} folds)')
+
+    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids,
+                        event_masks, ops)
+
+    if result is None:
+        print(f'  skipped (no valid predictions)')
+        return
+
+    results_dir = sess_dir / 'glm_results'
     results_dir.mkdir(exist_ok=True)
     np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
+    print(f'Saved to {results_dir / f"neuron_{neuron_idx}.npz"}')
 
 
 #%% classification
 
 def classify_units(sess_dir, ops=GLM_OPTIONS):
-    """load per-neuron GLM results and classify as TF-resp / lick-prep / lick-exec"""
+    """load per-neuron GLM results and classify by lesion significance"""
     from scipy.stats import ttest_rel
 
     results_dir = Path(sess_dir) / 'glm_results'
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
     n_neurons = len(sess.fr_stats)
     group_names = list(ops['lesion_groups'].keys())
+    windowed_groups = {'tf', 'lick_prep', 'lick_exec'}
 
     classifications = []
 
@@ -700,22 +731,29 @@ def classify_units(sess_dir, ops=GLM_OPTIONS):
         }
 
         for gname in group_names:
-            full_r_win = res[f'full_r_window_{gname}']
-            les_r_win = res[f'lesioned_r_window_{gname}']
-            valid = ~(np.isnan(full_r_win) | np.isnan(les_r_win))
+            # windowed groups: compare windowed r
+            # whole-trial groups: compare full r
+            if gname in windowed_groups:
+                full_key = f'full_r_window_{gname}'
+                full_r_g = res[full_key] if full_key in res else full_r
+            else:
+                full_r_g = full_r
 
-            if valid.sum() >= 3:
-                _, p = ttest_rel(full_r_win[valid], les_r_win[valid])
-                delta_r = np.nanmean(full_r_win[valid]) - np.nanmean(les_r_win[valid])
+            les_r_g = res[f'lesioned_r_{gname}']
+            ok = ~(np.isnan(full_r_g) | np.isnan(les_r_g))
+
+            if ok.sum() >= 3:
+                _, p = ttest_rel(full_r_g[ok], les_r_g[ok])
+                delta_r = np.nanmean(full_r_g[ok]) - np.nanmean(les_r_g[ok])
             else:
                 p = 1.0
                 delta_r = 0.0
 
-            is_sig = (np.nanmean(full_r_win) > ops['min_r'] and
+            is_sig = (np.nanmean(full_r_g[ok]) > ops['min_r'] and
                       p < ops['lesion_alpha'] and
-                      delta_r > 0)
+                      delta_r > 0) if ok.sum() >= 3 else False
 
-            row[f'{gname}_mean_r'] = np.nanmean(full_r_win)
+            row[f'{gname}_mean_r'] = np.nanmean(full_r_g)
             row[f'{gname}_p'] = p
             row[f'{gname}_delta_r'] = delta_r
             row[f'{gname}_sig'] = is_sig

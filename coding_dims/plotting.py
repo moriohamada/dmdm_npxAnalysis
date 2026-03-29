@@ -22,7 +22,7 @@ SLOW_COL = PLOT_OPTIONS['colours']['tf_pref']['slow']
 def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
     """
     plot between-block cosine similarity of TF coding directions (with null),
-    and time-resolved projections of TF responses onto TF dims.
+    and time-resolved projections of fast and slow TF responses onto TF dims.
     """
     with open(Path(npx_dir) / 'coding_dims' / 'tf_dimensions.pkl', 'rb') as f:
         results = pickle.load(f)
@@ -31,7 +31,6 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
     if not animals:
         return
 
-    # collect all window labels
     sample = results[animals[0]]
     window_labels = list(sample['dimensions']['early'].keys())
     n_wins = len(window_labels)
@@ -40,7 +39,7 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
     fig, axes = plt.subplots(2, max(n_wins, 1), figsize=(7 * max(n_wins, 1), 10),
                              squeeze=False)
 
-    # row 0: between-block cosine similarity bar + null distribution
+    # row 0: between-block cosine similarity + null distribution
     for wi, wl in enumerate(window_labels):
         ax = axes[0, wi]
         real_vals = []
@@ -55,41 +54,41 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         if not real_vals:
             continue
 
-        # null distribution
         null_flat = np.concatenate(null_all)
         ax.hist(null_flat[~np.isnan(null_flat)], bins=30,
                 weights=np.ones(np.sum(~np.isnan(null_flat))) / np.sum(~np.isnan(null_flat)),
                 color='grey', alpha=0.5, label='Null')
 
-        # real values per animal
-        for i, rv in enumerate(real_vals):
+        for rv in real_vals:
             ax.axvline(rv, color='black', linewidth=1, alpha=0.4)
         mean_real = np.nanmean(real_vals)
         ax.axvline(mean_real, color='red', linewidth=2,
                    label=f'Mean = {mean_real:.3f}')
 
-        # p-value
-        null_mean_per_animal = [np.nanmean(n) for n in null_all]
-        p = np.mean([np.nanmean(n <= r) for n, r in zip(null_all, real_vals)])
+        p = np.mean([np.nanmean(n >= r) for n, r in zip(null_all, real_vals)])
         ax.set_title(f'TF dim {wl}\nbetween-block cosine (p={p:.3f})')
         ax.set_xlabel('Cosine similarity')
         ax.set_ylabel('Probability')
         ax.legend(fontsize=7)
 
-    # row 1: time-resolved projections (same-block)
+    # row 1: time-resolved projections (same-block), fast and slow separate
     for wi, wl in enumerate(window_labels):
         ax = axes[1, wi]
-        for block, colour in [('early', EARLY_COL), ('late', LATE_COL)]:
-            traces = []
-            for animal in animals:
-                proj = results[animal]['cross_projections'][block][block].get(wl)
-                if proj is not None:
-                    ax.plot(tf_t_ax, proj, color=colour, alpha=0.2, linewidth=0.7)
-                    traces.append(proj)
-            if traces:
-                mean_proj = np.nanmean(traces, axis=0)
-                ax.plot(tf_t_ax, mean_proj, color=colour, linewidth=2,
-                        label=f'{block} block')
+        for block, block_col in [('early', EARLY_COL), ('late', LATE_COL)]:
+            for polarity, pol_col, ls in [('fast', FAST_COL, '-'),
+                                           ('slow', SLOW_COL, '--')]:
+                traces = []
+                for animal in animals:
+                    proj = results[animal]['cross_projections'][block][block].get(wl)
+                    if proj is None:
+                        continue
+                    trace = proj[polarity]
+                    ax.plot(tf_t_ax, trace, color=pol_col, alpha=0.1, linewidth=0.5)
+                    traces.append(trace)
+                if traces:
+                    mean_proj = np.nanmean(traces, axis=0)
+                    ax.plot(tf_t_ax, mean_proj, color=pol_col, linewidth=2,
+                            linestyle=ls, label=f'{block} {polarity}')
 
         ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
         ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
@@ -156,7 +155,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         ax.axvline(mean_real, color='red', linewidth=2,
                    label=f'Mean = {mean_real:.3f}')
 
-        p = np.mean([np.nanmean(n <= r) for n, r in zip(null_all, real_vals)])
+        p = np.mean([np.nanmean(n >= r) for n, r in zip(null_all, real_vals)])
         ax.set_title(f'Motor dim {wl}\nbetween-block cosine (p={p:.3f})')
         ax.set_xlabel('Cosine similarity')
         ax.set_ylabel('Probability')
@@ -211,7 +210,6 @@ def plot_cross_type(npx_dir=PATHS['npx_dir_local'], save_dir=None):
 
     for bi, (block, colour) in enumerate([('early', EARLY_COL), ('late', LATE_COL)]):
         ax = axes[bi]
-        # collect all cross-cosine keys
         all_keys = set()
         for animal in animals:
             all_keys.update(results[animal]['cross_cosine'].get(block, {}).keys())
@@ -230,7 +228,6 @@ def plot_cross_type(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         means = [np.nanmean(vals_per_key[k]) for k in all_keys]
         x = np.arange(len(all_keys))
 
-        # individual animals
         for animal in animals:
             cc = results[animal]['cross_cosine'].get(block, {})
             y = [cc.get(k, np.nan) for k in all_keys]
