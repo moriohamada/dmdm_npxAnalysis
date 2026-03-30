@@ -46,9 +46,10 @@ coding_dims/             coding dimension rotation, motor subspace projection
 
 **Single unit responses** (`single_unit/`) - Per-neuron PSTH plots & preference index calculation
 
-**Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Results per neuron.
+**Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick 
+preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Config: `GLM_OPTIONS`.
 
-**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer and orthogonality penalty. Inner CV per hidden size for regularisation selection, linear baseline for comparison. Same lesion framework as GLM.
+**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer and orthogonality penalty. Inner CV per hidden size for regularisation selection, linear baseline for comparison. Same lesion framework as GLM. Config: `NETWORK_OPTIONS`.
 
 **Population** (`population/`) - PCA on event-aligned responses, LDS.
 
