@@ -1,7 +1,9 @@
-# dmdm neuropixels analysis
+### dmdm: temporal expectation project
 
+---
 _**In progress**_
 
+---
 Analysis pipeline for the dmdm dataset (Khilkevich & Lohse et al). Brain-wide Neuropixels recordings in mice doing a visual change detection task with temporal expectation (early/late hazard-rate blocks).
 
 Dataset comprises ~15k units, 51 regions, 15 mice, 114 sessions.
@@ -31,6 +33,7 @@ coding_dims/             coding dimension rotation, motor subspace projection
 
 ### Behavioural analyses
 
+
 **Basic analyses** (`behaviour/`) - per-subject trial DataFrames from Session objects. Psychometric/chronometric functions, lick-triggered stimulus averages and covariance, FA hazard rates by block, pulse-aligned lick probability.
 
 **Leaky integrator** (`behaviour/integrator/`) - grid search over time constant and threshold per subject per block. Runs on HPC.
@@ -41,11 +44,11 @@ coding_dims/             coding dimension rotation, motor subspace projection
 
 **Preprocessing** (`data/`) - extract FR matrices and event timings from raw data on ceph, downsample to 50ms bins for population analyses.
 
+**Single unit responses** (`single_unit/`) - Per-neuron PSTH plots & preference index calculation
+
 **Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Results per neuron.
 
 **Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer and orthogonality penalty. Inner CV per hidden size for regularisation selection, linear baseline for comparison. Same lesion framework as GLM.
-
-**Unit preferences** (`single_unit/`) - TF selectivity, block modulation, lick modulation. Per-neuron PSTH plots.
 
 **Population** (`population/`) - PCA on event-aligned responses, LDS.
 
@@ -54,6 +57,8 @@ coding_dims/             coding dimension rotation, motor subspace projection
 **Tuning curves** (`tuning_curves/`) - single-unit TF tuning by block. OLS fit of firing rate vs TF per block, permutation tests for gain significance. TF-responsive = significant gain in either block at p < 0.025. Quantile-binned curves with SEM. Results per session. Config: `TUNING_CURVE_OPS`.
 
 **Coding dimensions** (`coding_dims/`) - two analyses comparing TF coding between early/late blocks. (1) Coding dimension rotation: time-resolved TF coding vector per block, between-block cosine similarity over post-pulse time, null from block-label shuffling. (2) Motor dimension projection: PCA motor subspace from lick-aligned activity (even/odd CV, fake-lick null), TF responses projected onto motor and non-motor dimensions per block. Results per animal. Config: `CODING_DIM_OPS`.
+
+---
 
 ##### Data notes
 
