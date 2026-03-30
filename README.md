@@ -1,66 +1,68 @@
 # dmdm neuropixels analysis
 
-(In progress) analysis pipeline for dmdm dataset (Khilkevich & Lohse et al),
-focussing on effects of behavioural and neural correlates of temporal expectation (early/late hazard-rate blocks).
+_**In progress**_
 
-## Directory structure
+Analysis pipeline for the dmdm dataset (Khilkevich & Lohse et al). Brain-wide Neuropixels recordings in mice doing a visual change detection task with temporal expectation (early/late hazard-rate blocks).
+
+Dataset comprises ~15k units, 51 regions, 15 mice, 114 sessions.
+
+#### Directory structure
 
 ```
-data/                    data loading/handling: sessions, FR matrices, event timings, PSTHs
-utils/                   shared utility functions
-behaviour/               behavioural analyses
-tuning_curves/           single-unit TF tuning curves by block (OLS, permutation tests, quantile-binned curves)
-coding_dims/             coding dimension rotation and motor projection analyses
-lick_pred/               lick prediction model
-glm/                     Poisson GLM
-single_unit/             unit preferences (TF selectivity, block/lick modulation) and PSTH plots
-population/              PCA, lds, population plots
+data/                    session objects, FR matrices, event timings, PSTHs
+utils/                   shared utilities, brain region groupings
+config.py                paths, analysis parameters, plot options
+neural_analysis.py       main analysis runner
+behavioural_analysis.py  behavioural analysis runner
+```
+
+#### Analysis modules
+
+```
+behaviour/               psychometrics, lick-triggered averages, FA hazard
+behaviour/integrator/    leaky integrator model (grid search on HPC)
+lick_pred/               lick prediction from neural activity
+tuning_curves/           single-unit TF tuning by block
+coding_dims/             coding dimension rotation, motor subspace projection
+neuron_prediction/       single-unit prediction models
+  glm/                   poisson GLM with group lasso
+  network/               poisson networks (linear + hidden layer)
+single_unit/             unit preferences, PSTH plots
+population/              PCA, LDS, population trajectories
 demixing/                SAE and causal LFADS
-config.py                all paths, analysis parameters, plot options
-neural_analysis.py       draft analysis pipeline
-behavioural_analysis.py  behavioural analysis runner script
 ```
 
-## Pipeline
+### Behavioural analyses
 
-### Behavioural analysis (`behavioural_analysis.py`)
+**Basic analyses** (`behaviour/`) - per-subject trial DataFrames from Session objects. Psychometric/chronometric functions, lick-triggered stimulus averages and covariance, FA hazard rates by block, pulse-aligned lick probability.
 
-1. Build per-subject trial DataFrames from npx Session objects
-2. Psychometric and chronometric functions
-3. Lick-triggered stimulus averages and covariance structure 
-4. FA hazard rates by block
-5. Pulse-aligned lick probability
-6. Leaky integrator model (grid search per subject per block, run on hpc)
+**Leaky integrator** (`behaviour/integrator/`) - grid search over time constant and threshold per subject per block. Runs on HPC.
 
-### Neural analysis (for now: `neural_analysis.py`)
+**Lick prediction** (`lick_pred/`) - predict lick timing from neural population activity. Leave-one-session-out CV.
 
-1. Preprocessing
-2. Behavioural lick prediction model
-3. Poisson GLM per neuron
-4. Unit preferences
-5. Downsample FR matrices for population analyses
-6. PCA on event-aligned population responses
-7. LDS
-8. Latent factor analysis w SAE/modified LFADS
+### Neural analyses
 
-### Tuning curves (`tuning_curves/`)
+**Preprocessing** (`data/`) - extract FR matrices and event timings from raw data on ceph, downsample to 50ms bins for population analyses.
 
-Single-unit TF tuning curves by block. OLS fit of firing rate vs TF value per block, with permutation tests for per-block gain significance, pooled TF encoding, and block difference (gain and offset). Quantile-binned tuning curves with SEM error bands. TF-responsive = significant gain in either block at p < 0.025. Results saved per session (`tuning_curves.pkl`). Uses all TF pulses (not just outliers), loaded from downsampled FR matrix. Config: `TUNING_CURVE_OPS`.
+**Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Results per neuron.
 
-### Coding dimensions (`coding_dims/`)
+**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer and orthogonality penalty. Inner CV per hidden size for regularisation selection, linear baseline for comparison. Same lesion framework as GLM.
 
-Two analyses comparing TF coding between early/late hazard-rate blocks:
+**Unit preferences** (`single_unit/`) - TF selectivity, block modulation, lick modulation. Per-neuron PSTH plots.
 
-1. **Coding dimension rotation** - time-resolved TF coding vector (pseudo-population regression) per block, measuring between-block cosine similarity/angle over post-pulse time. Null distribution from block-label shuffling.
-2. **Motor dimension projection** - PCA motor subspace from lick-aligned activity (even/odd cross-validation, fake-lick null), TF responses projected onto motor and non-motor dimensions per block.
+**Population** (`population/`) - PCA on event-aligned responses, LDS.
 
-Results saved per animal (`coding_rotation.pkl`, `motor_projection.pkl`). Uses outlier TFs from psths.h5. Config: `CODING_DIM_OPS`.
+**Demixing** (`demixing/`) - SAE and causal LFADS for learning interpretable latent factors from neural activity.
 
+**Tuning curves** (`tuning_curves/`) - single-unit TF tuning by block. OLS fit of firing rate vs TF per block, permutation tests for gain significance. TF-responsive = significant gain in either block at p < 0.025. Quantile-binned curves with SEM. Results per session. Config: `TUNING_CURVE_OPS`.
 
-#### Data notes
+**Coding dimensions** (`coding_dims/`) - two analyses comparing TF coding between early/late blocks. (1) Coding dimension rotation: time-resolved TF coding vector per block, between-block cosine similarity over post-pulse time, null from block-label shuffling. (2) Motor dimension projection: PCA motor subspace from lick-aligned activity (even/odd CV, fake-lick null), TF responses projected onto motor and non-motor dimensions per block. Results per animal. Config: `CODING_DIM_OPS`.
 
-- FR matrices are z-scored per unit at creation time (`data/load_npx.py`). Don't z-score again for PSTHs or projections
-- Original FR bin width is 10ms. Population analyses use 50ms bins (separate _ds parquet files)
-- PSTHs are stored as (nEv x nN x nT) in hdf5. Means are (nN x nT)
-- Brain region groupings defined in `utils/rois.py`
-- Session objects are saved in pickle files without FR matrix, raw neural data, or raw daq lines
+##### Data notes
+
+- FR matrices are z-scored per unit at creation time. Don't z-score again downstream
+- Original FR bins are 10ms. Population analyses use 50ms (separate `_ds` parquet files)
+- PSTHs stored as (nEv x nN x nT) in HDF5. Means are (nN x nT)
+- Brain region groupings in `utils/rois.py`
+- Session objects saved without FR matrix, raw neural data, or raw DAQ lines
+- GLM design matrices saved per session (`glm_counts.npy`, `glm_design.npy`, `glm_spec.pkl`). GLM and network results saved per neuron in `glm_results/` and `network_results/` subdirectories
