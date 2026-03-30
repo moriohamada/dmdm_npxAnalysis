@@ -31,6 +31,12 @@ visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
 
 #%% Fit GLMs to single units
 
+# Prepare design matrices
+from neuron_prediction.glm.fit import prepare_all_sessions
+prepare_all_sessions(overwrite=False)
+from neuron_prediction.glm.fit import build_job_map
+df = build_job_map()
+print(f'--array=0-{len(df) - 1}')
 
 #%% Downsample FR matrices for population analyses
 from utils.downsampling import save_downsampled_fr

@@ -420,7 +420,8 @@ def prepare_session(sess_dir, ceph_dir, overwrite=False):
 
 
 def prepare_all_sessions(npx_dir=PATHS['npx_dir_local'],
-                          ceph_dir=PATHS['npx_dir_ceph']):
+                         ceph_dir=PATHS['npx_dir_ceph'],
+                         overwrite: bool = False):
     """prep GLM inputs for all sessions"""
     for subj in sorted(os.listdir(npx_dir)):
         subj_dir = os.path.join(npx_dir, subj)
@@ -431,7 +432,7 @@ def prepare_all_sessions(npx_dir=PATHS['npx_dir_local'],
             if not os.path.exists(os.path.join(sess_dir, 'session.pkl')):
                 continue
             print(f'{subj}/{sess}')
-            prepare_session(sess_dir, ceph_dir)
+            prepare_session(sess_dir, ceph_dir, overwrite)
 
 
 def build_job_map(npx_dir=PATHS['npx_dir_local'], output_path=None):
