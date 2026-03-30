@@ -8,9 +8,6 @@ import os
 import gc
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-
 from config import PATHS, ANALYSIS_OPTIONS, GLM_OPTIONS
 from data.session import Session
 from utils.filing import load_fr_matrix
@@ -19,8 +16,6 @@ from neuron_prediction.data import (
     normalise_design_matrix,
 )
 from neuron_prediction.evaluate import pearson_r, lesion_design_matrix
-from neuron_prediction.network.model import PoissonLinear
-from neuron_prediction.network.fit import train_one
 
 
 #%% spike counts
@@ -517,23 +512,90 @@ def build_event_masks(session, t_ax):
 
 #%% GLM fitting
 
-def _predict_counts(model, X):
-    """run forward pass, return predicted counts as numpy"""
-    device = next(model.parameters()).device
-    model.eval()
-    with torch.no_grad():
-        X_t = torch.tensor(X, dtype=torch.float32, device=device)
-        return torch.exp(model(X_t)).cpu().numpy()
+def _fit_poisson_glm(X, y, col_map, lambda_gl=0.0,
+                     max_iter=500, tol=1e-6):
+    """fit poisson GLM with proximal gradient descent and group lasso
+
+    log(rate) = X @ w + b, loss = mean(exp(X @ w + b) - y * (X @ w + b))
+    group lasso applied via proximal operator after each gradient step.
+    step size chosen by backtracking line search.
+
+    returns (weights, bias) as numpy arrays
+    """
+    n, p = X.shape
+    w = np.zeros(p, dtype=np.float64)
+    b = np.float64(np.log(max(y.mean(), 1e-8)))
+
+    # precompute group info for proximal operator
+    groups = []
+    for name, (col_slice, _) in col_map.items():
+        idx = np.arange(col_slice.start, col_slice.stop)
+        groups.append((idx, np.sqrt(len(idx))))
+
+    def _loss(w, b):
+        log_rate = np.clip(X @ w + b, -20, 20)
+        return (np.exp(log_rate) - y * log_rate).mean()
+
+    def _prox(w, step):
+        if lambda_gl <= 0:
+            return w
+        w = w.copy()
+        for idx, sqrt_df in groups:
+            w_g = w[idx]
+            norm_g = np.linalg.norm(w_g)
+            threshold = step * lambda_gl * sqrt_df
+            if norm_g <= threshold:
+                w[idx] = 0.0
+            else:
+                w[idx] = w_g * (1 - threshold / norm_g)
+        return w
+
+    step = 1.0
+    loss = _loss(w, b)
+
+    for it in range(max_iter):
+        # gradient
+        log_rate = np.clip(X @ w + b, -20, 20)
+        rate = np.exp(log_rate)
+        residual = rate - y
+        grad_w = X.T @ residual / n
+        grad_b = residual.mean()
+
+        # backtracking line search
+        for _ in range(20):
+            w_new = _prox(w - step * grad_w, step)
+            b_new = b - step * grad_b
+            new_loss = _loss(w_new, b_new)
+            if new_loss <= loss - 0.5 * step * (
+                    np.dot(grad_w, w - w_new) + grad_b * (b - b_new)):
+                break
+            step *= 0.5
+        else:
+            break  # line search failed, stop
+
+        w, b = w_new, b_new
+
+        if abs(loss - new_loss) < tol:
+            break
+        loss = new_loss
+        step = min(step * 1.5, 1.0)  # cautiously grow step
+
+    return w, b
+
+
+def _predict_glm(X, w, b):
+    """predict counts from GLM weights"""
+    log_rate = np.clip(X @ w + b, -20, 20)
+    return np.exp(log_rate)
 
 
 def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
                ops=GLM_OPTIONS):
     """fit poisson GLM with group lasso for one neuron
 
-    1. grid search over lambda: for each lambda, fit 10 folds, pick
-       lambda with best mean test r
-    2. lesion analysis: reuse best-lambda fold models, zero out each
-       predictor group, evaluate on same test sets
+    1. grid search over lambda
+    2. lesion analyes: reuse best-lambda fold models, zero out each
+       predictor group, evaluate
     3. refit on all data with best lambda for kernel extraction
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
@@ -546,12 +608,15 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
     windowed r, and lesioned r per group. returns None if no valid
     data to fit.
     """
-    from config import NETWORK_OPTIONS
-
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
     n_folds = ops['n_folds']
     lambdas = ops['group_lasso_lambdas']
+
+    # coarse fit for lambda selection, fine fit for final models
+    fit_kw = {k: ops[k] for k in ('max_iter', 'tol') if k in ops}
+    coarse_kw = {**fit_kw, 'max_iter': ops.get('cv_max_iter', 200),
+                 'tol': ops.get('cv_tol', 1e-4)}
 
     # windowed groups get event-mask evaluation, others get whole-trial
     windowed_groups = {'tf', 'lick_prep', 'lick_exec'}
@@ -570,11 +635,11 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
 
     #%% lambda selection
     lambda_scores = {}
-    lambda_models = {}
+    lambda_params = {}  # stores (w, b) per fold per lambda
 
     for lam in lambdas:
         fold_r = np.full(n_folds, np.nan)
-        fold_models = {}
+        fold_wb = {}
 
         for k in range(n_folds):
             test_mask = folds_v == k
@@ -589,24 +654,23 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
             if y_train.sum() == 0 or y_test.sum() == 0:
                 continue
 
-            model = PoissonLinear(X_train.shape[1])
-            model, _ = train_one(model, X_train, y_train, col_map,
-                                 NETWORK_OPTIONS, lambda_gl=lam)
-            y_pred = _predict_counts(model, X_test)
+            w, b = _fit_poisson_glm(X_train, y_train, col_map,
+                                    lambda_gl=lam, **coarse_kw)
+            y_pred = _predict_glm(X_test, w, b)
             fold_r[k] = pearson_r(y_test, y_pred)
-            fold_models[k] = model
+            fold_wb[k] = (w, b)
 
         mean_r = np.nanmean(fold_r)
         lambda_scores[lam] = mean_r
-        lambda_models[lam] = fold_models
+        lambda_params[lam] = fold_wb
         print(f'  lambda={lam:.0e}: mean r={mean_r:.4f}')
 
-    # guard against all-NaN (e.g. silent neuron)
+    # in case all-NaN
     if all(np.isnan(v) for v in lambda_scores.values()):
         return None
 
     best_lambda = max(lambda_scores, key=lambda_scores.get)
-    best_models = lambda_models[best_lambda]
+    best_wb = lambda_params[best_lambda]
     print(f'  best lambda: {best_lambda:.0e}')
 
     #%% evaluate best-lambda models: full + lesioned
@@ -614,7 +678,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
     full_r_window = {g: np.full(n_folds, np.nan) for g in windowed_groups}
     lesioned_r = {g: np.full(n_folds, np.nan) for g in group_names}
 
-    for k, model in best_models.items():
+    for k, (w, b) in best_wb.items():
         test_mask = folds_v == k
         X_train_raw, X_test_raw = X_v[~test_mask], X_v[test_mask]
         _, X_test, _, _ = normalise_design_matrix(
@@ -622,7 +686,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
         y_test = y_v[test_mask]
 
         # full model
-        y_pred = _predict_counts(model, X_test)
+        y_pred = _predict_glm(X_test, w, b)
         full_r[k] = pearson_r(y_test, y_pred)
 
         # windowed full model r
@@ -636,7 +700,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
         # lesioned models
         for gname, pred_list in lesion_groups.items():
             X_les = lesion_design_matrix(X_test, pred_list, col_map)
-            y_les = _predict_counts(model, X_les)
+            y_les = _predict_glm(X_les, w, b)
 
             if gname in windowed_groups and gname in ev_masks_v:
                 win = ev_masks_v[gname][test_mask]
@@ -648,14 +712,13 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
 
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
-    final_model = PoissonLinear(X_v.shape[1])
-    final_model, _ = train_one(final_model, X_all, y_v, col_map,
-                               NETWORK_OPTIONS, lambda_gl=best_lambda)
+    w_final, b_final = _fit_poisson_glm(X_all, y_v, col_map,
+                                         lambda_gl=best_lambda, **fit_kw)
 
     #%% assemble results
     result = {
-        'weights': final_model.linear.weight.detach().cpu().numpy().ravel(),
-        'bias': final_model.linear.bias.detach().cpu().numpy().ravel(),
+        'weights': w_final,
+        'bias': np.array([b_final]),
         'best_lambda': np.array(best_lambda),
         'fold_ids': fold_ids,
         'full_r': full_r,
@@ -695,6 +758,13 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
     results_dir = sess_dir / 'glm_results'
     results_dir.mkdir(exist_ok=True)
     np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
+
+    # save col_map once per session (same for all neurons)
+    col_map_path = results_dir / 'col_map.pkl'
+    if not col_map_path.exists():
+        with open(col_map_path, 'wb') as f:
+            pickle.dump(col_map, f)
+
     print(f'Saved to {results_dir / f"neuron_{neuron_idx}.npz"}')
 
 

@@ -1,12 +1,28 @@
+import os
 import numpy as np
 
-PATHS = dict(
-    npx_dir_ceph  = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
-                    '/data/npx_converted',
-    npx_dir_local = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/',
-    plots_dir     = '/media/morio/Data_Fast/dmdm_temporalExpectation/plots/',
-    pref_dir      = '/media/morio/Data_Fast/dmdm_temporalExpectation/preferences/',
+_LOCAL_PATHS = dict(
+    npx_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/',
+    ceph_dir = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
+               '/data/npx_converted',
+    plots_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/plots/',
+    pref_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/preferences/',
 )
+
+_HPC_PATHS = dict(
+    npx_dir  = '/ceph/mrsic_flogel/public/projects'
+               '/MoHa_20260212_dmdmTemporalExpectation/data/npx/',
+    ceph_dir = '/ceph/mrsic_flogel/public/projects'
+               '/MoHa_20260212_dmdmTemporalExpectation/data/npx/npx_converted/',
+    plots_dir = '/ceph/mrsic_flogel/public/projects'
+                '/MoHa_20260212_dmdmTemporalExpectation/hpc/plots/',
+)
+
+PATHS = _LOCAL_PATHS if os.path.exists(_LOCAL_PATHS['npx_dir']) else _HPC_PATHS
+
+# keep old keys for backwards compatibility
+PATHS['npx_dir_local'] = PATHS['npx_dir']
+PATHS['npx_dir_ceph'] = PATHS['ceph_dir']
 
 ANALYSIS_OPTIONS = dict(
     sp_bin_width     = 10 / 1000,     # s
@@ -75,8 +91,8 @@ GLM_OPTIONS = dict(
 
     # predictor kernel windows (start, end) in seconds
     # positive lags = predictor precedes response, negative = follows
-    kern_tf          = (-.25, 1.25),
-    kern_trial_start = (0, 1.0),
+    kern_tf          = (0, 1.5),
+    kern_trial_start = (0, 2.0),
     kern_change      = (0, 2.0),
     kern_lick_prep   = (-1.25, 0),
     kern_lick_exec   = (0, 0.5),
@@ -85,7 +101,7 @@ GLM_OPTIONS = dict(
     kern_abort       = (-1.25, 0.25),
     kern_face_me     = (-0.05, 0.8),
     kern_running     = (-0.05, 0.8),
-    # kern_pupil removed - data contains NaNs across sessions
+    # kern_pupil removed - contains NaNs across sessions
 
     n_phase_bins = 12,
 
@@ -103,10 +119,16 @@ GLM_OPTIONS = dict(
     },
 
     # group lasso regularisation
-    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2, 1e-1],
+    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2],
 
     # cross-validation
     n_folds = 10,
+
+    # fitting
+    max_iter = 500,
+    tol = 1e-6,
+    cv_max_iter = 200,  # coarser convergence for lambda selection
+    cv_tol = 1e-4,
 )
 
 NETWORK_OPTIONS = dict(
@@ -118,7 +140,7 @@ NETWORK_OPTIONS = dict(
     ortho_lambdas       = [0, 1e-3, 1e-2, 1e-1],
 
     # training
-    lr          = 1e-4,
+    lr          = 1e-2,
     batch_size  = 4096,
     max_epochs  = 5000,
     patience    = 200,

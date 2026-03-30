@@ -106,7 +106,7 @@ extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
                          ops=ANALYSIS_OPTIONS,
                          bm_ops=CODING_DIM_OPS)
 
-#%% cross-type analysis
+#%% alignment analysis
 from coding_dims.analysis import extract_cross_type_analysis
 extract_cross_type_analysis(npx_dir=PATHS['npx_dir_local'],
                             bm_ops=CODING_DIM_OPS)
