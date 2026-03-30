@@ -6,30 +6,27 @@ Analysis pipeline for the dmdm dataset (Khilkevich & Lohse et al). Brain-wide Ne
 
 Dataset comprises ~15k units, 51 regions, 15 mice, 114 sessions.
 
-#### Directory structure
+#### Structure
 
 ```
-data/                    session objects, FR matrices, event timings, PSTHs
+data/                    session class def, FR matrices, event timings, preprocessing
 utils/                   shared utilities, brain region groupings
+
 config.py                paths, analysis parameters, plot options
-neural_analysis.py       main analysis runner
-behavioural_analysis.py  behavioural analysis runner
-```
+neural_analysis.py       main neural analysis runner
+behavioural_analysis.py  main behavioural analysis runner
 
-#### Analysis modules
-
-```
 behaviour/               psychometrics, lick-triggered averages, FA hazard
 behaviour/integrator/    leaky integrator model (grid search on HPC)
 lick_pred/               lick prediction from neural activity
-tuning_curves/           single-unit TF tuning by block
-coding_dims/             coding dimension rotation, motor subspace projection
 neuron_prediction/       single-unit prediction models
   glm/                   poisson GLM with group lasso
   network/               poisson networks (linear + hidden layer)
 single_unit/             unit preferences, PSTH plots
 population/              PCA, LDS, population trajectories
 demixing/                SAE and causal LFADS
+tuning_curves/           single-unit TF tuning by block
+coding_dims/             coding dimension rotation, motor subspace projection
 ```
 
 ### Behavioural analyses
