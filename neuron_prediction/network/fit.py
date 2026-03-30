@@ -112,27 +112,25 @@ def _predict_numpy(model, X, device):
         return torch.exp(log_rate).cpu().numpy()
 
 
-def inner_cv_select(X_train, y_train, col_map, ops, seed=0):
-    """select best hyperparams via inner CV on training fold
+def inner_cv_select(X_train, y_train, col_map, n_hidden, ops, seed=0):
+    """select best regularisation for a given hidden size via inner CV
 
-    returns best (n_hidden, lambda_gl, lambda_ortho)
+    returns best (lambda_gl, lambda_ortho)
     """
     n_inner = ops['n_inner_folds']
     n = len(X_train)
     inner_folds = get_fold_indices(n, n_inner, seed=seed)
 
     best_loss = float('inf')
-    best_params = (ops['hidden_sizes'][0], 0, 0)
+    best_params = (0, 0)
 
-    # count total configs for progress
-    configs = [(nh, gl, ort)
-               for nh in ops['hidden_sizes']
+    ortho_lambdas = [0] if n_hidden == 0 else ops['ortho_lambdas']
+    configs = [(gl, ort)
                for gl in ops['group_lasso_lambdas']
-               for ort in ops['ortho_lambdas']
-               if not (nh == 0 and ort > 0)]
+               for ort in ortho_lambdas]
     n_configs = len(configs)
 
-    for ci, (n_hidden, lambda_gl, lambda_ortho) in enumerate(configs):
+    for ci, (lambda_gl, lambda_ortho) in enumerate(configs):
         fold_losses = []
         for k in range(n_inner):
             val_mask = inner_folds == k
@@ -145,10 +143,10 @@ def inner_cv_select(X_train, y_train, col_map, ops, seed=0):
             fold_losses.append(val_loss)
 
         mean_loss = np.mean(fold_losses)
-        print(f'    config {ci+1}/{n_configs}: h={n_hidden} gl={lambda_gl} ort={lambda_ortho} -> loss={mean_loss:.4f}')
+        print(f'    config {ci+1}/{n_configs}: gl={lambda_gl} ort={lambda_ortho} -> loss={mean_loss:.4f}')
         if mean_loss < best_loss:
             best_loss = mean_loss
-            best_params = (n_hidden, lambda_gl, lambda_ortho)
+            best_params = (lambda_gl, lambda_ortho)
 
     return best_params
 
@@ -183,16 +181,18 @@ def _eval_model(model, X_test, y_test, ev_masks_v, lesion_groups, col_map, devic
 
 def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
                ops=NETWORK_OPTIONS, seed=0):
-    """fit both linear and network poisson models for one neuron
+    """fit poisson models across all hidden sizes for one neuron
 
-    always fits a linear model (PoissonLinear) and the best network
-    model selected by inner CV. both are evaluated on the same folds.
-    returns dict with 'linear' and 'network' sub-dicts.
+    for each hidden size, selects best regularisation via inner CV
+    and evaluates on outer folds. returns dict keyed by n_hidden.
     """
+    from collections import Counter
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     n_folds = ops['n_outer_folds']
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
+    hidden_sizes = ops['hidden_sizes']
 
     X_v = X[valid_mask]
     y_v = counts_1d[valid_mask].astype(np.float64)
@@ -200,7 +200,12 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
 
     fold_ids = get_fold_indices(T_v, n_folds, seed)
 
-    # results for both model types
+    ev_masks_v = {}
+    if event_masks is not None:
+        for gname in group_names:
+            if gname in event_masks:
+                ev_masks_v[gname] = event_masks[gname][valid_mask]
+
     def _empty_results():
         return {
             'full_r': np.full(n_folds, np.nan),
@@ -208,21 +213,9 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
             'full_r_window': {g: np.full(n_folds, np.nan) for g in group_names},
             'lesioned_r_window': {g: np.full(n_folds, np.nan) for g in group_names},
         }
-    lin_res = _empty_results()
-    net_res = _empty_results()
 
-    ev_masks_v = {}
-    if event_masks is not None:
-        for gname in group_names:
-            if gname in event_masks:
-                ev_masks_v[gname] = event_masks[gname][valid_mask]
-
-    # network hidden sizes (exclude 0 - linear is always fit separately)
-    net_hidden_sizes = [h for h in ops['hidden_sizes'] if h > 0]
-    net_ops = dict(ops, hidden_sizes=net_hidden_sizes)
-    has_network = len(net_hidden_sizes) > 0
-
-    best_net_params_per_fold = []
+    all_res = {nh: _empty_results() for nh in hidden_sizes}
+    all_params = {nh: [] for nh in hidden_sizes}
 
     for k in range(n_folds):
         print(f'Outer fold {k+1}/{n_folds}')
@@ -238,87 +231,64 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
         X_train, X_test, _, _ = normalise_design_matrix(
             X_train_raw, X_test_raw, col_map)
 
-        # slice event masks to this fold's test set
         ev_test = {}
         for gname in ev_masks_v:
             ev_test[gname] = ev_masks_v[gname][test_mask]
 
-        # always fit linear
-        print(f'  fitting linear...')
-        lin_model = PoissonLinear(X_train.shape[1])
-        lin_model, _ = train_one(lin_model, X_train, y_train, col_map, ops)
-        r, r_w, r_l, r_lw = _eval_model(
-            lin_model, X_test, y_test, ev_test, lesion_groups, col_map, device)
-        lin_res['full_r'][k] = r
-        for g in group_names:
-            if g in r_w: lin_res['full_r_window'][g][k] = r_w[g]
-            if g in r_l: lin_res['lesioned_r'][g][k] = r_l[g]
-            if g in r_lw: lin_res['lesioned_r_window'][g][k] = r_lw[g]
-        print(f'  linear r={r:.3f}')
+        for nh in hidden_sizes:
+            print(f'  h={nh}: inner CV...')
+            lambda_gl, lambda_ortho = inner_cv_select(
+                X_train, y_train, col_map, nh, ops, seed=k)
+            all_params[nh].append((lambda_gl, lambda_ortho))
+            print(f'  h={nh}: best gl={lambda_gl}, ortho={lambda_ortho}')
 
-        # fit best network via inner CV
-        if has_network:
-            print(f'  inner CV for network...')
-            n_hidden, lambda_gl, lambda_ortho = inner_cv_select(
-                X_train, y_train, col_map, net_ops,
-                seed=seed + k * 1000)
-            best_net_params_per_fold.append((n_hidden, lambda_gl, lambda_ortho))
-            print(f'  best: n_hidden={n_hidden}, gl={lambda_gl}, ortho={lambda_ortho}')
-
-            net_model = PoissonNet(X_train.shape[1], n_hidden)
-            net_model, _ = train_one(net_model, X_train, y_train, col_map, ops,
-                                     lambda_gl, lambda_ortho)
-            r, r_w, r_l, r_lw = _eval_model(
-                net_model, X_test, y_test, ev_test, lesion_groups, col_map, device)
-            net_res['full_r'][k] = r
-            for g in group_names:
-                if g in r_w: net_res['full_r_window'][g][k] = r_w[g]
-                if g in r_l: net_res['lesioned_r'][g][k] = r_l[g]
-                if g in r_lw: net_res['lesioned_r_window'][g][k] = r_lw[g]
-            print(f'  network r={r:.3f}')
-
-    # fit final models on all valid data for weight extraction
-    X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
-
-    print('Fitting final linear model on all data...')
-    final_lin = PoissonLinear(X_v.shape[1])
-    final_lin, _ = train_one(final_lin, X_v_norm, y_v, col_map, ops)
-
-    result = {
-        'linear': {
-            'full_r': lin_res['full_r'],
-            'weights': final_lin.linear.weight.detach().cpu().numpy().ravel(),
-            'bias': final_lin.linear.bias.detach().cpu().numpy().ravel(),
-        },
-    }
-    for g in group_names:
-        result['linear'][f'lesioned_r_{g}'] = lin_res['lesioned_r'][g]
-        result['linear'][f'full_r_window_{g}'] = lin_res['full_r_window'][g]
-        result['linear'][f'lesioned_r_window_{g}'] = lin_res['lesioned_r_window'][g]
-
-    if has_network and best_net_params_per_fold:
-        from collections import Counter
-        n_hidden, lambda_gl, lambda_ortho = Counter(best_net_params_per_fold).most_common(1)[0][0]
-
-        print(f'Fitting final network (h={n_hidden}) on all data...')
-        final_net = PoissonNet(X_v.shape[1], n_hidden)
-        final_net, _ = train_one(final_net, X_v_norm, y_v, col_map, ops,
+            model = _make_model(X_train.shape[1], nh)
+            model, _ = train_one(model, X_train, y_train, col_map, ops,
                                   lambda_gl, lambda_ortho)
+            r, r_w, r_l, r_lw = _eval_model(
+                model, X_test, y_test, ev_test, lesion_groups, col_map, device)
+            all_res[nh]['full_r'][k] = r
+            for g in group_names:
+                if g in r_w: all_res[nh]['full_r_window'][g][k] = r_w[g]
+                if g in r_l: all_res[nh]['lesioned_r'][g][k] = r_l[g]
+                if g in r_lw: all_res[nh]['lesioned_r_window'][g][k] = r_lw[g]
+            print(f'  h={nh}: r={r:.3f}')
 
-        result['network'] = {
-            'full_r': net_res['full_r'],
-            'n_hidden': n_hidden,
+    # final refit per hidden size on all valid data
+    X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
+    result = {}
+
+    for nh in hidden_sizes:
+        if not all_params[nh]:
+            continue
+
+        lambda_gl, lambda_ortho = Counter(all_params[nh]).most_common(1)[0][0]
+        print(f'Final refit h={nh} (gl={lambda_gl}, ortho={lambda_ortho})...')
+        final_model = _make_model(X_v.shape[1], nh)
+        final_model, _ = train_one(final_model, X_v_norm, y_v, col_map, ops,
+                                    lambda_gl, lambda_ortho)
+
+        res = {
+            'full_r': all_res[nh]['full_r'],
             'lambda_gl': lambda_gl,
             'lambda_ortho': lambda_ortho,
-            'hidden_weights': final_net.hidden.weight.detach().cpu().numpy(),
-            'hidden_bias': final_net.hidden.bias.detach().cpu().numpy(),
-            'output_weights': final_net.output.weight.detach().cpu().numpy().ravel(),
-            'output_bias': final_net.output.bias.detach().cpu().numpy().ravel(),
         }
+
+        if nh == 0:
+            res['weights'] = final_model.linear.weight.detach().cpu().numpy().ravel()
+            res['bias'] = final_model.linear.bias.detach().cpu().numpy().ravel()
+        else:
+            res['hidden_weights'] = final_model.hidden.weight.detach().cpu().numpy()
+            res['hidden_bias'] = final_model.hidden.bias.detach().cpu().numpy()
+            res['output_weights'] = final_model.output.weight.detach().cpu().numpy().ravel()
+            res['output_bias'] = final_model.output.bias.detach().cpu().numpy().ravel()
+
         for g in group_names:
-            result['network'][f'lesioned_r_{g}'] = net_res['lesioned_r'][g]
-            result['network'][f'full_r_window_{g}'] = net_res['full_r_window'][g]
-            result['network'][f'lesioned_r_window_{g}'] = net_res['lesioned_r_window'][g]
+            res[f'lesioned_r_{g}'] = all_res[nh]['lesioned_r'][g]
+            res[f'full_r_window_{g}'] = all_res[nh]['full_r_window'][g]
+            res[f'lesioned_r_window_{g}'] = all_res[nh]['lesioned_r_window'][g]
+
+        result[nh] = res
 
     return result
 

@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-_LOCAL_PATHS = dict(
+LOCAL_PATHS = dict(
     npx_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/',
     ceph_dir = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
                '/data/npx_converted',
@@ -9,7 +9,7 @@ _LOCAL_PATHS = dict(
     pref_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/preferences/',
 )
 
-_HPC_PATHS = dict(
+HPC_PATHS = dict(
     npx_dir  = '/ceph/mrsic_flogel/public/projects'
                '/MoHa_20260212_dmdmTemporalExpectation/data/npx/',
     ceph_dir = '/ceph/mrsic_flogel/public/projects'
@@ -18,8 +18,7 @@ _HPC_PATHS = dict(
                 '/MoHa_20260212_dmdmTemporalExpectation/hpc/plots/',
 )
 
-PATHS = _LOCAL_PATHS if os.path.exists(_LOCAL_PATHS['npx_dir']) else _HPC_PATHS
-
+PATHS = LOCAL_PATHS if os.path.exists(LOCAL_PATHS['npx_dir']) else HPC_PATHS
 # old keys for compatibility
 PATHS['npx_dir_local'] = PATHS['npx_dir']
 PATHS['npx_dir_ceph'] = PATHS['ceph_dir']
@@ -106,8 +105,8 @@ GLM_OPTIONS = dict(
     n_phase_bins = 12,
 
     # unit classification thresholds
-    min_r = 0.2,
-    lesion_alpha = 0.01,
+    min_r = 0.1,
+    lesion_alpha = 0.05,
 
     # predictor groups to lesion together for unit classification
     lesion_groups = {
@@ -125,9 +124,9 @@ GLM_OPTIONS = dict(
     n_folds = 10,
 
     # fitting
-    max_iter = 500,
+    max_iter = 10000,
     tol = 1e-6,
-    cv_max_iter = 200,  # coarser convergence for lambda selection
+    cv_max_iter = 1000,  # coarser convergence for lambda selection
     cv_tol = 1e-4,
 )
 

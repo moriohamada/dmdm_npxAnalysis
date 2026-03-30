@@ -774,7 +774,6 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
 def classify_units(sess_dir, ops=GLM_OPTIONS):
     """load per-neuron GLM results and classify by lesion significance"""
     from scipy.stats import ttest_rel
-
     results_dir = Path(sess_dir) / 'glm_results'
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
     n_neurons = len(sess.fr_stats)

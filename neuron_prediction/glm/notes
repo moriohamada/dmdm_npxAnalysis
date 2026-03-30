@@ -1,0 +1,2 @@
+submit.bash and submit_pt2.bash are the same thing - just on different neuron indices, since the swc slurm scheduler
+doesnt allow array indices over 9999.

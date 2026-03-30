@@ -1,5 +1,7 @@
 """
-Session dataclass and constructor.
+Session dataclass - for storing basic trial/neural info for a single session.
+
+Note that fr_matrix and daq lines are dropped while saving by default to save storage.
 """
 
 from __future__ import annotations

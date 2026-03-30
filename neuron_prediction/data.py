@@ -118,6 +118,18 @@ def select_neurons(sess_dir, min_r=0.2, require_tf=False):
     return df.loc[mask, 'neuron_idx'].tolist()
 
 
+def convert_job_map_to_hpc(csv_path):
+    """rewrite sess_dir paths in a job map CSV from local to ceph"""
+    import pandas as pd
+    from config import LOCAL_PATHS, HPC_PATHS
+    df = pd.read_csv(csv_path)
+    df['sess_dir'] = df['sess_dir'].str.replace(
+        LOCAL_PATHS['npx_dir'], HPC_PATHS['npx_dir'])
+    df.to_csv(csv_path, index=False)
+    print(f'Converted {len(df)} rows in {csv_path}')
+    return df
+
+
 def build_network_job_map(npx_dir=None, output_path=None,
                            min_r=0.2, require_tf=False):
     """build CSV mapping SLURM array index -> (session_dir, neuron_index)

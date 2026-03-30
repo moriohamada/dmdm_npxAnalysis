@@ -34,9 +34,16 @@ visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
 # Prepare design matrices
 from neuron_prediction.glm.fit import prepare_all_sessions
 prepare_all_sessions(overwrite=False)
+
 from neuron_prediction.glm.fit import build_job_map
 df = build_job_map()
 print(f'--array=0-{len(df) - 1}')
+
+from neuron_prediction.data import convert_job_map_to_hpc
+import os
+convert_job_map_to_hpc(os.path.join(PATHS['npx_dir'], 'glm_job_map.csv'))
+
+#%% Explore kernel fits
 
 #%% Downsample FR matrices for population analyses
 from utils.downsampling import save_downsampled_fr

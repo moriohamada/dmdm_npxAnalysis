@@ -1,13 +1,12 @@
 #!/bin/bash
-#SBATCH -J glm_fit
-#SBATCH -o logs/glm-%A_%a.out
-#SBATCH -e logs/glm-%A_%a.err
+#SBATCH --job-name=nn_pred
+#SBATCH --output=logs/nn_pred_%A_%a.log
+#SBATCH --array=0-NJOBS
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
-#SBATCH -t 0-04:00
-#SBATCH --array=0-NJOBS
+#SBATCH --mem=4G
+#SBATCH --time=02:00:00
 
 module load miniconda/23.10.0
 source $(conda info --base)/etc/profile.d/conda.sh
@@ -16,6 +15,6 @@ conda activate /ceph/mrsic_flogel/public/projects/MoHa_20201102_SwitchChangeDete
 CODE_DIR=/nfs/nhome/live/morioh/Documents/PycharmProjects/dmdm_npxAnalysis
 cd $CODE_DIR
 
-python -m neuron_prediction.glm.run_neuron \
+python -u -m neuron_prediction.network.run_neuron \
     --job-index $SLURM_ARRAY_TASK_ID \
-    --job-map glm_job_map.csv
+    --job-map /ceph/mrsic_flogel/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/network_job_map.csv
