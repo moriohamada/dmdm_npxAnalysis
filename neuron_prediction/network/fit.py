@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-from config import GLM_OPTIONS, NETWORK_OPTIONS
+from config import NETWORK_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
     load_glm_inputs, get_fold_indices, neuron_seed, normalise_design_matrix,
@@ -182,7 +182,7 @@ def _eval_model(model, X_test, y_test, ev_masks_v, lesion_groups, col_map, devic
 
 
 def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
-               ops_glm=GLM_OPTIONS, ops_net=NETWORK_OPTIONS, seed=0):
+               ops=NETWORK_OPTIONS, seed=0):
     """fit both linear and network poisson models for one neuron
 
     always fits a linear model (PoissonLinear) and the best network
@@ -190,8 +190,8 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
     returns dict with 'linear' and 'network' sub-dicts.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    n_folds = ops_net['n_outer_folds']
-    lesion_groups = ops_glm['lesion_groups']
+    n_folds = ops['n_outer_folds']
+    lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
 
     X_v = X[valid_mask]
@@ -218,8 +218,8 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
                 ev_masks_v[gname] = event_masks[gname][valid_mask]
 
     # network hidden sizes (exclude 0 - linear is always fit separately)
-    net_hidden_sizes = [h for h in ops_net['hidden_sizes'] if h > 0]
-    net_ops = dict(ops_net, hidden_sizes=net_hidden_sizes)
+    net_hidden_sizes = [h for h in ops['hidden_sizes'] if h > 0]
+    net_ops = dict(ops, hidden_sizes=net_hidden_sizes)
     has_network = len(net_hidden_sizes) > 0
 
     best_net_params_per_fold = []
@@ -246,7 +246,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
         # always fit linear
         print(f'  fitting linear...')
         lin_model = PoissonLinear(X_train.shape[1])
-        lin_model, _ = train_one(lin_model, X_train, y_train, col_map, ops_net)
+        lin_model, _ = train_one(lin_model, X_train, y_train, col_map, ops)
         r, r_w, r_l, r_lw = _eval_model(
             lin_model, X_test, y_test, ev_test, lesion_groups, col_map, device)
         lin_res['full_r'][k] = r
@@ -266,7 +266,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
             print(f'  best: n_hidden={n_hidden}, gl={lambda_gl}, ortho={lambda_ortho}')
 
             net_model = PoissonNet(X_train.shape[1], n_hidden)
-            net_model, _ = train_one(net_model, X_train, y_train, col_map, ops_net,
+            net_model, _ = train_one(net_model, X_train, y_train, col_map, ops,
                                      lambda_gl, lambda_ortho)
             r, r_w, r_l, r_lw = _eval_model(
                 net_model, X_test, y_test, ev_test, lesion_groups, col_map, device)
@@ -282,7 +282,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
 
     print('Fitting final linear model on all data...')
     final_lin = PoissonLinear(X_v.shape[1])
-    final_lin, _ = train_one(final_lin, X_v_norm, y_v, col_map, ops_net)
+    final_lin, _ = train_one(final_lin, X_v_norm, y_v, col_map, ops)
 
     result = {
         'linear': {
@@ -302,7 +302,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
 
         print(f'Fitting final network (h={n_hidden}) on all data...')
         final_net = PoissonNet(X_v.shape[1], n_hidden)
-        final_net, _ = train_one(final_net, X_v_norm, y_v, col_map, ops_net,
+        final_net, _ = train_one(final_net, X_v_norm, y_v, col_map, ops,
                                   lambda_gl, lambda_ortho)
 
         result['network'] = {
@@ -323,8 +323,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
     return result
 
 
-def fit_neuron_from_disk(sess_dir, neuron_idx,
-                          ops_glm=GLM_OPTIONS, ops_net=NETWORK_OPTIONS):
+def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
     """load prepped data, fit one neuron, save results"""
     from neuron_prediction.glm.fit import build_event_masks
 
@@ -335,8 +334,7 @@ def fit_neuron_from_disk(sess_dir, neuron_idx,
     event_masks = build_event_masks(sess, t_ax)
 
     result = fit_neuron(y, X, col_map, valid_mask, event_masks,
-                        ops_glm, ops_net,
-                        seed=neuron_seed(sess_dir, neuron_idx))
+                        ops, seed=neuron_seed(sess_dir, neuron_idx))
 
     results_dir = Path(sess_dir) / 'network_results'
     results_dir.mkdir(exist_ok=True)

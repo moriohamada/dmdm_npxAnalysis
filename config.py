@@ -20,7 +20,7 @@ _HPC_PATHS = dict(
 
 PATHS = _LOCAL_PATHS if os.path.exists(_LOCAL_PATHS['npx_dir']) else _HPC_PATHS
 
-# keep old keys for backwards compatibility
+# old keys for compatibility
 PATHS['npx_dir_local'] = PATHS['npx_dir']
 PATHS['npx_dir_ceph'] = PATHS['ceph_dir']
 
@@ -149,6 +149,9 @@ NETWORK_OPTIONS = dict(
     # CV (must match GLM for fair comparison)
     n_outer_folds = 10,
     n_inner_folds = 3,
+
+    # lesion groups (shared with GLM)
+    lesion_groups = GLM_OPTIONS['lesion_groups'],
 
     # neuron selection
     min_r       = 0.2,
