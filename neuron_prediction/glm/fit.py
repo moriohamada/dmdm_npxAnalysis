@@ -819,7 +819,7 @@ def classify_units(sess_dir, ops=GLM_OPTIONS):
                 p = 1.0
                 delta_r = 0.0
 
-            is_sig = (np.nanmean(full_r_g[ok]) > ops['min_r'] and
+            is_sig = (row['mean_r'] > ops['min_r'] and
                       p < ops['lesion_alpha'] and
                       delta_r > 0) if ok.sum() >= 3 else False
 

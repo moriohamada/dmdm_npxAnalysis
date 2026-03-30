@@ -34,7 +34,7 @@ def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
     # panel 1: change onset (overlaid by magnitude)
     ax = axes[1]
     ch_keys = sorted([k for k in kernels if k.startswith('change_tf')])
-    ch_cmap = plt.cm.get_cmap(PLOT_OPTIONS['colours']['ch_tf_cmap'])
+    ch_cmap = plt.colormaps[PLOT_OPTIONS['colours']['ch_tf_cmap']]
     if ch_keys:
         colours = ch_cmap(np.linspace(0.15, 0.85, len(ch_keys)))
         colours[0] = (0.6, 0.6, 0.6, 1.0)
