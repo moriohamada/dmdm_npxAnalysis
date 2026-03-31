@@ -143,10 +143,10 @@ GLM_OPTIONS = dict(
 
 NETWORK_OPTIONS = dict(
     # architecture
-    hidden_sizes = [0, 8, 16, 32, 64],  # 0 = PoissonLinear (no hidden layer)
+    hidden_sizes = [0, 16, 32, 64, 128],  # 0 = PoissonLinear (no hidden layer)
 
     # regularisation
-    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2],
+    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2, 1e-1],
 
     # training
     lr          = 1e-2,
@@ -154,6 +154,8 @@ NETWORK_OPTIONS = dict(
     max_epochs  = 2000,
     patience    = 50,
     val_frac    = 0.1,
+    cv_max_epochs = 500,   # coarser convergence for inner CV lambda selection
+    cv_patience   = 30,
 
     # CV
     n_outer_folds = 10,

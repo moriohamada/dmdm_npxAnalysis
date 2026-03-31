@@ -123,10 +123,15 @@ def _fit_one_inner(X_train, y_train, col_map, n_hidden, ops,
     if val_mask.sum() == 0 or tr_mask.sum() == 0:
         return lambda_gl, k, np.nan, np.inf
 
+    # coarser training for lambda selection
+    cv_ops = {**ops,
+              'max_epochs': ops.get('cv_max_epochs', ops['max_epochs']),
+              'patience': ops.get('cv_patience', ops['patience'])}
+
     model = _make_model(X_train.shape[1], n_hidden)
     model, _ = train_one(
         model, X_train[tr_mask], y_train[tr_mask],
-        col_map, ops, lambda_gl)
+        col_map, cv_ops, lambda_gl)
 
     device = next(model.parameters()).device
     poisson_loss_fn = nn.PoissonNLLLoss(log_input=True)

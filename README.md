@@ -23,7 +23,8 @@ behaviour/integrator/    leaky integrator model (grid search on HPC)
 lick_pred/               lick prediction from neural activity
 neuron_prediction/       single-unit prediction models
   glm/                   poisson GLM with group lasso
-  network/               poisson networks (linear + hidden layer)
+  network/               poisson networks with interaction permutation
+  hybrid/                (planned) masked hidden layer for interaction detection
 single_unit/             unit preferences, PSTH plots
 population/              PCA, LDS, population trajectories
 demixing/                SAE and causal LFADS
@@ -49,7 +50,9 @@ coding_dims/             coding dimension rotation, motor subspace projection
 **Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick 
 preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Config: `GLM_OPTIONS`.
 
-**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer and orthogonality penalty. Inner CV per hidden size for regularisation selection, linear baseline for comparison. Same lesion framework as GLM. Config: `NETWORK_OPTIONS`.
+**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer. Nested CV (inner selects group lasso lambda, outer evaluates). Permutation importance for individual predictor groups + pairwise and three-way interaction permutation to detect non-linear interactions (e.g. TF x block x time). Parallelised inner CV via joblib. All neurons fitted (no GLM-based filtering). Config: `NETWORK_OPTIONS`.
+
+**Hybrid model** (`neuron_prediction/hybrid/`, planned) - linear skip connection (all predictors to output) + masked hidden layer (configurable subset of predictor groups). Hidden units constrained to specific interaction combinations. Identifies and quantifies specific predictor interactions the network captures beyond the GLM.
 
 **Population** (`population/`) - PCA on event-aligned responses, LDS.
 
