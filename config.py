@@ -146,7 +146,7 @@ NETWORK_OPTIONS = dict(
     hidden_sizes = [0, 16, 64, 128],  # 0 = PoissonLinear (no hidden layer)
 
     # regularisation
-    group_lasso_lambdas = [1e-4, 1e-3, 1e-2, 1e-1],
+    group_lasso_lambdas = [1e-4, 1e-3, 1e-2],
 
     # training
     lr          = 1e-2,
