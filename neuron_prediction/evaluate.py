@@ -1,5 +1,6 @@
 """shared evaluation metrics for neuron prediction models"""
 import numpy as np
+from itertools import combinations
 
 
 def pearson_r(y_true, y_pred):
@@ -34,6 +35,19 @@ def permute_design_matrix(X, predictor_names, col_map, rng=None):
         if name in predictor_names:
             X_perm[:, col_slice] = X[perm_idx][:, col_slice]
     return X_perm
+
+
+def get_interaction_combos(group_names, max_order=3):
+    """generate all 2-way and 3-way combinations of group names"""
+    combos = []
+    for order in range(2, max_order + 1):
+        combos.extend(combinations(sorted(group_names), order))
+    return combos
+
+
+def interaction_combo_key(combo):
+    """e.g. ('block', 'tf') -> 'block_x_tf'"""
+    return '_x_'.join(combo)
 
 
 def compare_models(glm_results_dir, network_results_dir, n_hidden,

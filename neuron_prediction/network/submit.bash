@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=nn_pred
-#SBATCH --output=logs/nn_pred_%A_%a.log
-#SBATCH --array=0-NJOBS
+#SBATCH -J nn_fit
+#SBATCH -o logs/nn-%A_%a.log
 #SBATCH -p cpu
 #SBATCH -N 1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
-#SBATCH --time=02:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH -t 0-04:00
+#SBATCH --array=0-9999%100
 
 module load miniconda/23.10.0
 source $(conda info --base)/etc/profile.d/conda.sh

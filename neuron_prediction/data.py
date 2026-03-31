@@ -130,11 +130,10 @@ def convert_job_map_to_hpc(csv_path):
     return df
 
 
-def build_network_job_map(npx_dir=None, output_path=None,
-                           min_r=0.2, require_tf=False):
+def build_network_job_map(npx_dir=None, output_path=None):
     """build CSV mapping SLURM array index -> (session_dir, neuron_index)
 
-    only includes neurons passing GLM classification filter
+    includes all neurons with prepped GLM design matrices
     """
     import os
     import pandas as pd
@@ -155,13 +154,11 @@ def build_network_job_map(npx_dir=None, output_path=None,
             sess_dir = os.path.join(subj_dir, sess)
             if not os.path.exists(os.path.join(sess_dir, 'glm_counts.npy')):
                 continue
-            neuron_indices = select_neurons(sess_dir, min_r=min_r,
-                                             require_tf=require_tf)
-            if not neuron_indices:
-                continue
+
             sess_data = Session.load(os.path.join(sess_dir, 'session.pkl'))
             cluster_ids = sess_data.fr_stats.index.values
-            for i in neuron_indices:
+
+            for i in range(len(sess_data.fr_stats)):
                 rows.append({
                     'job_idx': len(rows),
                     'sess_dir': sess_dir,

@@ -2,6 +2,8 @@
 SLURM entry point: fit GLM for one neuron
 
 usage: python -m neuron_prediction.glm.run_neuron --job-index 42 --job-map /path/to/glm_job_map.csv
+
+note: cv isnt currently nested for glm - leaky!
 """
 import argparse
 import pandas as pd

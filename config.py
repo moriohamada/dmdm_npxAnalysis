@@ -116,7 +116,7 @@ GLM_OPTIONS = dict(
     n_phase_bins = 12,
 
     # unit classification thresholds
-    min_r = 0.1,
+    min_r = 0,
     lesion_alpha = 0.05,
 
     # predictor groups to lesion together for unit classification
@@ -146,8 +146,7 @@ NETWORK_OPTIONS = dict(
     hidden_sizes = [0, 8, 16, 32, 64],  # 0 = PoissonLinear (no hidden layer)
 
     # regularisation
-    group_lasso_lambdas = [0, 1e-3, 1e-2, 1e-1],
-    ortho_lambdas       = [0, 1e-3, 1e-2, 1e-1],
+    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2, 1e-1],
 
     # training
     lr          = 1e-2,
@@ -156,7 +155,7 @@ NETWORK_OPTIONS = dict(
     patience    = 200,
     val_frac    = 0.1,
 
-    # CV (must match GLM for fair comparison)
+    # CV
     n_outer_folds = 10,
     n_inner_folds = 3,
 

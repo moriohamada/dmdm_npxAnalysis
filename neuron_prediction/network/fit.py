@@ -10,9 +10,12 @@ from neuron_prediction.data import (
     load_glm_inputs, get_trial_fold_indices,
     neuron_seed, normalise_design_matrix,
 )
-from neuron_prediction.evaluate import pearson_r, permute_design_matrix
+from neuron_prediction.evaluate import (
+    pearson_r, permute_design_matrix,
+    get_interaction_combos, interaction_combo_key,
+)
 from neuron_prediction.network.model import (
-    PoissonLinear, PoissonNet, proximal_group_lasso, ortho_penalty,
+    PoissonLinear, PoissonNet, proximal_group_lasso,
 )
 
 
@@ -29,10 +32,10 @@ def _make_model(n_inputs, n_hidden):
 
 
 def train_one(model, X_train, y_train, col_map, ops,
-              lambda_gl=0.0, lambda_ortho=0.0):
+              lambda_gl=0.0):
     """train with plain SGD + proximal group lasso + early stopping
 
-    smooth loss (Poisson NLL + ortho penalty) updated via SGD.
+    smooth loss (Poisson NLL) updated via SGD.
     non-smooth penalty (group lasso) applied via proximal operator after each step.
     returns trained model and best validation loss.
     """
@@ -69,10 +72,8 @@ def train_one(model, X_train, y_train, col_map, ops,
             idx = perm_tr[start:start + batch_size]
             log_rate = model(X_tr[idx])
 
-            # smooth loss: Poisson NLL + ortho penalty
+            # Poisson NLL
             loss = poisson_loss(log_rate, y_tr[idx])
-            if lambda_ortho > 0:
-                loss = loss + lambda_ortho * ortho_penalty(model)
 
             optimizer.zero_grad()
             loss.backward()
@@ -137,15 +138,12 @@ def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
     inner_folds = inner_fold_ids[outer_valid][outer_train_mask]
 
     best_r = -np.inf
-    best_params = (0, 0)
+    best_params = 0
 
-    ortho_lambdas = [0] if n_hidden == 0 else ops['ortho_lambdas']
-    configs = [(gl, ort)
-               for gl in ops['group_lasso_lambdas']
-               for ort in ortho_lambdas]
+    configs = ops['group_lasso_lambdas']
     n_configs = len(configs)
 
-    for ci, (lambda_gl, lambda_ortho) in enumerate(configs):
+    for ci, lambda_gl in enumerate(configs):
         fold_rs = []
         fold_losses = []
         for k in range(n_inner):
@@ -158,7 +156,7 @@ def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
             model = _make_model(X_train.shape[1], n_hidden)
             model, _ = train_one(
                 model, X_train[tr_mask], y_train[tr_mask],
-                col_map, ops, lambda_gl, lambda_ortho)
+                col_map, ops, lambda_gl)
 
             # evaluate on held-out inner fold
             with torch.no_grad():
@@ -175,11 +173,11 @@ def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
 
         mean_r = np.nanmean(fold_rs) if fold_rs else np.nan
         mean_loss = np.mean(fold_losses) if fold_losses else np.inf
-        print(f'    config {ci+1}/{n_configs}: gl={lambda_gl} ort={lambda_ortho} '
+        print(f'    config {ci+1}/{n_configs}: gl={lambda_gl} '
               f'-> r={mean_r:.4f}, loss={mean_loss:.4f}')
         if not np.isnan(mean_r) and mean_r > best_r:
             best_r = mean_r
-            best_params = (lambda_gl, lambda_ortho)
+            best_params = lambda_gl
 
     return best_params
 
@@ -213,7 +211,31 @@ def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups,
             perm_rs.append(pearson_r(y_test[win], y_pred_perm[win]))
         r_permuted[gname] = np.nanmean(perm_rs)
 
-    return r, r_group, r_permuted
+    # pairwise and three-way interaction permutation
+    combos = get_interaction_combos(list(lesion_groups.keys()), max_order=3)
+    r_interaction = {}
+    for combo in combos:
+        # collect all predictor names for this combination
+        pred_list = []
+        for gname in combo:
+            pred_list.extend(lesion_groups[gname])
+
+        # use union of group masks
+        win = np.zeros(len(y_test), dtype=bool)
+        for gname in combo:
+            if gname in group_masks_test:
+                win |= group_masks_test[gname]
+        if win.sum() < 5:
+            continue
+
+        perm_rs = []
+        for _ in range(n_perm):
+            X_perm = permute_design_matrix(X_test, pred_list, col_map, rng)
+            y_pred_perm = _predict_numpy(model, X_perm, device)
+            perm_rs.append(pearson_r(y_test[win], y_pred_perm[win]))
+        r_interaction[interaction_combo_key(combo)] = np.nanmean(perm_rs)
+
+    return r, r_group, r_permuted, r_interaction
 
 
 def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
@@ -233,6 +255,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     n_folds = ops['n_outer_folds']
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
+    combos = get_interaction_combos(group_names, max_order=3)
+    combo_keys = [interaction_combo_key(c) for c in combos]
     hidden_sizes = ops['hidden_sizes']
 
     valid = fold_ids >= 0
@@ -255,6 +279,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
             'full_r': np.full(n_folds, np.nan),
             'full_r_group': {g: np.full(n_folds, np.nan) for g in group_names},
             'permuted_r': {g: np.full(n_folds, np.nan) for g in group_names},
+            'interaction_r': {ck: np.full(n_folds, np.nan) for ck in combo_keys},
         }
 
     all_res = {nh: _empty_results() for nh in hidden_sizes}
@@ -278,22 +303,24 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
 
         for nh in hidden_sizes:
             print(f'  h={nh}: inner CV...')
-            lambda_gl, lambda_ortho = inner_cv_select(
+            lambda_gl = inner_cv_select(
                 X_train, y_train, col_map, nh, ops,
                 trials_df, t_ax, valid, train_mask, seed=k)
-            all_params[nh].append((lambda_gl, lambda_ortho))
-            print(f'  h={nh}: best gl={lambda_gl}, ortho={lambda_ortho}')
+            all_params[nh].append(lambda_gl)
+            print(f'  h={nh}: best gl={lambda_gl}')
 
             model = _make_model(X_train.shape[1], nh)
             model, _ = train_one(model, X_train, y_train, col_map, ops,
-                                  lambda_gl, lambda_ortho)
-            r, r_g, r_l = _eval_model(
+                                  lambda_gl)
+            r, r_g, r_l, r_int = _eval_model(
                 model, X_test, y_test, gm_test, lesion_groups, col_map,
                 device, n_perm=ops['n_perm_importance'], seed=k)
             all_res[nh]['full_r'][k] = r
             for g in group_names:
                 if g in r_g: all_res[nh]['full_r_group'][g][k] = r_g[g]
                 if g in r_l: all_res[nh]['permuted_r'][g][k] = r_l[g]
+            for ck in combo_keys:
+                if ck in r_int: all_res[nh]['interaction_r'][ck][k] = r_int[ck]
             print(f'  h={nh}: r={r:.3f}')
 
     # final refit per hidden size on all valid data
@@ -304,16 +331,15 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         if not all_params[nh]:
             continue
 
-        lambda_gl, lambda_ortho = Counter(all_params[nh]).most_common(1)[0][0]
-        print(f'Final refit h={nh} (gl={lambda_gl}, ortho={lambda_ortho})...')
+        lambda_gl = Counter(all_params[nh]).most_common(1)[0][0]
+        print(f'Final refit h={nh} (gl={lambda_gl})...')
         final_model = _make_model(X_v.shape[1], nh)
         final_model, _ = train_one(final_model, X_v_norm, y_v, col_map, ops,
-                                    lambda_gl, lambda_ortho)
+                                    lambda_gl)
 
         p = f'h{nh}_'
         result[f'{p}full_r'] = all_res[nh]['full_r']
         result[f'{p}lambda_gl'] = np.array(lambda_gl)
-        result[f'{p}lambda_ortho'] = np.array(lambda_ortho)
 
         if nh == 0:
             result[f'{p}weights'] = final_model.linear.weight.detach().cpu().numpy().ravel()
@@ -327,6 +353,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         for g in group_names:
             result[f'{p}full_r_group_{g}'] = all_res[nh]['full_r_group'][g]
             result[f'{p}permuted_r_{g}'] = all_res[nh]['permuted_r'][g]
+        for ck in combo_keys:
+            result[f'{p}interaction_r_{ck}'] = all_res[nh]['interaction_r'][ck]
 
     return result
 

@@ -60,19 +60,3 @@ def proximal_group_lasso(model, col_map, lambda_gl, lr):
             norms = group_w.norm(dim=1, keepdim=True).clamp(min=1e-12)
             scale = (1 - threshold / norms).clamp(min=0)
             W[:, col_slice] = group_w * scale
-
-
-def ortho_penalty(model):
-    """mean squared off-diagonal cosine similarity of hidden unit weight vectors
-
-    encourages functionally distinct hidden units.
-    uses mean (not sum) so penalty strength is stable across hidden widths.
-    only meaningful for PoissonNet (not PoissonLinear)
-    """
-    if isinstance(model, PoissonLinear):
-        return torch.tensor(0.0)
-    W = model.hidden.weight  # (n_hidden, n_inputs)
-    W_norm = W / W.norm(dim=1, keepdim=True).clamp(min=1e-8)
-    cos_sim = W_norm @ W_norm.T
-    mask = 1 - torch.eye(cos_sim.shape[0], device=cos_sim.device)
-    return (cos_sim * mask).pow(2).mean()

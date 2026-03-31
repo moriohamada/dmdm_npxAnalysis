@@ -119,6 +119,7 @@ def classify_units(sess_dir, ops=NETWORK_OPTIONS):
     tests. saves h{n}_classifications.csv in network_results/
     """
     from scipy.stats import ttest_rel, ttest_1samp
+    from neuron_prediction.evaluate import get_interaction_combos, interaction_combo_key
 
     results_dir = Path(sess_dir) / 'network_results'
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
@@ -196,6 +197,45 @@ def classify_units(sess_dir, ops=NETWORK_OPTIONS):
                 row[f'{gname}_p'] = p_val
                 row[f'{gname}_delta_r'] = delta_r
                 row[f'{gname}_sig'] = is_sig
+
+            # interaction significance
+            # interaction effect = delta_r(joint) - sum(delta_r(individual))
+            combos = get_interaction_combos(group_names, max_order=3)
+            for combo in combos:
+                ck = interaction_combo_key(combo)
+                int_key = f'{p}interaction_r_{ck}'
+                if int_key not in res.files:
+                    continue
+
+                int_r = res[int_key]
+
+                # sum of individual delta_rs per fold
+                sum_individual = np.zeros(len(int_r))
+                for gname in combo:
+                    fg = res.get(f'{p}full_r_group_{gname}')
+                    pg = res.get(f'{p}permuted_r_{gname}')
+                    if fg is not None and pg is not None:
+                        sum_individual += (fg - pg)
+
+                # joint delta_r per fold
+                joint_delta = full_r - int_r
+
+                # interaction effect = joint - sum(individual)
+                interaction_effect = joint_delta - sum_individual
+
+                ok = ~np.isnan(interaction_effect)
+                if ok.sum() >= 3:
+                    _, p_int = ttest_1samp(interaction_effect[ok], 0)
+                    mean_effect = np.nanmean(interaction_effect[ok])
+                else:
+                    p_int = 1.0
+                    mean_effect = 0.0
+
+                row[f'interaction_{ck}_effect'] = mean_effect
+                row[f'interaction_{ck}_p'] = p_int
+                row[f'interaction_{ck}_sig'] = (
+                    sig_full and p_int < lesion_alpha and mean_effect > 0
+                ) if ok.sum() >= 3 else False
 
             classifications.append(row)
 
