@@ -44,7 +44,7 @@ coding_dims/             coding dimension rotation, motor subspace projection
 
 **Preprocessing** (`data/`) - extract FR matrices and event timings from raw data on ceph, downsample to 50ms bins for population analyses.
 
-**Single unit responses** (`single_unit/`) - Per-neuron PSTH plots & preference index calculation
+**Single unit responses** (`single_unit/`) - single neuron PSTH plots & preference index calculation
 
 **Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick 
 preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Config: `GLM_OPTIONS`.
@@ -55,7 +55,7 @@ preparation/execution, time ramp, block, and motion signals. Time-shifted predic
 
 **Demixing** (`demixing/`) - SAE and causal LFADS for learning interpretable latent factors from neural activity.
 
-**Tuning curves** (`tuning_curves/`) - single-unit TF tuning by block. OLS fit of firing rate vs TF per block, permutation tests for gain significance. TF-responsive = significant gain in either block at p < 0.025. Quantile-binned curves with SEM. Results per session. Config: `TUNING_CURVE_OPS`.
+**Tuning curves** (`tuning_curves/`) - single unit TF tuning by block. OLS fit of firing rate vs TF per block, permutation tests for gain significance. TF-responsive = significant gain in either block at p < 0.025. Quantile-binned curves with SEM. Results per session. Config: `TUNING_CURVE_OPS`.
 
 **Coding dimensions** (`coding_dims/`) - two analyses comparing TF coding between early/late blocks. (1) Coding dimension rotation: time-resolved TF coding vector per block, between-block cosine similarity over post-pulse time, null from block-label shuffling. (2) Motor dimension projection: PCA motor subspace from lick-aligned activity (even/odd CV, fake-lick null), TF responses projected onto motor and non-motor dimensions per block. Results per animal. Config: `CODING_DIM_OPS`.
 
