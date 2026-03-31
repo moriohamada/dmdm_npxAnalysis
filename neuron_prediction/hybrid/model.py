@@ -102,7 +102,7 @@ def proximal_group_lasso_hybrid(model: HybridModel, col_map, lambda_gl, lr):
                 col_slice, _ = col_map[group_name]
                 n_cols = col_slice.stop - col_slice.start
                 group_w = W_sub[:, offset:offset + n_cols]
-                group_l2 = group_w.norm(2, dim=1, keepdim=True).clamp(1e-12)
+                group_l2 = group_w.norm(2, dim=1, keepdim=True).clamp(1e-10)
                 thresh = lr * lambda_gl * math.sqrt(n_cols)
                 shrink = (1 - (thresh / group_l2)).clamp(min=0)
                 W_sub[:, offset:offset + n_cols] = shrink * group_w

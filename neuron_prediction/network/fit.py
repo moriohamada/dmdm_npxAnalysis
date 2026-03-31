@@ -11,8 +11,7 @@ from neuron_prediction.data import (
     neuron_seed, normalise_design_matrix,
 )
 from neuron_prediction.evaluate import (
-    pearson_r, permute_design_matrix,
-    get_interaction_combos, interaction_combo_key,
+    pearson_r, permute_design_matrix, interaction_combo_key,
 )
 from neuron_prediction.network.model import (
     PoissonLinear, PoissonNet, proximal_group_lasso,
@@ -199,13 +198,14 @@ def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
 
 
 def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups,
-                col_map, device, n_perm=10, seed=0):
+                col_map, interaction_combos, device, n_perm=10, seed=0):
     """full r and per-group permutation importance
 
     # shuffle regressors instead - can't just zero for network!
 
     group_masks_test: dict of bool arrays marking bins where each group's
     predictors are non-zero (already sliced to test fold)
+    interaction_combos: list of tuples specifying which joint permutations to run
     """
     y_pred = _predict_numpy(model, X_test, device)
     r = pearson_r(y_test, y_pred)
@@ -227,11 +227,9 @@ def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups,
             perm_rs.append(pearson_r(y_test[win], y_pred_perm[win]))
         r_permuted[gname] = np.nanmean(perm_rs)
 
-    # pairwise and three-way interaction permutation
-    combos = get_interaction_combos(list(lesion_groups.keys()), max_order=3)
+    # interaction permutation (joint shuffle of group combinations)
     r_interaction = {}
-    for combo in combos:
-        # collect all predictor names for this combination
+    for combo in interaction_combos:
         pred_list = []
         for gname in combo:
             pred_list.extend(lesion_groups[gname])
@@ -271,7 +269,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     n_folds = ops['n_outer_folds']
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
-    combos = get_interaction_combos(group_names, max_order=3)
+    combos = ops['interaction_combos']
     combo_keys = [interaction_combo_key(c) for c in combos]
     hidden_sizes = ops['hidden_sizes']
 
@@ -330,7 +328,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
                                   lambda_gl)
             r, r_g, r_l, r_int = _eval_model(
                 model, X_test, y_test, gm_test, lesion_groups, col_map,
-                device, n_perm=ops['n_perm_importance'], seed=k)
+                combos, device, n_perm=ops['n_perm_importance'], seed=k)
             all_res[nh]['full_r'][k] = r
             for g in group_names:
                 if g in r_g: all_res[nh]['full_r_group'][g][k] = r_g[g]

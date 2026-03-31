@@ -3,8 +3,8 @@
 #SBATCH -o logs/nn-%A_%a.log
 #SBATCH -p cpu
 #SBATCH -N 1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
 #SBATCH -t 0-06:00
 #SBATCH --array=0-9999%100
 

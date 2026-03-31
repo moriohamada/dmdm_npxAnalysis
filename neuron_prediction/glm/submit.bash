@@ -4,7 +4,7 @@
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=36G
+#SBATCH --mem=32G
 #SBATCH -t 0-04:00
 #SBATCH --array=0-9999%100
 

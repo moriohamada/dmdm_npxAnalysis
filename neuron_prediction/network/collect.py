@@ -119,7 +119,7 @@ def classify_units(sess_dir, ops=NETWORK_OPTIONS):
     tests. saves h{n}_classifications.csv in network_results/
     """
     from scipy.stats import ttest_rel, ttest_1samp
-    from neuron_prediction.evaluate import get_interaction_combos, interaction_combo_key
+    from neuron_prediction.evaluate import interaction_combo_key
 
     results_dir = Path(sess_dir) / 'network_results'
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
@@ -200,7 +200,7 @@ def classify_units(sess_dir, ops=NETWORK_OPTIONS):
 
             # interaction significance
             # interaction effect = delta_r(joint) - sum(delta_r(individual))
-            combos = get_interaction_combos(group_names, max_order=3)
+            combos = ops['interaction_combos']
             for combo in combos:
                 ck = interaction_combo_key(combo)
                 int_key = f'{p}interaction_r_{ck}'

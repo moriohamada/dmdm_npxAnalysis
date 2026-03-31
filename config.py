@@ -143,29 +143,39 @@ GLM_OPTIONS = dict(
 
 NETWORK_OPTIONS = dict(
     # architecture
-    hidden_sizes = [0, 16, 32, 64, 128],  # 0 = PoissonLinear (no hidden layer)
+    hidden_sizes = [0, 16, 64, 128],  # 0 = PoissonLinear (no hidden layer)
 
     # regularisation
-    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2, 1e-1],
+    group_lasso_lambdas = [1e-4, 1e-3, 1e-2, 1e-1],
 
     # training
     lr          = 1e-2,
     batch_size  = 4096,
-    max_epochs  = 2000,
-    patience    = 50,
+    max_epochs  = 2500,
+    patience    = 100,
     val_frac    = 0.1,
-    cv_max_epochs = 500,   # coarser convergence for inner CV lambda selection
-    cv_patience   = 30,
+    cv_max_epochs = 800,   # coarser convergence for CV lambda selection
+    cv_patience   = 40,
 
     # CV
     n_outer_folds = 10,
     n_inner_folds = 3,
-    n_jobs        = 4,  # parallel inner CV jobs (match --cpus-per-task)
+    n_jobs        = 8,  # parallel inner CV jobs (match --cpus-per-task)
 
     # lesion groups (shared with GLM)
     lesion_groups = GLM_OPTIONS['lesion_groups'],
     lesion_alpha  = GLM_OPTIONS['lesion_alpha'],
     n_perm_importance = 10,  # permutation repeats for predictor importance
+
+    # interaction combos to test via permutation
+    # 2-way: all pairs of tf, lick_prep, time_in_trial, block
+    # 3-way: only block x tf x time_in_trial
+    interaction_combos = [
+        ('block', 'tf'),
+        ('block', 'time_in_trial'),
+        ('tf', 'time_in_trial'),
+        ('block', 'tf', 'time_in_trial'),
+    ],
 
     # neuron selection
     min_r       = 0,
