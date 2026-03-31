@@ -7,10 +7,10 @@ from pathlib import Path
 from config import NETWORK_OPTIONS, ANALYSIS_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
-    load_glm_inputs, get_fold_indices, get_trial_fold_indices,
+    load_glm_inputs, get_trial_fold_indices,
     neuron_seed, normalise_design_matrix,
 )
-from neuron_prediction.evaluate import pearson_r, lesion_design_matrix
+from neuron_prediction.evaluate import pearson_r, permute_design_matrix
 from neuron_prediction.network.model import (
     PoissonLinear, PoissonNet, proximal_group_lasso, ortho_penalty,
 )
@@ -113,16 +113,30 @@ def _predict_numpy(model, X, device):
         return torch.exp(log_rate).cpu().numpy()
 
 
-def inner_cv_select(X_train, y_train, col_map, n_hidden, ops, seed=0):
+def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
+                    trials_df, t_ax, outer_valid, outer_train_mask, seed=0):
     """select best regularisation for a given hidden size via inner CV
 
-    returns best (lambda_gl, lambda_ortho)
-    """
-    n_inner = ops['n_inner_folds']
-    n = len(X_train)
-    inner_folds = get_fold_indices(n, n_inner, seed=seed)
+    uses trial-level inner folds for proper temporal independence.
+    evaluates on held-out inner fold using both poisson NLL and pearson r.
+    selects config with highest mean r.
 
-    best_loss = float('inf')
+    outer_valid: bool (T_full,) — bins with fold_id >= 0
+    outer_train_mask: bool (T_full,) — bins in the outer training fold
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    n_inner = ops['n_inner_folds']
+    poisson_loss_fn = nn.PoissonNLLLoss(log_input=True)
+
+    # build trial-level inner folds on the full time axis, then slice
+    inner_fold_ids = get_trial_fold_indices(
+        trials_df, t_ax, n_inner, seed=seed,
+        ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
+
+    # mask to outer training bins only
+    inner_folds = inner_fold_ids[outer_valid][outer_train_mask]
+
+    best_r = -np.inf
     best_params = (0, 0)
 
     ortho_lambdas = [0] if n_hidden == 0 else ops['ortho_lambdas']
@@ -132,28 +146,49 @@ def inner_cv_select(X_train, y_train, col_map, n_hidden, ops, seed=0):
     n_configs = len(configs)
 
     for ci, (lambda_gl, lambda_ortho) in enumerate(configs):
+        fold_rs = []
         fold_losses = []
         for k in range(n_inner):
             val_mask = inner_folds == k
-            tr_mask = ~val_mask
+            tr_mask = (inner_folds >= 0) & ~val_mask
+
+            if val_mask.sum() == 0 or tr_mask.sum() == 0:
+                continue
 
             model = _make_model(X_train.shape[1], n_hidden)
-            _, val_loss = train_one(
+            model, _ = train_one(
                 model, X_train[tr_mask], y_train[tr_mask],
                 col_map, ops, lambda_gl, lambda_ortho)
-            fold_losses.append(val_loss)
 
-        mean_loss = np.mean(fold_losses)
-        print(f'    config {ci+1}/{n_configs}: gl={lambda_gl} ort={lambda_ortho} -> loss={mean_loss:.4f}')
-        if mean_loss < best_loss:
-            best_loss = mean_loss
+            # evaluate on held-out inner fold
+            with torch.no_grad():
+                X_val_t = torch.tensor(
+                    X_train[val_mask], dtype=torch.float32, device=device)
+                y_val_t = torch.tensor(
+                    y_train[val_mask], dtype=torch.float32, device=device)
+                log_rate = model.to(device)(X_val_t)
+                val_loss = poisson_loss_fn(log_rate, y_val_t).item()
+                y_pred = torch.exp(log_rate).cpu().numpy()
+
+            fold_losses.append(val_loss)
+            fold_rs.append(pearson_r(y_train[val_mask], y_pred))
+
+        mean_r = np.nanmean(fold_rs) if fold_rs else np.nan
+        mean_loss = np.mean(fold_losses) if fold_losses else np.inf
+        print(f'    config {ci+1}/{n_configs}: gl={lambda_gl} ort={lambda_ortho} '
+              f'-> r={mean_r:.4f}, loss={mean_loss:.4f}')
+        if not np.isnan(mean_r) and mean_r > best_r:
+            best_r = mean_r
             best_params = (lambda_gl, lambda_ortho)
 
     return best_params
 
 
-def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups, col_map, device):
-    """evaluate a fitted model: full r and per-group lesion r
+def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups,
+                col_map, device, n_perm=10, seed=0):
+    """full r and per-group permutation importance
+
+    # shuffle regressors instead - can't just zero for network!
 
     group_masks_test: dict of bool arrays marking bins where each group's
     predictors are non-zero (already sliced to test fold)
@@ -161,8 +196,9 @@ def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups, col_map,
     y_pred = _predict_numpy(model, X_test, device)
     r = pearson_r(y_test, y_pred)
 
+    rng = np.random.RandomState(seed)
     r_group = {}
-    r_lesioned = {}
+    r_permuted = {}
     for gname, pred_list in lesion_groups.items():
         win = group_masks_test[gname]
         if win.sum() < 5:
@@ -170,18 +206,23 @@ def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups, col_map,
 
         r_group[gname] = pearson_r(y_test[win], y_pred[win])
 
-        X_les = lesion_design_matrix(X_test, pred_list, col_map)
-        y_pred_les = _predict_numpy(model, X_les, device)
-        r_lesioned[gname] = pearson_r(y_test[win], y_pred_les[win])
+        perm_rs = []
+        for _ in range(n_perm):
+            X_perm = permute_design_matrix(X_test, pred_list, col_map, rng)
+            y_pred_perm = _predict_numpy(model, X_perm, device)
+            perm_rs.append(pearson_r(y_test[win], y_pred_perm[win]))
+        r_permuted[gname] = np.nanmean(perm_rs)
 
-    return r, r_group, r_lesioned
+    return r, r_group, r_permuted
 
 
-def fit_neuron(counts_1d, X, col_map, fold_ids, ops=NETWORK_OPTIONS):
+def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
+               ops=NETWORK_OPTIONS):
     """fit poisson models across all hidden sizes for one neuron
 
     for each hidden size, selects best regularisation via inner CV
-    and evaluates on outer folds. returns dict keyed by n_hidden.
+    and evaluates on outer folds. returns flat dict with h{n}_ prefixed
+    keys matching GLM result format.
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
@@ -213,7 +254,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=NETWORK_OPTIONS):
         return {
             'full_r': np.full(n_folds, np.nan),
             'full_r_group': {g: np.full(n_folds, np.nan) for g in group_names},
-            'lesioned_r': {g: np.full(n_folds, np.nan) for g in group_names},
+            'permuted_r': {g: np.full(n_folds, np.nan) for g in group_names},
         }
 
     all_res = {nh: _empty_results() for nh in hidden_sizes}
@@ -238,7 +279,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=NETWORK_OPTIONS):
         for nh in hidden_sizes:
             print(f'  h={nh}: inner CV...')
             lambda_gl, lambda_ortho = inner_cv_select(
-                X_train, y_train, col_map, nh, ops, seed=k)
+                X_train, y_train, col_map, nh, ops,
+                trials_df, t_ax, valid, train_mask, seed=k)
             all_params[nh].append((lambda_gl, lambda_ortho))
             print(f'  h={nh}: best gl={lambda_gl}, ortho={lambda_ortho}')
 
@@ -246,16 +288,17 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=NETWORK_OPTIONS):
             model, _ = train_one(model, X_train, y_train, col_map, ops,
                                   lambda_gl, lambda_ortho)
             r, r_g, r_l = _eval_model(
-                model, X_test, y_test, gm_test, lesion_groups, col_map, device)
+                model, X_test, y_test, gm_test, lesion_groups, col_map,
+                device, n_perm=ops['n_perm_importance'], seed=k)
             all_res[nh]['full_r'][k] = r
             for g in group_names:
                 if g in r_g: all_res[nh]['full_r_group'][g][k] = r_g[g]
-                if g in r_l: all_res[nh]['lesioned_r'][g][k] = r_l[g]
+                if g in r_l: all_res[nh]['permuted_r'][g][k] = r_l[g]
             print(f'  h={nh}: r={r:.3f}')
 
     # final refit per hidden size on all valid data
     X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
-    result = {}
+    result = {'fold_ids': fold_ids}
 
     for nh in hidden_sizes:
         if not all_params[nh]:
@@ -267,32 +310,31 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=NETWORK_OPTIONS):
         final_model, _ = train_one(final_model, X_v_norm, y_v, col_map, ops,
                                     lambda_gl, lambda_ortho)
 
-        res = {
-            'full_r': all_res[nh]['full_r'],
-            'lambda_gl': lambda_gl,
-            'lambda_ortho': lambda_ortho,
-        }
+        p = f'h{nh}_'
+        result[f'{p}full_r'] = all_res[nh]['full_r']
+        result[f'{p}lambda_gl'] = np.array(lambda_gl)
+        result[f'{p}lambda_ortho'] = np.array(lambda_ortho)
 
         if nh == 0:
-            res['weights'] = final_model.linear.weight.detach().cpu().numpy().ravel()
-            res['bias'] = final_model.linear.bias.detach().cpu().numpy().ravel()
+            result[f'{p}weights'] = final_model.linear.weight.detach().cpu().numpy().ravel()
+            result[f'{p}bias'] = final_model.linear.bias.detach().cpu().numpy().ravel()
         else:
-            res['hidden_weights'] = final_model.hidden.weight.detach().cpu().numpy()
-            res['hidden_bias'] = final_model.hidden.bias.detach().cpu().numpy()
-            res['output_weights'] = final_model.output.weight.detach().cpu().numpy().ravel()
-            res['output_bias'] = final_model.output.bias.detach().cpu().numpy().ravel()
+            result[f'{p}hidden_weights'] = final_model.hidden.weight.detach().cpu().numpy()
+            result[f'{p}hidden_bias'] = final_model.hidden.bias.detach().cpu().numpy()
+            result[f'{p}output_weights'] = final_model.output.weight.detach().cpu().numpy().ravel()
+            result[f'{p}output_bias'] = final_model.output.bias.detach().cpu().numpy().ravel()
 
         for g in group_names:
-            res[f'full_r_group_{g}'] = all_res[nh]['full_r_group'][g]
-            res[f'lesioned_r_{g}'] = all_res[nh]['lesioned_r'][g]
-
-        result[nh] = res
+            result[f'{p}full_r_group_{g}'] = all_res[nh]['full_r_group'][g]
+            result[f'{p}permuted_r_{g}'] = all_res[nh]['permuted_r'][g]
 
     return result
 
 
 def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
     """load prepped data, fit one neuron, save results"""
+    import pickle
+
     counts, X, col_map, t_ax, valid_mask = load_glm_inputs(sess_dir)
     y = counts[neuron_idx]
 
@@ -302,8 +344,14 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
         seed=neuron_seed(sess_dir, neuron_idx),
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
-    result = fit_neuron(y, X, col_map, fold_ids, ops)
+    result = fit_neuron(y, X, col_map, fold_ids, sess.trials, t_ax, ops)
 
     results_dir = Path(sess_dir) / 'network_results'
     results_dir.mkdir(exist_ok=True)
     np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
+
+    # save col_map once per session
+    col_map_path = results_dir / 'col_map.pkl'
+    if not col_map_path.exists():
+        with open(col_map_path, 'wb') as f:
+            pickle.dump(col_map, f)

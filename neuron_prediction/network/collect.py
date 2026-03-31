@@ -4,72 +4,208 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from config import PATHS
-from neuron_prediction.data import load_glm_inputs
+from config import PATHS, NETWORK_OPTIONS, ANALYSIS_OPTIONS
+from data.session import Session
+from neuron_prediction.data import (
+    load_glm_inputs, get_trial_fold_indices, neuron_seed,
+    normalise_design_matrix,
+)
 from neuron_prediction.evaluate import pearson_r
-from neuron_prediction.network.model import PoissonLinear, PoissonNet
+from neuron_prediction.network.model import PoissonNet
 
 
-def lesion_hidden_units(sess_dir, neuron_idx):
+def _get_hidden_sizes(res):
+    """recover fitted hidden sizes from prefixed keys in npz"""
+    sizes = set()
+    for key in res.files:
+        if key.startswith('h') and '_' in key:
+            prefix = key.split('_')[0]  # e.g. 'h8'
+            try:
+                sizes.add(int(prefix[1:]))
+            except ValueError:
+                continue
+    return sorted(sizes)
+
+
+def lesion_hidden_units(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
     """knock out each hidden unit, measure r drop
 
-    returns DataFrame with unit_idx, r_full, r_lesioned, delta_r,
+    returns DataFrame with unit_idx, n_hidden, r_full, r_lesioned, delta_r,
     plus one column per predictor group with input weight norms.
     returns empty DataFrame for linear models (no hidden units).
     """
     import torch
 
-    counts, X, col_map, t_ax, valid_mask = load_glm_inputs(sess_dir)
-    y = counts[neuron_idx][valid_mask].astype(np.float64)
-    X_v = X[valid_mask]
+    counts, X, col_map, t_ax, _ = load_glm_inputs(sess_dir)
+
+    # use fold_ids for consistent data subsetting with fitting
+    sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
+    fold_ids = get_trial_fold_indices(
+        sess.trials, t_ax, ops['n_outer_folds'],
+        seed=neuron_seed(sess_dir, neuron_idx),
+        ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
+    valid = fold_ids >= 0
+
+    y = counts[neuron_idx][valid].astype(np.float64)
+    X_v = X[valid]
+
+    # normalise to match final refit (which uses all valid data's statistics)
+    X_v, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
 
     res_path = Path(sess_dir) / 'network_results' / f'neuron_{neuron_idx}.npz'
     if not res_path.exists():
         return pd.DataFrame()
     res = np.load(res_path, allow_pickle=True)
 
-    n_hidden = int(res['n_hidden'])
-    if n_hidden == 0:
-        return pd.DataFrame()
+    hidden_sizes = _get_hidden_sizes(res)
+    all_rows = []
 
-    model = PoissonNet(X_v.shape[1], n_hidden)
-    model.hidden.weight.data = torch.tensor(res['hidden_weights'], dtype=torch.float32)
-    model.hidden.bias.data = torch.tensor(res['hidden_bias'], dtype=torch.float32)
-    model.output.weight.data = torch.tensor(
-        res['output_weights'].reshape(1, -1), dtype=torch.float32)
-    model.output.bias.data = torch.tensor(res['output_bias'], dtype=torch.float32)
-    model.eval()
+    for n_hidden in hidden_sizes:
+        if n_hidden == 0:
+            continue
 
-    X_t = torch.tensor(X_v, dtype=torch.float32)
+        p = f'h{n_hidden}_'
+        if f'{p}hidden_weights' not in res:
+            continue
 
-    with torch.no_grad():
-        y_pred_full = torch.exp(model(X_t)).numpy()
-    r_full = pearson_r(y, y_pred_full)
+        model = PoissonNet(X_v.shape[1], n_hidden)
+        model.hidden.weight.data = torch.tensor(
+            res[f'{p}hidden_weights'], dtype=torch.float32)
+        model.hidden.bias.data = torch.tensor(
+            res[f'{p}hidden_bias'], dtype=torch.float32)
+        model.output.weight.data = torch.tensor(
+            res[f'{p}output_weights'].reshape(1, -1), dtype=torch.float32)
+        model.output.bias.data = torch.tensor(
+            res[f'{p}output_bias'], dtype=torch.float32)
+        model.eval()
 
-    rows = []
-    for unit_idx in range(n_hidden):
-        saved_w = model.output.weight.data[0, unit_idx].item()
-        model.output.weight.data[0, unit_idx] = 0.0
+        X_t = torch.tensor(X_v, dtype=torch.float32)
 
         with torch.no_grad():
-            y_pred_les = torch.exp(model(X_t)).numpy()
-        r_les = pearson_r(y, y_pred_les)
+            y_pred_full = torch.exp(model(X_t)).numpy()
+        r_full = pearson_r(y, y_pred_full)
 
-        row = {
-            'unit_idx': unit_idx,
-            'r_full': r_full,
-            'r_lesioned': r_les,
-            'delta_r': r_full - r_les,
-        }
-        # weight norms per predictor group
-        unit_weights = res['hidden_weights'][unit_idx]
-        for name, (col_slice, _) in col_map.items():
-            row[f'norm_{name}'] = np.linalg.norm(unit_weights[col_slice])
+        for unit_idx in range(n_hidden):
+            saved_w = model.output.weight.data[0, unit_idx].item()
+            model.output.weight.data[0, unit_idx] = 0.0
 
-        rows.append(row)
-        model.output.weight.data[0, unit_idx] = saved_w
+            with torch.no_grad():
+                y_pred_les = torch.exp(model(X_t)).numpy()
+            r_les = pearson_r(y, y_pred_les)
 
-    return pd.DataFrame(rows)
+            row = {
+                'n_hidden': n_hidden,
+                'unit_idx': unit_idx,
+                'r_full': r_full,
+                'r_lesioned': r_les,
+                'delta_r': r_full - r_les,
+            }
+            # weight norms per predictor group
+            hidden_weights = res[f'{p}hidden_weights']
+            for name, (col_slice, _) in col_map.items():
+                row[f'norm_{name}'] = np.linalg.norm(
+                    hidden_weights[unit_idx][col_slice])
+
+            all_rows.append(row)
+            model.output.weight.data[0, unit_idx] = saved_w
+
+    return pd.DataFrame(all_rows)
+
+
+def classify_units(sess_dir, ops=NETWORK_OPTIONS):
+    """classify units by lesion significance, one CSV per hidden size
+
+    mirrors glm classify_units exactly: same columns, same statistical
+    tests. saves h{n}_classifications.csv in network_results/
+    """
+    from scipy.stats import ttest_rel, ttest_1samp
+
+    results_dir = Path(sess_dir) / 'network_results'
+    sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
+    n_neurons = len(sess.fr_stats)
+    group_names = list(ops['lesion_groups'].keys())
+    lesion_alpha = ops['lesion_alpha']
+
+    # find all hidden sizes from first available result file
+    hidden_sizes = None
+    for i in range(n_neurons):
+        res_path = results_dir / f'neuron_{i}.npz'
+        if res_path.exists():
+            res = np.load(res_path, allow_pickle=True)
+            hidden_sizes = _get_hidden_sizes(res)
+            break
+    if hidden_sizes is None:
+        return {}
+
+    all_dfs = {}
+    for nh in hidden_sizes:
+        p = f'h{nh}_'
+        classifications = []
+
+        for i in range(n_neurons):
+            res_path = results_dir / f'neuron_{i}.npz'
+            if not res_path.exists():
+                classifications.append({
+                    'neuron_idx': i,
+                    'cluster_id': sess.fr_stats.index[i],
+                })
+                continue
+
+            res = np.load(res_path, allow_pickle=True)
+            if f'{p}full_r' not in res.files:
+                classifications.append({
+                    'neuron_idx': i,
+                    'cluster_id': sess.fr_stats.index[i],
+                })
+                continue
+            full_r = res[f'{p}full_r']
+
+            ok_r = full_r[~np.isnan(full_r)]
+            if len(ok_r) >= 3:
+                _, p_full = ttest_1samp(ok_r, 0)
+                sig_full = p_full < lesion_alpha and np.mean(ok_r) > 0
+            else:
+                p_full = 1.0
+                sig_full = False
+
+            row = {
+                'neuron_idx': i,
+                'cluster_id': sess.fr_stats.index[i],
+                'mean_r': np.nanmean(full_r),
+                'is_predictable_p': p_full,
+                'is_predictable': sig_full,
+            }
+
+            for gname in group_names:
+                full_r_g = res[f'{p}full_r_group_{gname}']
+                les_r_g = res[f'{p}permuted_r_{gname}']
+                ok = ~(np.isnan(full_r_g) | np.isnan(les_r_g))
+
+                if ok.sum() >= 3:
+                    _, p_val = ttest_rel(full_r_g[ok], les_r_g[ok])
+                    delta_r = np.nanmean(full_r_g[ok]) - np.nanmean(les_r_g[ok])
+                else:
+                    p_val = 1.0
+                    delta_r = 0.0
+
+                is_sig = (sig_full and
+                          p_val < lesion_alpha and
+                          delta_r > 0) if ok.sum() >= 3 else False
+
+                row[f'{gname}_mean_r'] = np.nanmean(full_r_g)
+                row[f'{gname}_p'] = p_val
+                row[f'{gname}_delta_r'] = delta_r
+                row[f'{gname}_sig'] = is_sig
+
+            classifications.append(row)
+
+        df = pd.DataFrame(classifications)
+        df.to_csv(results_dir / f'h{nh}_classifications.csv', index=False)
+        all_dfs[nh] = df
+        print(f'  h={nh}: {df["is_predictable"].sum() if "is_predictable" in df else 0} '
+              f'predictable / {n_neurons} neurons')
+
+    return all_dfs
 
 
 def collect_all(npx_dir=PATHS['npx_dir_local']):

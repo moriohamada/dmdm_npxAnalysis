@@ -1,27 +1,38 @@
 import os
 import numpy as np
+from sys import platform
 
-LOCAL_PATHS = dict(
-    npx_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/',
-    ceph_dir = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
-               '/data/npx_converted',
-    plots_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/plots/',
-    pref_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/preferences/',
-)
 
-HPC_PATHS = dict(
-    npx_dir  = '/ceph/mrsic_flogel/public/projects'
-               '/MoHa_20260212_dmdmTemporalExpectation/data/npx/',
-    ceph_dir = '/ceph/mrsic_flogel/public/projects'
-               '/MoHa_20260212_dmdmTemporalExpectation/data/npx/npx_converted/',
-    plots_dir = '/ceph/mrsic_flogel/public/projects'
-                '/MoHa_20260212_dmdmTemporalExpectation/hpc/plots/',
-)
+if platform == "linux" or platform == "linux2":
+    LOCAL_PATHS = dict(
+        npx_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/npx/',
+        ceph_dir = '/mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation'
+                   '/data/npx_converted',
+        plots_dir = '/media/morio/Data_Fast/dmdm_temporalExpectation/plots/',
+        pref_dir  = '/media/morio/Data_Fast/dmdm_temporalExpectation/preferences/',
+    )
 
-PATHS = LOCAL_PATHS if os.path.exists(LOCAL_PATHS['npx_dir']) else HPC_PATHS
+    HPC_PATHS = dict(
+        npx_dir  = '/ceph/mrsic_flogel/public/projects'
+                   '/MoHa_20260212_dmdmTemporalExpectation/data/npx/',
+        ceph_dir = '/ceph/mrsic_flogel/public/projects'
+                   '/MoHa_20260212_dmdmTemporalExpectation/data/npx/npx_converted/',
+        plots_dir = '/ceph/mrsic_flogel/public/projects'
+                    '/MoHa_20260212_dmdmTemporalExpectation/hpc/plots/',
+    )
+    PATHS = LOCAL_PATHS if os.path.exists(LOCAL_PATHS['npx_dir']) else HPC_PATHS
+elif platform=='darwin':
+    LOCAL_PATHS = dict(
+        npx_dir   = '/Volumes/mrsic_flogel/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/',
+        ceph_dir  = '/Volumes/mrsic_flogel/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx_converted/',
+        plots_dir = '~/Documents/dmdm/temporal_expectation/dmdm_npx/plots/',
+    )
+
+    PATHS = LOCAL_PATHS
+
 # old keys for compatibility
 PATHS['npx_dir_local'] = PATHS['npx_dir']
-PATHS['npx_dir_ceph'] = PATHS['ceph_dir']
+PATHS['npx_dir_ceph']  = PATHS['ceph_dir']
 
 ANALYSIS_OPTIONS = dict(
     sp_bin_width     = 10 / 1000,     # s
@@ -151,6 +162,8 @@ NETWORK_OPTIONS = dict(
 
     # lesion groups (shared with GLM)
     lesion_groups = GLM_OPTIONS['lesion_groups'],
+    lesion_alpha  = GLM_OPTIONS['lesion_alpha'],
+    n_perm_importance = 10,  # permutation repeats for predictor importance
 
     # neuron selection
     min_r       = 0.2,
