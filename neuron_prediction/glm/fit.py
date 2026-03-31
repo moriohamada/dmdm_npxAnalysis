@@ -590,24 +590,19 @@ def _predict_glm(X, w, b):
     return np.exp(log_rate)
 
 
-def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
-               ops=GLM_OPTIONS):
+def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
     """fit poisson GLM with group lasso for one neuron
 
     1. grid search over lambda
-    2. lesion analyes: reuse best-lambda fold models, zero out each
-       predictor group, evaluate
+    2. lesion analysis: reuse best-lambda fold models, zero out each
+       predictor group, evaluate on bins where that group is non-zero
     3. refit on all data with best lambda for kernel extraction
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
-    event_masks: dict of (T,) bool arrays for windowed evaluation
-        (keys: tf, lick_prep, lick_exec). only used for those three
-        groups; time_in_trial and block use whole-trial r.
 
     returns dict with weights, bias, best_lambda, fold_ids, full_r,
-    windowed r, and lesioned r per group. returns None if no valid
-    data to fit.
+    and lesioned r per group. returns None if no valid data to fit.
     """
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
@@ -619,20 +614,21 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
     coarse_kw = {**fit_kw, 'max_iter': ops.get('cv_max_iter', 200),
                  'tol': ops.get('cv_tol', 1e-4)}
 
-    # windowed groups get event-mask evaluation, others get whole-trial
-    windowed_groups = {'tf', 'lick_prep', 'lick_exec'}
-
     # mask to valid bins only
     valid = fold_ids >= 0
     X_v = X[valid]
     y_v = counts_1d[valid].astype(np.float64)
     folds_v = fold_ids[valid]
 
-    ev_masks_v = {}
-    if event_masks is not None:
-        for gname in windowed_groups:
-            if gname in event_masks:
-                ev_masks_v[gname] = event_masks[gname][valid]
+    # derive evaluation masks from design matrix: bins where predictor group is non-zero
+    group_masks = {}
+    for gname, pred_list in lesion_groups.items():
+        mask = np.zeros(X_v.shape[0], dtype=bool)
+        for pred_name in pred_list:
+            if pred_name in col_map:
+                col_slice, _ = col_map[pred_name]
+                mask |= np.any(X_v[:, col_slice] != 0, axis=1)
+        group_masks[gname] = mask
 
     #%% lambda selection
     lambda_scores = {}
@@ -676,7 +672,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
 
     #%% evaluate best-lambda models: full + lesioned
     full_r = np.full(n_folds, np.nan)
-    full_r_window = {g: np.full(n_folds, np.nan) for g in windowed_groups}
+    null_r = np.full(n_folds, np.nan)
+    full_r_group = {g: np.full(n_folds, np.nan) for g in group_names}
     lesioned_r = {g: np.full(n_folds, np.nan) for g in group_names}
 
     for k, (w, b) in best_wb.items():
@@ -686,30 +683,25 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
             X_train_raw, X_test_raw, col_map)
         y_test = y_v[test_mask]
 
-        # full model
+        # full model on all valid bins
         y_pred = _predict_glm(X_test, w, b)
         full_r[k] = pearson_r(y_test, y_pred)
 
-        # windowed full model r
-        for gname in windowed_groups:
-            if gname in ev_masks_v:
-                win = ev_masks_v[gname][test_mask]
-                if win.sum() >= 5:
-                    full_r_window[gname][k] = pearson_r(
-                        y_test[win], y_pred[win])
+        # # always nan obviously! find other baseline metric
+        # y_null = _predict_glm(np.zeros_like(X_test), w, b)
+        # null_r[k] = pearson_r(y_test, y_null)
 
-        # lesioned models
+        # per-group: evaluate on bins where that group's predictors are non-zero
         for gname, pred_list in lesion_groups.items():
+            win = group_masks[gname][test_mask]
+            if win.sum() < 5:
+                continue
+
+            full_r_group[gname][k] = pearson_r(y_test[win], y_pred[win])
+
             X_les = lesion_design_matrix(X_test, pred_list, col_map)
             y_les = _predict_glm(X_les, w, b)
-
-            if gname in windowed_groups and gname in ev_masks_v:
-                win = ev_masks_v[gname][test_mask]
-                if win.sum() >= 5:
-                    lesioned_r[gname][k] = pearson_r(
-                        y_test[win], y_les[win])
-            else:
-                lesioned_r[gname][k] = pearson_r(y_test, y_les)
+            lesioned_r[gname][k] = pearson_r(y_test[win], y_les[win])
 
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
@@ -723,10 +715,10 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, event_masks=None,
         'best_lambda': np.array(best_lambda),
         'fold_ids': fold_ids,
         'full_r': full_r,
+        'null_r': null_r,
     }
-    for gname in windowed_groups:
-        result[f'full_r_window_{gname}'] = full_r_window[gname]
     for gname in group_names:
+        result[f'full_r_group_{gname}'] = full_r_group[gname]
         result[f'lesioned_r_{gname}'] = lesioned_r[gname]
 
     return result
@@ -738,7 +730,6 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
     counts, X, col_map, t_ax, valid_mask = load_glm_inputs(str(sess_dir))
 
     sess = Session.load(str(sess_dir / 'session.pkl'))
-    event_masks = build_event_masks(sess, t_ax)
 
     fold_ids = get_trial_fold_indices(
         sess.trials, t_ax, ops['n_folds'],
@@ -749,8 +740,7 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
           f'({(fold_ids >= 0).sum()} valid bins, '
           f'{len(set(fold_ids[fold_ids >= 0]))} folds)')
 
-    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids,
-                        event_masks, ops)
+    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids, ops)
 
     if result is None:
         print(f'  skipped (no valid predictions)')
@@ -773,12 +763,11 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
 
 def classify_units(sess_dir, ops=GLM_OPTIONS):
     """load per-neuron GLM results and classify by lesion significance"""
-    from scipy.stats import ttest_rel
+    from scipy.stats import ttest_rel, ttest_1samp
     results_dir = Path(sess_dir) / 'glm_results'
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
     n_neurons = len(sess.fr_stats)
     group_names = list(ops['lesion_groups'].keys())
-    windowed_groups = {'tf', 'lick_prep', 'lick_exec'}
 
     classifications = []
 
@@ -794,21 +783,24 @@ def classify_units(sess_dir, ops=GLM_OPTIONS):
         res = np.load(res_path, allow_pickle=True)
         full_r = res['full_r']
 
+        ok_r = full_r[~np.isnan(full_r)]
+        if len(ok_r) >= 3:
+            _, p_full = ttest_1samp(ok_r, 0)
+            sig_full = p_full < ops['lesion_alpha'] and np.mean(ok_r) > 0
+        else:
+            p_full = 1.0
+            sig_full = False
+
         row = {
             'neuron_idx': i,
             'cluster_id': sess.fr_stats.index[i],
             'mean_r': np.nanmean(full_r),
+            'is_predictable_p': p_full,
+            'is_predictable': sig_full,
         }
 
         for gname in group_names:
-            # windowed groups: compare windowed r
-            # whole-trial groups: compare full r
-            if gname in windowed_groups:
-                full_key = f'full_r_window_{gname}'
-                full_r_g = res[full_key] if full_key in res else full_r
-            else:
-                full_r_g = full_r
-
+            full_r_g = res[f'full_r_group_{gname}']
             les_r_g = res[f'lesioned_r_{gname}']
             ok = ~(np.isnan(full_r_g) | np.isnan(les_r_g))
 
@@ -819,7 +811,7 @@ def classify_units(sess_dir, ops=GLM_OPTIONS):
                 p = 1.0
                 delta_r = 0.0
 
-            is_sig = (row['mean_r'] > ops['min_r'] and
+            is_sig = (sig_full and
                       p < ops['lesion_alpha'] and
                       delta_r > 0) if ok.sum() >= 3 else False
 
