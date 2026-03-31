@@ -172,6 +172,31 @@ NETWORK_OPTIONS = dict(
     require_tf  = False,
 )
 
+HYBRID_OPTIONS = dict(
+    interactions = [
+        ('tf', 'block'),
+        ('tf', 'time_ramp'),
+        ('tf', 'block', 'time_ramp'),
+    ],
+    units_per_group = 2,
+
+    # regularisation
+    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2],
+
+    # training
+    lr          = 1e-2,
+    batch_size  = 4096,
+    max_epochs  = 2000,
+    patience    = 50,
+    val_frac    = 0.1,
+
+    # CV
+    n_outer_folds = 10,
+
+    # lesion groups (for skip connection group lasso)
+    lesion_groups = GLM_OPTIONS['lesion_groups'],
+)
+
 LICK_PRED_OPS = dict(
     bin_width       = 50 / 1000,       # s; prediction bin width (matches pop_bin_width)
     tf_history_bins = 40,              # number of 50ms bins of TF history (2s)
