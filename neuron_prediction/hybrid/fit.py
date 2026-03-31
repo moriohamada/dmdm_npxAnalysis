@@ -263,7 +263,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
             if ik in r_les: r_lesion[ik][k] = r_les[ik]
         print(f'  r={r:.3f} (skip={r_sk:.3f})')
 
-    # final refit on all valid data
+    # final refit on all data
     from collections import Counter
     X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
     lambda_gl = Counter(lambdas).most_common(1)[0][0] if lambdas else 0
@@ -271,7 +271,6 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     final_model = _make_model(X_v.shape[1], col_map, ops)
     final_model, _ = train_one(final_model, X_v_norm, y_v, col_map, ops, lambda_gl)
 
-    # pack results
     result = {
         'fold_ids': fold_ids,
         'full_r': full_r,

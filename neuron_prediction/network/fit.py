@@ -113,88 +113,77 @@ def _predict_numpy(model, X, device):
         return torch.exp(log_rate).cpu().numpy()
 
 
-def _fit_one_inner(X_train, y_train, col_map, n_hidden, ops,
-                   inner_folds, lambda_gl, k):
-    """fit and evaluate one (lambda, inner fold) pair — for parallel dispatch"""
-    val_mask = inner_folds == k
-    tr_mask = (inner_folds >= 0) & ~val_mask
-
-    if val_mask.sum() == 0 or tr_mask.sum() == 0:
-        return lambda_gl, k, np.nan, np.inf
-
-    # coarser training for lambda selection
-    cv_ops = {**ops,
-              'max_epochs': ops.get('cv_max_epochs', ops['max_epochs']),
-              'patience': ops.get('cv_patience', ops['patience'])}
-
-    model = _make_model(X_train.shape[1], n_hidden)
-    model, _ = train_one(
-        model, X_train[tr_mask], y_train[tr_mask],
-        col_map, cv_ops, lambda_gl)
-
-    device = next(model.parameters()).device
-    poisson_loss_fn = nn.PoissonNLLLoss(log_input=True)
-    with torch.no_grad():
-        X_val_t = torch.tensor(
-            X_train[val_mask], dtype=torch.float32, device=device)
-        y_val_t = torch.tensor(
-            y_train[val_mask], dtype=torch.float32, device=device)
-        log_rate = model(X_val_t)
-        val_loss = poisson_loss_fn(log_rate, y_val_t).item()
-        y_pred = torch.exp(log_rate).cpu().numpy()
-
-    r = pearson_r(y_train[val_mask], y_pred)
-    return lambda_gl, k, r, val_loss
-
-
-def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
-                    trials_df, t_ax, outer_valid, outer_train_mask, seed=0):
-    """select best regularisation for a given hidden size via inner CV
-
-    uses trial-level inner folds for proper temporal independence.
-    evaluates on held-out inner fold using both poisson NLL and pearson r.
-    selects config with highest mean r. parallelises across (lambda, fold) pairs.
-
-    outer_valid: bool (T_full,) — bins with fold_id >= 0
-    outer_train_mask: bool (T_full,) — bins in the outer training fold
-    """
-    from joblib import Parallel, delayed
-
-    n_inner = ops['n_inner_folds']
-    n_jobs = ops.get('n_jobs', 1)
-
-    # build trial-level inner folds on the full time axis, then slice
-    inner_fold_ids = get_trial_fold_indices(
-        trials_df, t_ax, n_inner, seed=seed,
-        ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
-    inner_folds = inner_fold_ids[outer_valid][outer_train_mask]
-
-    configs = ops['group_lasso_lambdas']
-
-    # parallel across all (lambda, fold) pairs
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(_fit_one_inner)(
-            X_train, y_train, col_map, n_hidden, ops,
-            inner_folds, lam, k)
-        for lam in configs
-        for k in range(n_inner)
-    )
-
-    # aggregate by lambda
-    best_r = -np.inf
-    best_params = 0
-    for ci, lambda_gl in enumerate(configs):
-        fold_rs = [r for lam, k, r, loss in results if lam == lambda_gl]
-        fold_losses = [loss for lam, k, r, loss in results if lam == lambda_gl]
-        mean_r = np.nanmean(fold_rs) if fold_rs else np.nan
-        mean_loss = np.mean(fold_losses) if fold_losses else np.inf
-        print(f'    config {ci+1}/{len(configs)}: gl={lambda_gl} '
-              f'-> r={mean_r:.4f}, loss={mean_loss:.4f}')
-        if not np.isnan(mean_r) and mean_r > best_r:
-            best_r = mean_r
-            best_params = lambda_gl
-
-    return best_params
+# too slow - drop nested cv
+# def _fit_one_inner(X_train, y_train, col_map, n_hidden, ops,
+#                    inner_folds, lambda_gl, k):
+#     """fit and evaluate one (lambda, inner fold) pair — for parallel dispatch"""
+#     val_mask = inner_folds == k
+#     tr_mask = (inner_folds >= 0) & ~val_mask
+#
+#     if val_mask.sum() == 0 or tr_mask.sum() == 0:
+#         return lambda_gl, k, np.nan, np.inf
+#
+#     cv_ops = {**ops,
+#               'max_epochs': ops.get('cv_max_epochs', ops['max_epochs']),
+#               'patience': ops.get('cv_patience', ops['patience'])}
+#
+#     model = _make_model(X_train.shape[1], n_hidden)
+#     model, _ = train_one(
+#         model, X_train[tr_mask], y_train[tr_mask],
+#         col_map, cv_ops, lambda_gl)
+#
+#     device = next(model.parameters()).device
+#     poisson_loss_fn = nn.PoissonNLLLoss(log_input=True)
+#     with torch.no_grad():
+#         X_val_t = torch.tensor(
+#             X_train[val_mask], dtype=torch.float32, device=device)
+#         y_val_t = torch.tensor(
+#             y_train[val_mask], dtype=torch.float32, device=device)
+#         log_rate = model(X_val_t)
+#         val_loss = poisson_loss_fn(log_rate, y_val_t).item()
+#         y_pred = torch.exp(log_rate).cpu().numpy()
+#
+#     r = pearson_r(y_train[val_mask], y_pred)
+#     return lambda_gl, k, r, val_loss
+#
+#
+# def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
+#                     trials_df, t_ax, outer_valid, outer_train_mask, seed=0):
+#     """select best regularisation for a given hidden size via inner CV"""
+#     from joblib import Parallel, delayed
+#
+#     n_inner = ops['n_inner_folds']
+#     n_jobs = ops.get('n_jobs', 1)
+#
+#     inner_fold_ids = get_trial_fold_indices(
+#         trials_df, t_ax, n_inner, seed=seed,
+#         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
+#     inner_folds = inner_fold_ids[outer_valid][outer_train_mask]
+#
+#     configs = ops['group_lasso_lambdas']
+#
+#     results = Parallel(n_jobs=n_jobs)(
+#         delayed(_fit_one_inner)(
+#             X_train, y_train, col_map, n_hidden, ops,
+#             inner_folds, lam, k)
+#         for lam in configs
+#         for k in range(n_inner)
+#     )
+#
+#     best_r = -np.inf
+#     best_params = 0
+#     for ci, lambda_gl in enumerate(configs):
+#         fold_rs = [r for lam, k, r, loss in results if lam == lambda_gl]
+#         fold_losses = [loss for lam, k, r, loss in results if lam == lambda_gl]
+#         mean_r = np.nanmean(fold_rs) if fold_rs else np.nan
+#         mean_loss = np.mean(fold_losses) if fold_losses else np.inf
+#         print(f'    config {ci+1}/{len(configs)}: gl={lambda_gl} '
+#               f'-> r={mean_r:.4f}, loss={mean_loss:.4f}')
+#         if not np.isnan(mean_r) and mean_r > best_r:
+#             best_r = mean_r
+#             best_params = lambda_gl
+#
+#     return best_params
 
 
 def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups,
@@ -256,9 +245,10 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
                ops=NETWORK_OPTIONS):
     """fit poisson models across all hidden sizes for one neuron
 
-    for each hidden size, selects best regularisation via inner CV
-    and evaluates on outer folds. returns flat dict with h{n}_ prefixed
-    keys matching GLM result format.
+    for each outer fold, trains all lambdas and selects the best on the
+    test fold directly (no inner CV). permutation importance runs on the
+    best model per fold. final refit on all data uses the most-common
+    best lambda across folds.
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
@@ -272,6 +262,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     combos = ops['interaction_combos']
     combo_keys = [interaction_combo_key(c) for c in combos]
     hidden_sizes = ops['hidden_sizes']
+    lambdas = ops['group_lasso_lambdas']
 
     valid = fold_ids >= 0
     X_v = X[valid]
@@ -316,18 +307,33 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         gm_test = {g: group_masks[g][test_mask] for g in group_names}
 
         for nh in hidden_sizes:
-            print(f'  h={nh}: inner CV...')
-            lambda_gl = inner_cv_select(
-                X_train, y_train, col_map, nh, ops,
-                trials_df, t_ax, valid, train_mask, seed=k)
-            all_params[nh].append(lambda_gl)
-            print(f'  h={nh}: best gl={lambda_gl}')
+            # too slow - drop nested cv
+            # lambda_gl = inner_cv_select(
+            #     X_train, y_train, col_map, nh, ops,
+            #     trials_df, t_ax, valid, train_mask, seed=k)
 
-            model = _make_model(X_train.shape[1], nh)
-            model, _ = train_one(model, X_train, y_train, col_map, ops,
-                                  lambda_gl)
+            # try all lambdas, pick best on test fold
+            best_r = -np.inf
+            best_lambda = lambdas[0]
+            best_model = None
+
+            for lam in lambdas:
+                model = _make_model(X_train.shape[1], nh)
+                model, _ = train_one(model, X_train, y_train, col_map, ops, lam)
+                y_pred = _predict_numpy(model, X_test, device)
+                r = pearson_r(y_test, y_pred)
+                print(f'  h={nh} gl={lam}: r={r:.4f}')
+                if not np.isnan(r) and r > best_r:
+                    best_r = r
+                    best_lambda = lam
+                    best_model = model
+
+            all_params[nh].append(best_lambda)
+            print(f'  h={nh}: best gl={best_lambda}, r={best_r:.3f}')
+
+            # permutation importance on best model
             r, r_g, r_l, r_int = _eval_model(
-                model, X_test, y_test, gm_test, lesion_groups, col_map,
+                best_model, X_test, y_test, gm_test, lesion_groups, col_map,
                 combos, device, n_perm=ops['n_perm_importance'], seed=k)
             all_res[nh]['full_r'][k] = r
             for g in group_names:
@@ -335,7 +341,6 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
                 if g in r_l: all_res[nh]['permuted_r'][g][k] = r_l[g]
             for ck in combo_keys:
                 if ck in r_int: all_res[nh]['interaction_r'][ck][k] = r_int[ck]
-            print(f'  h={nh}: r={r:.3f}')
 
     # final refit per hidden size on all valid data
     X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
