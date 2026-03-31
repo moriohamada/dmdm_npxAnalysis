@@ -151,8 +151,8 @@ NETWORK_OPTIONS = dict(
     # training
     lr          = 1e-2,
     batch_size  = 4096,
-    max_epochs  = 10000,
-    patience    = 200,
+    max_epochs  = 2000,
+    patience    = 50,
     val_frac    = 0.1,
 
     # CV
