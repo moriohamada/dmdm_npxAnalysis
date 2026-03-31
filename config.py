@@ -160,7 +160,7 @@ NETWORK_OPTIONS = dict(
     # CV
     n_outer_folds = 10,
     n_inner_folds = 3,
-    n_jobs        = 8,  # parallel inner CV jobs (match --cpus-per-task)
+    n_jobs        = 10,  # parallel OUTER CV jobs (match --cpus-per-task)
 
     # lesion groups (shared with GLM)
     lesion_groups = GLM_OPTIONS['lesion_groups'],
