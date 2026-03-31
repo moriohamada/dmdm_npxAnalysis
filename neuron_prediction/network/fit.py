@@ -4,10 +4,11 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-from config import NETWORK_OPTIONS
+from config import NETWORK_OPTIONS, ANALYSIS_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
-    load_glm_inputs, get_fold_indices, neuron_seed, normalise_design_matrix,
+    load_glm_inputs, get_fold_indices, get_trial_fold_indices,
+    neuron_seed, normalise_design_matrix,
 )
 from neuron_prediction.evaluate import pearson_r, lesion_design_matrix
 from neuron_prediction.network.model import (
@@ -151,40 +152,39 @@ def inner_cv_select(X_train, y_train, col_map, n_hidden, ops, seed=0):
     return best_params
 
 
-def _eval_model(model, X_test, y_test, ev_masks_v, lesion_groups, col_map, device):
-    """evaluate a fitted model: full r, window r, lesion r"""
-    group_names = list(lesion_groups.keys())
+def _eval_model(model, X_test, y_test, group_masks_test, lesion_groups, col_map, device):
+    """evaluate a fitted model: full r and per-group lesion r
+
+    group_masks_test: dict of bool arrays marking bins where each group's
+    predictors are non-zero (already sliced to test fold)
+    """
     y_pred = _predict_numpy(model, X_test, device)
     r = pearson_r(y_test, y_pred)
 
-    r_window = {}
+    r_group = {}
     r_lesioned = {}
-    r_lesioned_window = {}
     for gname, pred_list in lesion_groups.items():
-        if gname in ev_masks_v:
-            win_mask = ev_masks_v[gname]
-            if win_mask.sum() >= 5:
-                r_window[gname] = pearson_r(y_test[win_mask], y_pred[win_mask])
+        win = group_masks_test[gname]
+        if win.sum() < 5:
+            continue
+
+        r_group[gname] = pearson_r(y_test[win], y_pred[win])
 
         X_les = lesion_design_matrix(X_test, pred_list, col_map)
         y_pred_les = _predict_numpy(model, X_les, device)
-        r_lesioned[gname] = pearson_r(y_test, y_pred_les)
+        r_lesioned[gname] = pearson_r(y_test[win], y_pred_les[win])
 
-        if gname in ev_masks_v:
-            win_mask = ev_masks_v[gname]
-            if win_mask.sum() >= 5:
-                r_lesioned_window[gname] = pearson_r(
-                    y_test[win_mask], y_pred_les[win_mask])
-
-    return r, r_window, r_lesioned, r_lesioned_window
+    return r, r_group, r_lesioned
 
 
-def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
-               ops=NETWORK_OPTIONS, seed=0):
+def fit_neuron(counts_1d, X, col_map, fold_ids, ops=NETWORK_OPTIONS):
     """fit poisson models across all hidden sizes for one neuron
 
     for each hidden size, selects best regularisation via inner CV
     and evaluates on outer folds. returns dict keyed by n_hidden.
+
+    fold_ids: (T,) int array from get_trial_fold_indices. bins with
+        fold_id == -1 are excluded from all fitting and evaluation.
     """
     from collections import Counter
 
@@ -194,24 +194,26 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
     group_names = list(lesion_groups.keys())
     hidden_sizes = ops['hidden_sizes']
 
-    X_v = X[valid_mask]
-    y_v = counts_1d[valid_mask].astype(np.float64)
-    T_v = len(y_v)
+    valid = fold_ids >= 0
+    X_v = X[valid]
+    y_v = counts_1d[valid].astype(np.float64)
+    folds_v = fold_ids[valid]
 
-    fold_ids = get_fold_indices(T_v, n_folds, seed)
-
-    ev_masks_v = {}
-    if event_masks is not None:
-        for gname in group_names:
-            if gname in event_masks:
-                ev_masks_v[gname] = event_masks[gname][valid_mask]
+    # derive evaluation masks from design matrix
+    group_masks = {}
+    for gname, pred_list in lesion_groups.items():
+        mask = np.zeros(X_v.shape[0], dtype=bool)
+        for pred_name in pred_list:
+            if pred_name in col_map:
+                col_slice, _ = col_map[pred_name]
+                mask |= np.any(X_v[:, col_slice] != 0, axis=1)
+        group_masks[gname] = mask
 
     def _empty_results():
         return {
             'full_r': np.full(n_folds, np.nan),
+            'full_r_group': {g: np.full(n_folds, np.nan) for g in group_names},
             'lesioned_r': {g: np.full(n_folds, np.nan) for g in group_names},
-            'full_r_window': {g: np.full(n_folds, np.nan) for g in group_names},
-            'lesioned_r_window': {g: np.full(n_folds, np.nan) for g in group_names},
         }
 
     all_res = {nh: _empty_results() for nh in hidden_sizes}
@@ -219,7 +221,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
 
     for k in range(n_folds):
         print(f'Outer fold {k+1}/{n_folds}')
-        test_mask = fold_ids == k
+        test_mask = folds_v == k
         train_mask = ~test_mask
 
         X_train_raw, y_train = X_v[train_mask], y_v[train_mask]
@@ -231,9 +233,7 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
         X_train, X_test, _, _ = normalise_design_matrix(
             X_train_raw, X_test_raw, col_map)
 
-        ev_test = {}
-        for gname in ev_masks_v:
-            ev_test[gname] = ev_masks_v[gname][test_mask]
+        gm_test = {g: group_masks[g][test_mask] for g in group_names}
 
         for nh in hidden_sizes:
             print(f'  h={nh}: inner CV...')
@@ -245,13 +245,12 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
             model = _make_model(X_train.shape[1], nh)
             model, _ = train_one(model, X_train, y_train, col_map, ops,
                                   lambda_gl, lambda_ortho)
-            r, r_w, r_l, r_lw = _eval_model(
-                model, X_test, y_test, ev_test, lesion_groups, col_map, device)
+            r, r_g, r_l = _eval_model(
+                model, X_test, y_test, gm_test, lesion_groups, col_map, device)
             all_res[nh]['full_r'][k] = r
             for g in group_names:
-                if g in r_w: all_res[nh]['full_r_window'][g][k] = r_w[g]
+                if g in r_g: all_res[nh]['full_r_group'][g][k] = r_g[g]
                 if g in r_l: all_res[nh]['lesioned_r'][g][k] = r_l[g]
-                if g in r_lw: all_res[nh]['lesioned_r_window'][g][k] = r_lw[g]
             print(f'  h={nh}: r={r:.3f}')
 
     # final refit per hidden size on all valid data
@@ -284,9 +283,8 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
             res['output_bias'] = final_model.output.bias.detach().cpu().numpy().ravel()
 
         for g in group_names:
+            res[f'full_r_group_{g}'] = all_res[nh]['full_r_group'][g]
             res[f'lesioned_r_{g}'] = all_res[nh]['lesioned_r'][g]
-            res[f'full_r_window_{g}'] = all_res[nh]['full_r_window'][g]
-            res[f'lesioned_r_window_{g}'] = all_res[nh]['lesioned_r_window'][g]
 
         result[nh] = res
 
@@ -295,16 +293,16 @@ def fit_neuron(counts_1d, X, col_map, valid_mask, event_masks=None,
 
 def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
     """load prepped data, fit one neuron, save results"""
-    from neuron_prediction.glm.fit import build_event_masks
-
     counts, X, col_map, t_ax, valid_mask = load_glm_inputs(sess_dir)
     y = counts[neuron_idx]
 
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
-    event_masks = build_event_masks(sess, t_ax)
+    fold_ids = get_trial_fold_indices(
+        sess.trials, t_ax, ops['n_outer_folds'],
+        seed=neuron_seed(sess_dir, neuron_idx),
+        ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
-    result = fit_neuron(y, X, col_map, valid_mask, event_masks,
-                        ops, seed=neuron_seed(sess_dir, neuron_idx))
+    result = fit_neuron(y, X, col_map, fold_ids, ops)
 
     results_dir = Path(sess_dir) / 'network_results'
     results_dir.mkdir(exist_ok=True)
