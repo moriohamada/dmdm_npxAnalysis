@@ -93,8 +93,8 @@ def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
         fig.savefig(Path(save_dir) / f'glm_unit_{neuron_idx:04d}.png',
                     dpi=150, bbox_inches='tight')
         plt.close(fig)
-    else:
-        plt.show()
+
+    return fig
 
 
 def plot_all_glm_kernels(sess_dir, plots_dir=None):
