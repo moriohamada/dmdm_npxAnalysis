@@ -114,66 +114,77 @@ def _predict_numpy(model, X, device):
         return torch.exp(log_rate).cpu().numpy()
 
 
+def _fit_one_inner(X_train, y_train, col_map, n_hidden, ops,
+                   inner_folds, lambda_gl, k):
+    """fit and evaluate one (lambda, inner fold) pair — for parallel dispatch"""
+    val_mask = inner_folds == k
+    tr_mask = (inner_folds >= 0) & ~val_mask
+
+    if val_mask.sum() == 0 or tr_mask.sum() == 0:
+        return lambda_gl, k, np.nan, np.inf
+
+    model = _make_model(X_train.shape[1], n_hidden)
+    model, _ = train_one(
+        model, X_train[tr_mask], y_train[tr_mask],
+        col_map, ops, lambda_gl)
+
+    device = next(model.parameters()).device
+    poisson_loss_fn = nn.PoissonNLLLoss(log_input=True)
+    with torch.no_grad():
+        X_val_t = torch.tensor(
+            X_train[val_mask], dtype=torch.float32, device=device)
+        y_val_t = torch.tensor(
+            y_train[val_mask], dtype=torch.float32, device=device)
+        log_rate = model(X_val_t)
+        val_loss = poisson_loss_fn(log_rate, y_val_t).item()
+        y_pred = torch.exp(log_rate).cpu().numpy()
+
+    r = pearson_r(y_train[val_mask], y_pred)
+    return lambda_gl, k, r, val_loss
+
+
 def inner_cv_select(X_train, y_train, col_map, n_hidden, ops,
                     trials_df, t_ax, outer_valid, outer_train_mask, seed=0):
     """select best regularisation for a given hidden size via inner CV
 
     uses trial-level inner folds for proper temporal independence.
     evaluates on held-out inner fold using both poisson NLL and pearson r.
-    selects config with highest mean r.
+    selects config with highest mean r. parallelises across (lambda, fold) pairs.
 
     outer_valid: bool (T_full,) — bins with fold_id >= 0
     outer_train_mask: bool (T_full,) — bins in the outer training fold
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    from joblib import Parallel, delayed
+
     n_inner = ops['n_inner_folds']
-    poisson_loss_fn = nn.PoissonNLLLoss(log_input=True)
+    n_jobs = ops.get('n_jobs', 1)
 
     # build trial-level inner folds on the full time axis, then slice
     inner_fold_ids = get_trial_fold_indices(
         trials_df, t_ax, n_inner, seed=seed,
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
-
-    # mask to outer training bins only
     inner_folds = inner_fold_ids[outer_valid][outer_train_mask]
 
+    configs = ops['group_lasso_lambdas']
+
+    # parallel across all (lambda, fold) pairs
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_fit_one_inner)(
+            X_train, y_train, col_map, n_hidden, ops,
+            inner_folds, lam, k)
+        for lam in configs
+        for k in range(n_inner)
+    )
+
+    # aggregate by lambda
     best_r = -np.inf
     best_params = 0
-
-    configs = ops['group_lasso_lambdas']
-    n_configs = len(configs)
-
     for ci, lambda_gl in enumerate(configs):
-        fold_rs = []
-        fold_losses = []
-        for k in range(n_inner):
-            val_mask = inner_folds == k
-            tr_mask = (inner_folds >= 0) & ~val_mask
-
-            if val_mask.sum() == 0 or tr_mask.sum() == 0:
-                continue
-
-            model = _make_model(X_train.shape[1], n_hidden)
-            model, _ = train_one(
-                model, X_train[tr_mask], y_train[tr_mask],
-                col_map, ops, lambda_gl)
-
-            # evaluate on held-out inner fold
-            with torch.no_grad():
-                X_val_t = torch.tensor(
-                    X_train[val_mask], dtype=torch.float32, device=device)
-                y_val_t = torch.tensor(
-                    y_train[val_mask], dtype=torch.float32, device=device)
-                log_rate = model.to(device)(X_val_t)
-                val_loss = poisson_loss_fn(log_rate, y_val_t).item()
-                y_pred = torch.exp(log_rate).cpu().numpy()
-
-            fold_losses.append(val_loss)
-            fold_rs.append(pearson_r(y_train[val_mask], y_pred))
-
+        fold_rs = [r for lam, k, r, loss in results if lam == lambda_gl]
+        fold_losses = [loss for lam, k, r, loss in results if lam == lambda_gl]
         mean_r = np.nanmean(fold_rs) if fold_rs else np.nan
         mean_loss = np.mean(fold_losses) if fold_losses else np.inf
-        print(f'    config {ci+1}/{n_configs}: gl={lambda_gl} '
+        print(f'    config {ci+1}/{len(configs)}: gl={lambda_gl} '
               f'-> r={mean_r:.4f}, loss={mean_loss:.4f}')
         if not np.isnan(mean_r) and mean_r > best_r:
             best_r = mean_r

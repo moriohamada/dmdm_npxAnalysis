@@ -146,18 +146,19 @@ NETWORK_OPTIONS = dict(
     hidden_sizes = [0, 8, 16, 32, 64],  # 0 = PoissonLinear (no hidden layer)
 
     # regularisation
-    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2, 1e-1],
+    group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2],
 
     # training
     lr          = 1e-2,
     batch_size  = 4096,
-    max_epochs  = 5000,
+    max_epochs  = 10000,
     patience    = 200,
     val_frac    = 0.1,
 
     # CV
     n_outer_folds = 10,
     n_inner_folds = 3,
+    n_jobs        = 4,  # parallel inner CV jobs (match --cpus-per-task)
 
     # lesion groups (shared with GLM)
     lesion_groups = GLM_OPTIONS['lesion_groups'],
@@ -165,7 +166,7 @@ NETWORK_OPTIONS = dict(
     n_perm_importance = 10,  # permutation repeats for predictor importance
 
     # neuron selection
-    min_r       = 0.2,
+    min_r       = 0,
     require_tf  = False,
 )
 

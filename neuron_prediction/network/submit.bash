@@ -4,13 +4,16 @@
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH -t 0-06:00
 #SBATCH --array=0-9999%100
 
 module load miniconda/23.10.0
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate /ceph/mrsic_flogel/public/projects/MoHa_20201102_SwitchChangeDetection/conda_envs/neuro_analysis
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 
 CODE_DIR=/nfs/nhome/live/morioh/Documents/PycharmProjects/dmdm_npxAnalysis
 cd $CODE_DIR
