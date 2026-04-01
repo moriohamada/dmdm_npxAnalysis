@@ -158,8 +158,8 @@ for area in areas:
 
 #%%
 from coding_dims.analysis import analyse_coding_dimensions
-tf_stats = analyse_coding_dimensions('tf')
-motor_stats = analyse_coding_dimensions('motor')
+tf_stats = analyse_coding_dimensions('tf', unit_filter=['tf'])
+motor_stats = analyse_coding_dimensions('motor', unit_filter=['tf'])
 
 #%% coding dim alignment analysis
 

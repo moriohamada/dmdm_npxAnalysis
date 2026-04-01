@@ -151,6 +151,7 @@ def _process_tf_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, save_d
               'late':  {'fast': [], 'slow': []}}
     included_sessions = []
     n_neurons_per_session = []
+    unit_ids = []  # (session_name, cluster_id) per neuron in concatenation order
 
     for sess_dir in sess_dirs:
         data, t_ax = _load_tf_resps_by_block(sess_dir, ops, bm_ops)
@@ -162,6 +163,11 @@ def _process_tf_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, save_d
             del data
             gc.collect()
             continue
+
+        # record unit identities
+        session = Session.load(str(sess_dir / 'session.pkl'))
+        cluster_ids = session.unit_info['cluster_id'].values[neuron_mask]
+        unit_ids.extend([(sess_dir.name, int(cid)) for cid in cluster_ids])
 
         for block in ['early', 'late']:
             fast = causal_boxcar(data[block]['fast'][:, neuron_mask, :],
@@ -293,6 +299,7 @@ def _process_tf_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, save_d
         'cross_projections': cross_projections,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
+        'unit_ids': unit_ids,
     }
 
     with open(save_dir / f'tf_dimensions_{animal}_{suffix}.pkl', 'wb') as f:
@@ -356,6 +363,7 @@ def _process_motor_animal(animal, sess_dirs, ops, bm_ops, lick_type,
     sess_n = {'early': [], 'late': []}
     included_sessions = []
     n_neurons_per_session = []
+    unit_ids = []
 
     for sess_dir in sess_dirs:
         data, lick_t_ax = _load_lick_resps_by_block(sess_dir, lick_type)
@@ -367,6 +375,10 @@ def _process_motor_animal(animal, sess_dirs, ops, bm_ops, lick_type,
             del data
             gc.collect()
             continue
+
+        session = Session.load(str(sess_dir / 'session.pkl'))
+        cluster_ids = session.unit_info['cluster_id'].values[neuron_mask]
+        unit_ids.extend([(sess_dir.name, int(cid)) for cid in cluster_ids])
 
         bl_mask = time_mask(lick_t_ax, bl_win)
 
@@ -483,6 +495,7 @@ def _process_motor_animal(animal, sess_dirs, ops, bm_ops, lick_type,
         'cross_projections': cross_projections,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
+        'unit_ids': unit_ids,
     }
 
     with open(save_dir / f'motor_dimensions_{animal}_{suffix}.pkl', 'wb') as f:

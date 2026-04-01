@@ -6,6 +6,7 @@ from pathlib import Path
 
 from config import PATHS, CODING_DIM_OPS
 from coding_dims.extract import _file_suffix, cosine_similarity
+from data.session import Session
 from utils.time import window_label
 
 #%% between-block rotation analysis
@@ -38,7 +39,7 @@ def per_animal_significance(results):
             real = bc['real']
             null = bc['null']
             valid_null = null[~np.isnan(null)]
-            p = np.mean(valid_null >= real) if len(valid_null) > 0 else np.nan
+            p = np.mean(valid_null <= real) if len(valid_null) > 0 else np.nan
 
             animals.append(animal)
             cosines.append(real)
@@ -56,8 +57,8 @@ def per_animal_significance(results):
 
 def pooled_null_test(results, n_perm=10000):
     """
-    population-level significance test for between-block consistency.
-    for each permutation: sample one null value per animal, average.
+    population-level significance test for between-block consistency. for each
+    permutation: sample one null value per animal and average.
     builds a null distribution of population-mean cosine similarities.
     """
     windows = set()
@@ -93,7 +94,7 @@ def pooled_null_test(results, n_perm=10000):
                 null_means[p] = np.mean(sampled)
 
         valid_null_means = null_means[~np.isnan(null_means)]
-        p_value = np.mean(valid_null_means >= observed_mean) if len(valid_null_means) > 0 else np.nan
+        p_value = np.mean(valid_null_means <= observed_mean) if len(valid_null_means) > 0 else np.nan
 
         out[wl] = dict(
             observed_mean=observed_mean,
@@ -104,15 +105,13 @@ def pooled_null_test(results, n_perm=10000):
     return out
 
 
-def analyse_coding_dimensions(dim_type, npx_dir=PATHS['npx_dir_local'],
-                              bm_ops=CODING_DIM_OPS,
-                              area=None, unit_filter=None,
-                              save_dir=None):
-    """
-    main analysis runner for tf or motor coding dimensions.
-    loads extracted results, computes per-animal and pooled significance, plots.
-    dim_type: 'tf' or 'motor'
-    """
+def analyse_coding_dimensions(dim_type: str,
+                              npx_dir: str = PATHS['npx_dir_local'],
+                              bm_ops: dict = CODING_DIM_OPS,
+                              area: str | None = None,
+                              unit_filter: list[str] | None = None,
+                              save_dir: str | None = None) -> dict:
+    """load results, run stats, plot"""
     suffix = _file_suffix(area, unit_filter)
     results = load_dimension_results(dim_type, npx_dir, area, unit_filter)
 
@@ -131,7 +130,10 @@ def analyse_coding_dimensions(dim_type, npx_dir=PATHS['npx_dir_local'],
 
     from coding_dims.plotting import plot_tf_dimensions, plot_motor_dimensions
     plot_fn = plot_tf_dimensions if dim_type == 'tf' else plot_motor_dimensions
-    plot_fn(npx_dir=npx_dir, save_dir=save_dir, area=area, unit_filter=unit_filter)
+    plot_kwargs = dict(npx_dir=npx_dir, area=area, unit_filter=unit_filter)
+    if save_dir is not None:
+        plot_kwargs['save_dir'] = save_dir
+    plot_fn(**plot_kwargs)
 
     return dict(per_animal=per_animal, pooled=pooled)
 
@@ -139,14 +141,10 @@ def analyse_coding_dimensions(dim_type, npx_dir=PATHS['npx_dir_local'],
 #%% tf-motor alignment
 
 def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, bm_ops):
-    """
-    load smoothed, neuron-masked, session-concatenated mean responses for one animal.
-    returns dict of {condition: (n_neurons, n_time)} and time axes per event type
-    """
+    """load neuron-masked and session-concatenated mean responses to tf/licks"""
     from coding_dims.extract import _get_neuron_mask, _get_window_bins
     from data.load_responses import load_psth_mean
     from utils.smoothing import causal_boxcar
-    from config import ANALYSIS_OPTIONS
 
     window_bins = _get_window_bins(bm_ops)
 
@@ -164,11 +162,16 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
 
     means = {}
     t_axes = {}
+    unit_ids = []
 
     for sess_name in included_sessions:
         sess_dir = Path(npx_dir) / animal / sess_name
         psth_path = str(sess_dir / 'psths.h5')
         neuron_mask = _get_neuron_mask(sess_dir, area, unit_filter)
+
+        session = Session.load(str(sess_dir / 'session.pkl'))
+        cids = session.unit_info['cluster_id'].values[neuron_mask]
+        unit_ids.extend([(sess_name, int(c)) for c in cids])
 
         for event_type, conditions in [('tf', tf_conditions),
                                         ('lick', lick_conditions),
@@ -189,16 +192,15 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
     for key, session_means in means.items():
         concat_means[key] = np.concatenate(session_means, axis=0)
 
-    return concat_means, t_axes
+    return concat_means, t_axes, unit_ids
 
 
 def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
                                  bm_ops=CODING_DIM_OPS,
                                  area=None, unit_filter=None):
     """
-    compare TF and motor coding directions: cosine similarity between all pairs,
-    per block. also computes TF response projections onto motor dimensions for
-    plotting.
+    compare TF and motor coding directions: cosine similarity between all pairs per
+    block. also computes TF response projections onto motor dimensions for plotting.
     """
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
@@ -213,37 +215,72 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
         tf_r = tf_results[animal]
         motor_r = motor_results[animal]
 
-        tf_sessions = tf_r.get('included_sessions', [])
-        motor_sessions = motor_r.get('included_sessions', [])
-        if tf_sessions != motor_sessions:
-            print(f'  {animal}: session mismatch '
-                  f'(TF: {len(tf_sessions)}, motor: {len(motor_sessions)}) - skipping')
+        # match neurons by unit_ids, subset and renormalise
+        tf_ids = tf_r.get('unit_ids', [])
+        motor_ids = motor_r.get('unit_ids', [])
+        if not tf_ids or not motor_ids:
+            print(f'  {animal}: no unit_ids saved - re-run extraction')
             continue
 
-        # cosine similarity between all TF x motor dimension pairs
+        tf_id_set = set(tf_ids)
+        motor_id_set = set(motor_ids)
+        shared = tf_id_set & motor_id_set
+
+        if len(shared) < 5:
+            print(f'  {animal}: only {len(shared)} shared neurons - skipping')
+            continue
+
+        tf_idx = np.array([i for i, uid in enumerate(tf_ids) if uid in shared])
+        motor_idx = np.array([i for i, uid in enumerate(motor_ids) if uid in shared])
+
+        # reorder motor_idx to match tf neuron order
+        tf_shared_order = [tf_ids[i] for i in tf_idx]
+        motor_id_to_idx = {uid: i for i, uid in enumerate(motor_ids)}
+        motor_idx = np.array([motor_id_to_idx[uid] for uid in tf_shared_order])
+
+        n_tf = len(tf_ids)
+        n_motor = len(motor_ids)
+        n_shared = len(shared)
+        if n_shared < n_tf or n_shared < n_motor:
+            print(f'  {animal}: {n_shared}/{n_tf} TF, {n_shared}/{n_motor} motor neurons shared')
+
+        # cosine similarity between all TF x motor dimension pairs (shared neurons)
         alignment = {}
         for block in ['early', 'late']:
             tf_dims = tf_r['dimensions'].get(block, {})
             motor_dims = motor_r['dimensions'].get(block, {})
             alignment[block] = {}
             for tf_wl, tf_w in tf_dims.items():
+                tf_sub = tf_w[tf_idx]
                 for motor_wl, motor_w in motor_dims.items():
+                    motor_sub = motor_w[motor_idx]
                     key = f'tf_{tf_wl}_x_motor_{motor_wl}'
-                    alignment[block][key] = cosine_similarity(tf_w, motor_w)
+                    alignment[block][key] = cosine_similarity(tf_sub, motor_sub)
 
-        # project TF responses onto motor dimensions
-        mean_resps, t_axes = _load_mean_responses(
-            animal, tf_sessions, npx_dir, area, unit_filter, bm_ops)
+        # project TF responses onto motor dimensions (shared neurons only)
+        shared_sessions = sorted(set(tf_r['included_sessions']) &
+                                  set(motor_r['included_sessions']))
+        mean_resps, t_axes, resp_ids = _load_mean_responses(
+            animal, shared_sessions, npx_dir, area, unit_filter, bm_ops)
+
+        # reorder resp rows to match motor_idx neuron order
+        resp_id_to_idx = {uid: i for i, uid in enumerate(resp_ids)}
+        # only keep neurons present in all three: tf, motor, and response data
+        keep = [uid for uid in tf_shared_order if uid in resp_id_to_idx]
+        resp_reorder = np.array([resp_id_to_idx[uid] for uid in keep])
+        motor_reorder = np.array([motor_id_to_idx[uid] for uid in keep])
 
         tf_onto_motor = {}
         for block in ['early', 'late']:
             motor_dims = motor_r['dimensions'].get(block, {})
             tf_onto_motor[block] = {}
             for motor_wl, motor_w in motor_dims.items():
+                motor_sub = motor_w[motor_reorder]
                 tf_onto_motor[block][motor_wl] = {}
                 for cond_key, resp in mean_resps.items():
                     if cond_key.startswith('tf/'):
-                        tf_onto_motor[block][motor_wl][cond_key] = motor_w @ resp
+                        resp_sub = resp[resp_reorder]
+                        tf_onto_motor[block][motor_wl][cond_key] = motor_sub @ resp_sub
 
         all_results[animal] = dict(
             alignment=alignment,

@@ -2,12 +2,16 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import pickle
 from pathlib import Path
+
+sns.set_style('whitegrid')
 
 from config import PATHS, PLOT_OPTIONS, CODING_DIM_OPS
 from coding_dims.extract import _file_suffix
 from utils.time import window_label
+
 
 
 EARLY_COL = PLOT_OPTIONS['colours']['block']['early']
@@ -50,7 +54,7 @@ def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None):
             null = bc['null']
             valid_null = null[~np.isnan(null)]
             real = bc['real']
-            p = np.mean(valid_null >= real) if len(valid_null) > 0 else np.nan
+            p = np.mean(valid_null <= real) if len(valid_null) > 0 else np.nan
 
             ax.hist(valid_null, bins=30, density=True,
                     color='grey', alpha=0.5)
@@ -138,12 +142,14 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
 
 #%% TF and motor dimension plots
 
-def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None,
+def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                        area=None, unit_filter=None):
     """
     between-block consistency of TF coding directions + projected tf resps
     """
     results, suffix = _load_results(npx_dir, 'tf', area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_between_block_per_animal(results, 'tf', suffix, save_dir)
     _plot_between_block_summary(results, 'tf', suffix, save_dir)
@@ -190,26 +196,22 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None,
 
     fig.suptitle(f'TF projections [{suffix}]', fontsize=11)
     plt.tight_layout()
-
-    if save_dir:
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_dir / f'tf_projections_{suffix}.png',
-                    dpi=300, bbox_inches='tight')
+    fig.savefig(save_dir / f'tf_projections_{suffix}.png',
+                dpi=300, bbox_inches='tight')
     return fig
 
 
-def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None,
+def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                           area=None, unit_filter=None):
-    """
-    between-block consistency of motor coding directions: per-animal + summary.
-    """
+    """between-block consistency of motor coding directions + projected lick resps"""
     results, suffix = _load_results(npx_dir, 'motor', area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_between_block_per_animal(results, 'motor', suffix, save_dir)
     _plot_between_block_summary(results, 'motor', suffix, save_dir)
 
-    #  projections (same-block)
+    # projections (same-block)
     animals = sorted(results.keys())
     if not animals:
         return
@@ -246,25 +248,20 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None,
 
     fig.suptitle(f'Motor projections [{suffix}]', fontsize=11)
     plt.tight_layout()
-
-    if save_dir:
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_dir / f'motor_projections_{suffix}.png',
-                    dpi=300, bbox_inches='tight')
+    fig.savefig(save_dir / f'motor_projections_{suffix}.png',
+                dpi=300, bbox_inches='tight')
     return fig
 
 
 #%% alignment plots
 
-def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=None,
+def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                    area=None, unit_filter=None):
-    """
-    one figure per TF x motor window combo:
-    - scatter early-block alignment vs late-block alignment per animal
-    - pulse responses projected onto motor dimensions, per block
-    """
+    """early vs late alignment scatter + TF onto motor dim projections"""
     suffix = _file_suffix(area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir.mkdir(parents=True, exist_ok=True)
+
     path = Path(npx_dir) / 'coding_dims' / f'alignment_{suffix}.pkl'
     with open(path, 'rb') as f:
         results = pickle.load(f)
@@ -400,11 +397,8 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=None,
         fig.suptitle(f'TF {tf_wl} x motor {motor_wl} [{suffix}]', fontsize=11)
         plt.tight_layout()
 
-        if save_dir:
-            save_dir_p = Path(save_dir)
-            save_dir_p.mkdir(parents=True, exist_ok=True)
-            fig.savefig(save_dir_p / f'alignment_tf{tf_wl}_motor{motor_wl}_{suffix}.png',
-                        dpi=300, bbox_inches='tight')
+        fig.savefig(save_dir / f'alignment_tf{tf_wl}_motor{motor_wl}_{suffix}.png',
+                    dpi=300, bbox_inches='tight')
 
         figs.append(fig)
 
