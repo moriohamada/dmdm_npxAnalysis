@@ -11,21 +11,21 @@ Dataset comprises ~15k units, 51 regions, 15 mice, 114 sessions.
 #### Structure
 
 ```
-data/                    session class def, FR matrices, event timings, preprocessing
-utils/                   shared utilities, brain region groupings
-
 config.py                paths, analysis parameters, plot options
 neural_analysis.py       main neural analysis runner
 behavioural_analysis.py  main behavioural analysis runner
 
+data/                    session class def, FR matrices, event timings, preprocessing
+utils/                   shared utilities, brain region groupings
+
 behaviour/               psychometrics, lick-triggered averages, FA hazard
-behaviour/integrator/    leaky integrator model (grid search on HPC)
-lick_pred/               lick prediction from neural activity
+behaviour/integrator/    leaky integrator model  
+lick_pred/               lick prediction task features and behavioural hsitory
 neuron_prediction/       single-unit prediction models
   glm/                   poisson GLM with group lasso
-  network/               poisson networks with interaction permutation
-  hybrid/                (planned) masked hidden layer for interaction detection
-single_unit/             unit preferences, PSTH plots
+  network/               ff networks to allow non-linear interactions
+  hybrid/                hybrid model - linear skips to output + specified non-linear
+single_unit/             unit preferences, PSTHs
 population/              PCA, LDS, population trajectories
 demixing/                SAE and causal LFADS
 tuning_curves/           single-unit TF tuning by block
@@ -35,40 +35,48 @@ coding_dims/             coding dimension rotation, motor subspace projection
 ### Behavioural analyses
 
 
-**Basic analyses** (`behaviour/`) - per-subject trial DataFrames from Session objects. Psychometric/chronometric functions, lick-triggered stimulus averages and covariance, FA hazard rates by block, pulse-aligned lick probability.
+**Basic analyses** (`behaviour/`) - per-subject trial dataframes from Session objects. 
+Block-dependent psychometric/chronometric, lick-triggered stimulus mean and covariance calculation, hazard rates, pulse-aligned lick probability.
 
-**Leaky integrator** (`behaviour/integrator/`) - grid search over time constant and threshold per subject per block. Runs on HPC.
+**Leaky integrator** (`behaviour/integrator/`) - grid search over integration, gainm threshold per subject per block. 
 
-**Lick prediction** (`lick_pred/`) - predict lick timing from neural population activity. Leave-one-session-out CV.
+**Lick prediction** (`lick_pred/`) - predict lick timing based on stimulus, trial history etc.
 
 ### Neural analyses
 
-**Preprocessing** (`data/`) - extract FR matrices and event timings from raw data on ceph, downsample to 50ms bins for population analyses.
+**Preprocessing** (`data/`) - extract FR matrices and event timings, downsample to 50ms bins for population analyses.
 
 **Single unit responses** (`single_unit/`) - single neuron PSTH plots & preference index calculation
 
-**Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with design matrix containing TF, events, lick 
-preparation/execution, time ramp, block, and motion signals. Time-shifted predictor kernels, group lasso regularisation, lesion analysis for unit classification. Runs on HPC via SLURM array jobs. Config: `GLM_OPTIONS`.
+**Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with group lasso regularisation, lesion analysis for unit 
+classification (TF/time/block/lick responsive). Config: `GLM_OPTIONS`.
 
-**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, Poisson networks with one hidden ReLU layer. Nested CV (inner selects group lasso lambda, outer evaluates). Permutation importance for individual predictor groups + pairwise and three-way interaction permutation to detect non-linear interactions (e.g. TF x block x time). Parallelised inner CV via joblib. All neurons fitted (no GLM-based filtering). Config: `NETWORK_OPTIONS`.
+**Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, ff nets with one hidden ReLU layer. 
+Shuffling tests for individual predictor groups + pairwise/three-way interaction shuffling to detect specified 
+non-linear interactions (TF x block x time). Config: `NETWORK_OPTIONS`.
 
-**Hybrid model** (`neuron_prediction/hybrid/`, planned) - linear skip connection (all predictors to output) + masked hidden layer (configurable subset of predictor groups). Hidden units constrained to specific interaction combinations. Identifies and quantifies specific predictor interactions the network captures beyond the GLM.
+**Hybrid model** (`neuron_prediction/hybrid/`) - linear skip connection (all predictors to output) + masked hidden 
+layer (configurable subset of predictor groups), to identify specific predictor interactions the network captures beyond the GLM.
 
 **Population** (`population/`) - PCA on event-aligned responses, LDS.
 
 **Demixing** (`demixing/`) - SAE and causal LFADS for learning interpretable latent factors from neural activity.
 
-**Tuning curves** (`tuning_curves/`) - single unit TF tuning by block. OLS fit of firing rate vs TF per block, permutation tests for gain significance. TF-responsive = significant gain in either block at p < 0.025. Quantile-binned curves with SEM. Results per session. Config: `TUNING_CURVE_OPS`.
+**Tuning curves** (`tuning_curves/`) - single unit TF tuning by block. Config: `TUNING_CURVE_OPS`.
 
-**Coding dimensions** (`coding_dims/`) - two analyses comparing TF coding between early/late blocks. (1) Coding dimension rotation: time-resolved TF coding vector per block, between-block cosine similarity over post-pulse time, null from block-label shuffling. (2) Motor dimension projection: PCA motor subspace from lick-aligned activity (even/odd CV, fake-lick null), TF responses projected onto motor and non-motor dimensions per block. Results per animal. Config: `CODING_DIM_OPS`.
+**Coding dimensions** (`coding_dims/`) - two analyses comparing TF coding between early/late blocks. 
+1: coding dimension rotations: time-resolved TF and lick coding vector per block, between-block cosine similarity over 
+post-pulse time. 
+2: dimension alignment - do motor/tf coding dims rotate relative to each other depending on expectation? Config: 
+`CODING_DIM_OPS`.
 
 ---
 
 ##### Data notes
 
-- FR matrices are z-scored per unit at creation time. Don't z-score again downstream
+- FR matrices are z-scored per unit at creation time  
 - Original FR bins are 10ms. Population analyses use 50ms (separate `_ds` parquet files)
 - PSTHs stored as (nEv x nN x nT) in HDF5. Means are (nN x nT)
 - Brain region groupings in `utils/rois.py`
 - Session objects saved without FR matrix, raw neural data, or raw DAQ lines
-- GLM design matrices saved per session (`glm_counts.npy`, `glm_design.npy`, `glm_spec.pkl`). GLM and network results saved per neuron in `glm_results/` and `network_results/` subdirectories
+- GLM design matrices saved per session (`glm_counts.npy`, `glm_design.npy`, `glm_spec.pkl`). 
