@@ -111,13 +111,16 @@ from config import CODING_DIM_OPS
 from coding_dims.analysis import extract_tf_dimensions
 extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
                       ops=ANALYSIS_OPTIONS,
-                      bm_ops=CODING_DIM_OPS)
+                      bm_ops=CODING_DIM_OPS,
+                      n_jobs=6)
 
 #%% motor coding dimensions
 from coding_dims.analysis import extract_motor_dimensions
 extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
                          ops=ANALYSIS_OPTIONS,
-                         bm_ops=CODING_DIM_OPS)
+                         bm_ops=CODING_DIM_OPS,
+                         n_jobs=6)
+
 
 #%% alignment analysis
 from coding_dims.analysis import extract_cross_type_analysis
