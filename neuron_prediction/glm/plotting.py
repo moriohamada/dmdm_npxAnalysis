@@ -1,16 +1,23 @@
 """
-glm kernel plots per neuron
+glm kernel plots per neuron and population summaries
 """
+import os
+import pickle
 import numpy as np
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import seaborn as sns
 from pathlib import Path
+from multiprocessing import Pool
 
 sns.set_style("whitegrid")
 
-from config import GLM_OPTIONS, PLOT_OPTIONS
+from config import PATHS, GLM_OPTIONS, PLOT_OPTIONS
 from neuron_prediction.glm.fit import extract_kernels
+from data.session import Session
+from utils.rois import PLOT_CLASS_AREAS
 
 
 def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
@@ -97,10 +104,31 @@ def plot_glm_kernels(weights, col_map, neuron_idx=0, region=None,
     return fig
 
 
-def plot_all_glm_kernels(sess_dir, plots_dir=None):
+def _plot_one_neuron(args):
+    """worker function for parallel kernel plotting"""
+    i, results_dir, col_map, region, class_row, save_dir = args
+
+    matplotlib.use('Agg')
+
+    res_path = results_dir / f'neuron_{i}.npz'
+    if not res_path.exists():
+        return
+
+    res = np.load(res_path, allow_pickle=True)
+    mean_r = np.nanmean(res['full_r'])
+    classifications = None
+    if class_row is not None:
+        classifications = {c: class_row[c] for c in class_row.index
+                           if c.endswith('_sig')}
+
+    plot_glm_kernels(res['weights'], col_map,
+                     neuron_idx=i, region=region,
+                     mean_r=mean_r, classifications=classifications,
+                     save_dir=str(save_dir))
+
+
+def plot_all_glm_kernels(sess_dir, plots_dir=None, n_workers=1):
     """plot GLM kernels for all neurons in one session"""
-    import pickle
-    from data.session import Session
 
     sess_dir = Path(sess_dir)
     sess = Session.load(str(sess_dir / 'session.pkl'))
@@ -109,7 +137,6 @@ def plot_all_glm_kernels(sess_dir, plots_dir=None):
     with open(sess_dir / 'glm_spec.pkl', 'rb') as f:
         col_map = pickle.load(f)
 
-    # load classifications if available
     class_path = sess_dir / 'glm_classifications.csv'
     class_df = None
     if class_path.exists():
@@ -122,25 +149,112 @@ def plot_all_glm_kernels(sess_dir, plots_dir=None):
     regions = sess.unit_info['brain_region_comb'].values
     n_neurons = len(sess.fr_stats)
 
+    args = []
     for i in range(n_neurons):
-        res_path = results_dir / f'neuron_{i}.npz'
-        if not res_path.exists():
-            continue
+        region = regions[i] if i < len(regions) else None
+        class_row = class_df.iloc[i] if class_df is not None and i < len(class_df) else None
+        args.append((i, results_dir, col_map, region, class_row, save_dir))
 
-        res = np.load(res_path, allow_pickle=True)
-        weights = res['weights']
-
-        mean_r = np.nanmean(res['full_r'])
-        classifications = None
-        if class_df is not None and i < len(class_df):
-            row = class_df.iloc[i]
-            classifications = {c: row[c] for c in row.index if c.endswith('_sig')}
-
-        plot_glm_kernels(weights, col_map,
-                         neuron_idx=i,
-                         region=regions[i] if i < len(regions) else None,
-                         mean_r=mean_r,
-                         classifications=classifications,
-                         save_dir=str(save_dir))
+    if n_workers > 1:
+        with Pool(n_workers) as pool:
+            pool.map(_plot_one_neuron, args)
+    else:
+        for a in args:
+            _plot_one_neuron(a)
 
     print(f'Saved kernel plots to {save_dir}')
+
+
+#%% population summaries
+
+def load_all_classifications(npx_dir=PATHS['npx_dir_local']):
+    """load glm classifications across all sessions, with region and animal metadata"""
+    rows = []
+    for subj in sorted(os.listdir(npx_dir)):
+        subj_dir = os.path.join(npx_dir, subj)
+        if not os.path.isdir(subj_dir):
+            continue
+        for sess_name in sorted(os.listdir(subj_dir)):
+            sd = os.path.join(subj_dir, sess_name)
+            class_path = os.path.join(sd, 'glm_classifications.csv')
+            if not os.path.exists(class_path):
+                continue
+            cdf = pd.read_csv(class_path)
+            sess = Session.load(os.path.join(sd, 'session.pkl'))
+            cdf['region'] = sess.unit_info['brain_region_comb'].values[:len(cdf)]
+            cdf['animal'] = sess.animal
+            cdf['session'] = sess.name
+            rows.append(cdf)
+
+    all_units = pd.concat(rows, ignore_index=True)
+    print(f'{len(all_units)} units across {all_units["session"].nunique()} sessions')
+    return all_units
+
+
+def plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
+                              min_units=20, save_dir=None):
+    """fraction of significant units per lesion group, by brain region"""
+    all_units = load_all_classifications(npx_dir)
+    group_names = list(GLM_OPTIONS['lesion_groups'].keys())
+
+    region_to_class = {}
+    for cls, regions in PLOT_CLASS_AREAS.items():
+        for r in regions:
+            region_to_class[r] = cls
+
+    all_units['area_class'] = all_units['region'].map(region_to_class)
+
+    class_names = list(PLOT_CLASS_AREAS.keys())
+    cmap = plt.colormaps['tab10'].resampled(len(class_names))
+    class_colours = {cls: cmap(i) for i, cls in enumerate(class_names)}
+
+    fig, axes = plt.subplots(1, len(group_names),
+                             figsize=(4 * len(group_names), 6), sharey=True)
+
+    for ai, (ax, g) in enumerate(zip(axes, group_names)):
+        sig_col = f'{g}_sig'
+        if sig_col not in all_units.columns:
+            continue
+
+        sub = all_units.dropna(subset=[sig_col, 'area_class'])
+        region_n = sub.groupby('region').size()
+        keep = region_n[region_n >= min_units].index
+        sub = sub[sub['region'].isin(keep)]
+
+        summary = sub.groupby('region').agg(
+            n_total=(sig_col, 'count'),
+            n_sig=(sig_col, 'sum'),
+            area_class=('area_class', 'first'),
+        )
+        summary['frac'] = summary['n_sig'] / summary['n_total']
+
+        summary['class_order'] = summary['area_class'].map(
+            {c: i for i, c in enumerate(class_names)})
+        summary = summary.sort_values(['class_order', 'frac'],
+                                      ascending=[True, True])
+
+        colours = [class_colours[c] for c in summary['area_class']]
+        ax.barh(range(len(summary)), summary['frac'], color=colours)
+        ax.set_yticks(range(len(summary)))
+        ax.set_yticklabels(summary.index, fontsize=7)
+        for tick, c in zip(ax.get_yticklabels(), summary['area_class']):
+            tick.set_color(class_colours[c])
+        ax.set_xlabel('Fraction significant')
+        ax.set_title(g)
+        ax.set_xlim(0, 1)
+
+        if ai == 0:
+            handles = [Patch(color=class_colours[c], label=c.replace('_', ' '))
+                       for c in class_names]
+            ax.legend(handles=handles, fontsize=6, loc='lower right')
+
+    fig.suptitle('GLM lesion significance by region', fontsize=12)
+    fig.tight_layout()
+
+    if save_dir:
+        save_dir = Path(save_dir) / 'glm'
+        save_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_dir / 'glm_fraction_significant.png',
+                    dpi=300, bbox_inches='tight')
+
+    return fig

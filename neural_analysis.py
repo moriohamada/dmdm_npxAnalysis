@@ -43,7 +43,31 @@ from neuron_prediction.data import convert_job_map_to_hpc
 import os
 convert_job_map_to_hpc(os.path.join(PATHS['npx_dir'], 'glm_job_map.csv'))
 
-#%% Explore kernel fits
+#%% Classify units from GLM fits
+from pathlib import Path
+from utils.filing import get_response_files
+from neuron_prediction.glm.fit import classify_units
+
+for psth_path in get_response_files(PATHS['npx_dir_local']):
+    sess_dir = Path(psth_path).parent
+
+    if (sess_dir / 'glm_results').is_dir():
+        classify_units(str(sess_dir))
+
+# Plot GLM kernels per session
+from neuron_prediction.glm.plotting import plot_all_glm_kernels
+
+for psth_path in get_response_files(PATHS['npx_dir_local']):
+    sess_dir = Path(psth_path).parent
+    if (sess_dir / 'glm_results').is_dir():
+        plot_all_glm_kernels(str(sess_dir),
+                             plots_dir=PATHS['plots_dir'],
+                             n_workers=6)
+
+#%% fraction significant by region
+from neuron_prediction.glm.plotting import plot_fraction_significant
+plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
+                          save_dir=PATHS['plots_dir'])
 
 #%% Downsample FR matrices for population analyses
 from utils.downsampling import save_downsampled_fr
@@ -106,26 +130,42 @@ tc_plot_dir = Path(PATHS['plots_dir']) / 'tuning_curves'
 plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 
-#%% TF coding dimensions
+#%% coding dimensions: iterate over areas and unit filters
 from config import CODING_DIM_OPS
-from coding_dims.analysis import extract_tf_dimensions
-extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
-                      ops=ANALYSIS_OPTIONS,
-                      bm_ops=CODING_DIM_OPS,
-                      n_jobs=6)
+from coding_dims.extract import extract_tf_dimensions, extract_motor_dimensions
+from utils.rois import PLOT_CLASS_AREAS
 
-#%% motor coding dimensions
-from coding_dims.analysis import extract_motor_dimensions
-extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
-                         ops=ANALYSIS_OPTIONS,
-                         bm_ops=CODING_DIM_OPS,
-                         n_jobs=6)
+areas = [None] + list(PLOT_CLASS_AREAS.keys())
+unit_filters = [None, ['tf'], ['tf', 'lick_prep']]
 
+for area in areas:
+    for uf in unit_filters:
+        print(f'\n=== TF dimensions: area={area}, filter={uf} ===')
+        extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
+                              ops=ANALYSIS_OPTIONS,
+                              bm_ops=CODING_DIM_OPS,
+                              area=area,
+                              unit_filter=uf,
+                              n_jobs=6)
 
-#%% alignment analysis
-from coding_dims.analysis import extract_cross_type_analysis
-extract_cross_type_analysis(npx_dir=PATHS['npx_dir_local'],
-                            bm_ops=CODING_DIM_OPS)
+        print(f'\n=== Motor dimensions: area={area}, filter={uf} ===')
+        extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
+                                 ops=ANALYSIS_OPTIONS,
+                                 bm_ops=CODING_DIM_OPS,
+                                 area=area,
+                                 unit_filter=uf,
+                                 n_jobs=6)
+
+#%%
+from coding_dims.analysis import analyse_coding_dimensions
+tf_stats = analyse_coding_dimensions('tf')
+motor_stats = analyse_coding_dimensions('motor')
+
+#%% coding dim alignment analysis
+
+from coding_dims.analysis import calculate_tf_motor_alignment
+calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
+                             bm_ops=CODING_DIM_OPS)
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS
