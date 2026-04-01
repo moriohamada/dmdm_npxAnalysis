@@ -357,7 +357,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         group_masks[gname] = mask
 
     # parallel across outer folds
-    fold_results = Parallel(n_jobs=n_jobs)(
+    fold_results = Parallel(n_jobs=n_jobs, verbose=10)(
         delayed(_run_one_fold)(
             k, X_v, y_v, folds_v, col_map, group_masks,
             hidden_sizes, lambdas, lesion_groups, combos, ops)
@@ -425,7 +425,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     return result
 
 
-def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
+def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS,
+                         overwrite=False):
     """load prepped data, fit one neuron, save results"""
     import pickle
 
@@ -445,12 +446,13 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
 
     # merge with existing results so new hidden sizes don't overwrite old ones
     res_path = results_dir / f'neuron_{neuron_idx}.npz'
-    if res_path.exists():
+    if not overwrite and res_path.exists():
         existing = dict(np.load(res_path, allow_pickle=True))
         existing.update(result)
         result = existing
 
     np.savez(res_path, **result)
+    print(f'Saved {res_path}')
 
     # save col_map once per session
     col_map_path = results_dir / 'col_map.pkl'
