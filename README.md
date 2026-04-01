@@ -11,10 +11,10 @@ Dataset comprises ~15k units, 51 regions, 15 mice, 114 sessions.
 #### Structure
 
 ```
-config.py                paths, analysis parameters, plot options
 neural_analysis.py       main neural analysis runner
 behavioural_analysis.py  main behavioural analysis runner
 
+config.py                paths, analysis parameters, plot options
 data/                    session class def, FR matrices, event timings, preprocessing
 utils/                   shared utilities, brain region groupings
 
@@ -48,7 +48,7 @@ Block-dependent psychometric/chronometric, lick-triggered stimulus mean and cova
 
 **Single unit responses** (`single_unit/`) - single neuron PSTH plots & preference index calculation
 
-**Poisson GLM** (`neuron_prediction/glm/`) - per-neuron GLM with group lasso regularisation, lesion analysis for unit 
+**GLM** (`neuron_prediction/glm/`) - per-neuron GLM with group lasso regularisation, lesion analysis for unit 
 classification (TF/time/block/lick responsive). Config: `GLM_OPTIONS`.
 
 **Nonlinear fits** (`neuron_prediction/network/`) - same design matrix, ff nets with one hidden ReLU layer. 
