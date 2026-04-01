@@ -122,7 +122,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         return
 
     sample = results[animals[0]]
-    window_labels = list(sample['dimensions_neuron']['early'].keys())
+    window_labels = list(sample['dimensions']['early'].keys())
     n_wins = len(window_labels)
     lick_t_ax = sample['lick_t_ax']
 
@@ -167,7 +167,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=None):
         for block, colour in [('early', EARLY_COL), ('late', LATE_COL)]:
             traces = []
             for animal in animals:
-                proj = results[animal]['projections_lick'][block][block].get(wl)
+                proj = results[animal]['cross_projections'][block][block].get(wl)
                 if proj is not None:
                     ax.plot(lick_t_ax, proj, color=colour, alpha=0.2, linewidth=0.7)
                     traces.append(proj)

@@ -267,9 +267,8 @@ CODING_DIM_OPS = dict(
     tf_coding_windows = [(0.1, 0.3), (0.3, 0.5)],
 
     # premotor coding direction windows (s, relative to lick onset)
-    motor_coding_windows = [(-1.0, -0.6), (-0.5, -0.1), (-0.25, 0.0)],
+    motor_prelick_windows = [(-1.0, -0.6), (-0.5, -0.1), (-0.25, 0.0)],
     motor_baseline_window = (-1.5, -1.0),
-    motor_denoise_pcs = 10,
 )
 
 PLOT_OPTIONS = dict(

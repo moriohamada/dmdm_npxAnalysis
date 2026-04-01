@@ -4,13 +4,14 @@ import numpy as np
 import pickle
 import gc
 from pathlib import Path
-from sklearn.decomposition import PCA
+from multiprocessing import Pool
 
 from config import PATHS, ANALYSIS_OPTIONS, CODING_DIM_OPS
 from data.load_responses import load_psth
 from data.session import Session
 from utils.filing import get_session_dirs_by_animal
 from utils.smoothing import causal_boxcar
+from utils.time import window_label, time_mask
 
 
 #%% shared utilities
@@ -20,19 +21,10 @@ def _get_window_bins(bm_ops):
     return max(1, int(round(bm_ops['sliding_window_ms'] / 1000 / dt)))
 
 
-def _window_label(win):
-    return f'{win[0]:.2f}_{win[1]:.2f}'
-
-
-def _time_mask(t_ax, win):
-    """boolean mask for time bins within window [win[0], win[1])"""
-    return (t_ax >= win[0]) & (t_ax < win[1])
-
-
 def coding_direction(resp_a, resp_b):
     """
     normalised difference of means between two sets of responses.
-    resp_a, resp_b: (n_trials, n_dims) or (n_timepoints, n_dims)
+    resp_a, resp_b: (n_samples, n_dims)
     returns unit vector (n_dims,)
     """
     w = np.nanmean(resp_a, axis=0) - np.nanmean(resp_b, axis=0)
@@ -52,7 +44,7 @@ def cosine_similarity(a, b):
 
 #%% data loading
 
-def _load_tf_trials_by_block(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
+def _load_tf_resps_by_block(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
     """
     load per-trial outlier TF responses, split by block and fast/slow.
     returns {block: {'fast': (nEv, nN, nT), 'slow': (nEv, nN, nT)}}, t_ax
@@ -72,7 +64,7 @@ def _load_tf_trials_by_block(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_O
     return results, t_ax
 
 
-def _load_lick_trials_by_block(sess_dir, lick_type='fa'):
+def _load_lick_resps_by_block(sess_dir, lick_type='fa'):
     """
     load per-trial lick-aligned responses, split by block.
     lick_type: 'fa' for false alarms only, 'hit' for hits only, 'all' for both
@@ -102,8 +94,8 @@ def _load_lick_trials_by_block(sess_dir, lick_type='fa'):
 
 
 def _session_valid_for_tf(tf_data):
-    """both blocks need fast and slow TF trials"""
-    return all(tf_data[b]['fast'].shape[0] > 0 and tf_data[b]['slow'].shape[0] > 0
+    """both blocks need sufficent fast and slow TF trials"""
+    return all(tf_data[b]['fast'].shape[0] > 500 and tf_data[b]['slow'].shape[0] > 500
                for b in ['early', 'late'])
 
 
@@ -115,162 +107,172 @@ def _session_valid_for_motor(lick_data, min_trials=2):
 
 #%% TF coding dimensions
 
-def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
-                          ops=ANALYSIS_OPTIONS,
-                          bm_ops=CODING_DIM_OPS):
-    """
-    extract TF coding directions (fast vs slow) at defined time windows,
-    per block, per animal (pseudo-population).
-    """
-    animal_sessions = get_session_dirs_by_animal(npx_dir)
+def _process_tf_animal(animal, sess_dirs, ops, bm_ops, save_dir):
+    """process a single animal for TF coding dimensions"""
     window_bins = _get_window_bins(bm_ops)
     windows = bm_ops['tf_coding_windows']
     n_perm = bm_ops['n_permutations']
-    all_results = {}
+
+    sess_fast = {'early': [], 'late': []}
+    sess_slow = {'early': [], 'late': []}
+    included_sessions = []
+    n_neurons_per_session = []
+
+    for sess_dir in sess_dirs:
+        data, t_ax = _load_tf_resps_by_block(sess_dir, ops, bm_ops)
+        if not _session_valid_for_tf(data):
+            continue
+        for block in ['early', 'late']:
+            fast = causal_boxcar(data[block]['fast'], window_bins, axis=-1)
+            slow = causal_boxcar(data[block]['slow'], window_bins, axis=-1)
+            sess_fast[block].append(fast)
+            sess_slow[block].append(slow)
+        included_sessions.append(sess_dir.name)
+        n_neurons_per_session.append(data['early']['fast'].shape[1])
+
+    if not sess_fast['early']:
+        print(f'  skipping {animal}: no valid sessions')
+        return animal, None
+
+    n_sessions = len(included_sessions)
+    n_total = sum(n_neurons_per_session)
+    print(f'  {animal}: {n_sessions} sessions, {n_total} neurons')
+
+    # compute coding directions per block and window
+    dimensions = {}
+    for block in ['early', 'late']:
+        dimensions[block] = {}
+        for win in windows:
+            wl = window_label(win)
+            t_mask = time_mask(t_ax, win)
+
+            fast_means = []
+            slow_means = []
+            for s_fast, s_slow in zip(sess_fast[block], sess_slow[block]):
+                fast_means.append(np.nanmean(s_fast[:, :, t_mask], axis=(0, 2)))
+                slow_means.append(np.nanmean(s_slow[:, :, t_mask], axis=(0, 2)))
+
+            fast_pop = np.concatenate(fast_means)
+            slow_pop = np.concatenate(slow_means)
+
+            w = fast_pop - slow_pop
+            norm = np.linalg.norm(w)
+            if norm > 0:
+                w /= norm
+            dimensions[block][wl] = w
+
+    # cross-block projections with separate fast and slow
+    pop_mean = {}
+    for block in ['early', 'late']:
+        fast_resp = [np.nanmean(sf, axis=0) for sf in sess_fast[block]]
+        slow_resp = [np.nanmean(ss, axis=0) for ss in sess_slow[block]]
+        pop_mean[block] = {
+            'fast': np.concatenate(fast_resp, axis=0),
+            'slow': np.concatenate(slow_resp, axis=0),
+        }
+
+    cross_projections = {}
+    for proj_block in ['early', 'late']:
+        cross_projections[proj_block] = {}
+        for dim_block in ['early', 'late']:
+            cross_projections[proj_block][dim_block] = {}
+            for wl, w in dimensions[dim_block].items():
+                cross_projections[proj_block][dim_block][wl] = {
+                    'fast': w @ pop_mean[proj_block]['fast'],
+                    'slow': w @ pop_mean[proj_block]['slow'],
+                }
+
+    # between-block cosine similarity + null
+    between_block = {}
+    for win in windows:
+        wl = window_label(win)
+        if wl not in dimensions['early'] or wl not in dimensions['late']:
+            continue
+        real_cos = cosine_similarity(dimensions['early'][wl],
+                                     dimensions['late'][wl])
+
+        t_mask = time_mask(t_ax, win)
+        null_cos = np.full(n_perm, np.nan)
+
+        # pool events across blocks per session, precompute time average
+        sess_pooled_fast_tavg = []
+        sess_pooled_slow_tavg = []
+        sess_n_early_fast = []
+        sess_n_early_slow = []
+        for sf_e, sf_l, ss_e, ss_l in zip(
+                sess_fast['early'], sess_fast['late'],
+                sess_slow['early'], sess_slow['late']):
+            pooled_f = np.concatenate([sf_e, sf_l], axis=0)
+            pooled_s = np.concatenate([ss_e, ss_l], axis=0)
+            sess_pooled_fast_tavg.append(np.nanmean(pooled_f[:, :, t_mask], axis=2))
+            sess_pooled_slow_tavg.append(np.nanmean(pooled_s[:, :, t_mask], axis=2))
+            sess_n_early_fast.append(sf_e.shape[0])
+            sess_n_early_slow.append(ss_e.shape[0])
+
+        rng = np.random.default_rng(0)
+        for p in range(n_perm):
+            fast_means_a, fast_means_b = [], []
+            slow_means_a, slow_means_b = [], []
+            for pf_tavg, ps_tavg, nef, nes in zip(
+                    sess_pooled_fast_tavg, sess_pooled_slow_tavg,
+                    sess_n_early_fast, sess_n_early_slow):
+                idx_f = rng.permutation(pf_tavg.shape[0])
+                f_shuf = pf_tavg[idx_f]
+                fast_means_a.append(np.nanmean(f_shuf[:nef], axis=0))
+                fast_means_b.append(np.nanmean(f_shuf[nef:], axis=0))
+                idx_s = rng.permutation(ps_tavg.shape[0])
+                s_shuf = ps_tavg[idx_s]
+                slow_means_a.append(np.nanmean(s_shuf[:nes], axis=0))
+                slow_means_b.append(np.nanmean(s_shuf[nes:], axis=0))
+
+            fa = np.concatenate(fast_means_a)
+            sa = np.concatenate(slow_means_a)
+            fb = np.concatenate(fast_means_b)
+            sb = np.concatenate(slow_means_b)
+
+            w_a = fa - sa
+            w_b = fb - sb
+            na, nb = np.linalg.norm(w_a), np.linalg.norm(w_b)
+            if na > 0 and nb > 0:
+                null_cos[p] = cosine_similarity(w_a / na, w_b / nb)
+
+        between_block[wl] = {'real': real_cos, 'null': null_cos}
+
+    result = {
+        'tf_t_ax': t_ax,
+        'dimensions': dimensions,
+        'between_block_cosine': between_block,
+        'cross_projections': cross_projections,
+        'included_sessions': included_sessions,
+        'n_neurons_per_session': n_neurons_per_session,
+    }
+
+    with open(save_dir / f'tf_dimensions_{animal}.pkl', 'wb') as f:
+        pickle.dump(result, f)
+
+    return animal, result
+
+
+def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
+                          ops=ANALYSIS_OPTIONS,
+                          bm_ops=CODING_DIM_OPS,
+                          n_jobs=None):
+    """
+    extract TF coding directions (fast vs slow) at defined time windows,
+    per block, per animal (pseudo-population).
+    n_jobs: number of parallel workers (None = all cores)
+    """
+    animal_sessions = get_session_dirs_by_animal(npx_dir)
     save_dir = Path(npx_dir) / 'coding_dims'
     save_dir.mkdir(exist_ok=True)
 
-    for animal, sess_dirs in animal_sessions.items():
-        print(f'TF coding dimensions: {animal}')
+    args = [(animal, sess_dirs, ops, bm_ops, save_dir)
+            for animal, sess_dirs in animal_sessions.items()]
 
-        sess_fast = {'early': [], 'late': []}
-        sess_slow = {'early': [], 'late': []}
-        included_sessions = []
-        n_neurons_per_session = []
-        tf_t_ax = None
+    with Pool(n_jobs) as pool:
+        results = pool.starmap(_process_tf_animal, args)
 
-        for sess_dir in sess_dirs:
-            data, t_ax = _load_tf_trials_by_block(sess_dir, ops, bm_ops)
-            if tf_t_ax is None:
-                tf_t_ax = t_ax
-            if not _session_valid_for_tf(data):
-                continue
-            for block in ['early', 'late']:
-                fast = causal_boxcar(data[block]['fast'], window_bins, axis=-1)
-                slow = causal_boxcar(data[block]['slow'], window_bins, axis=-1)
-                sess_fast[block].append(fast)
-                sess_slow[block].append(slow)
-            included_sessions.append(sess_dir.name)
-            n_neurons_per_session.append(data['early']['fast'].shape[1])
-
-        if not sess_fast['early']:
-            print(f'  Skipping {animal}: no valid sessions')
-            continue
-
-        n_sessions = len(included_sessions)
-        n_total = sum(n_neurons_per_session)
-        print(f'  {n_sessions} sessions, {n_total} neurons')
-
-        # compute coding directions per block and window
-        dimensions = {}
-        for block in ['early', 'late']:
-            dimensions[block] = {}
-            for win in windows:
-                wl = _window_label(win)
-                t_mask = _time_mask(tf_t_ax, win)
-                if t_mask.sum() == 0:
-                    continue
-
-                fast_means = []
-                slow_means = []
-                for s_fast, s_slow in zip(sess_fast[block], sess_slow[block]):
-                    fast_means.append(np.nanmean(s_fast[:, :, t_mask], axis=(0, 2)))
-                    slow_means.append(np.nanmean(s_slow[:, :, t_mask], axis=(0, 2)))
-
-                fast_pop = np.concatenate(fast_means)
-                slow_pop = np.concatenate(slow_means)
-
-                w = fast_pop - slow_pop
-                norm = np.linalg.norm(w)
-                if norm > 0:
-                    w /= norm
-                dimensions[block][wl] = w
-
-        # cross-block projections with separate fast and slow
-        cross_projections = {}
-        for proj_block in ['early', 'late']:
-            cross_projections[proj_block] = {}
-            for dim_block in ['early', 'late']:
-                cross_projections[proj_block][dim_block] = {}
-                for wl, w in dimensions[dim_block].items():
-                    fast_resp = []
-                    slow_resp = []
-                    for s_fast, s_slow in zip(sess_fast[proj_block],
-                                               sess_slow[proj_block]):
-                        fast_resp.append(np.nanmean(s_fast, axis=0))
-                        slow_resp.append(np.nanmean(s_slow, axis=0))
-                    fast_pop_mean = np.concatenate(fast_resp, axis=0)
-                    slow_pop_mean = np.concatenate(slow_resp, axis=0)
-                    cross_projections[proj_block][dim_block][wl] = {
-                        'fast': w @ fast_pop_mean,
-                        'slow': w @ slow_pop_mean,
-                    }
-
-        # between-block cosine similarity + null
-        between_block = {}
-        for win in windows:
-            wl = _window_label(win)
-            if wl not in dimensions['early'] or wl not in dimensions['late']:
-                continue
-            real_cos = cosine_similarity(dimensions['early'][wl],
-                                         dimensions['late'][wl])
-
-            t_mask = _time_mask(tf_t_ax, win)
-            null_cos = np.full(n_perm, np.nan)
-
-            # pool trials across blocks per session
-            sess_pooled_fast = []
-            sess_pooled_slow = []
-            sess_n_early_fast = []
-            sess_n_early_slow = []
-            for sf_e, sf_l, ss_e, ss_l in zip(
-                    sess_fast['early'], sess_fast['late'],
-                    sess_slow['early'], sess_slow['late']):
-                sess_pooled_fast.append(np.concatenate([sf_e, sf_l], axis=0))
-                sess_pooled_slow.append(np.concatenate([ss_e, ss_l], axis=0))
-                sess_n_early_fast.append(sf_e.shape[0])
-                sess_n_early_slow.append(ss_e.shape[0])
-
-            rng = np.random.default_rng(0)
-            for p in range(n_perm):
-                fast_means_a, fast_means_b = [], []
-                slow_means_a, slow_means_b = [], []
-                for pooled_f, pooled_s, nef, nes in zip(
-                        sess_pooled_fast, sess_pooled_slow,
-                        sess_n_early_fast, sess_n_early_slow):
-                    idx_f = rng.permutation(pooled_f.shape[0])
-                    f_shuf = pooled_f[idx_f]
-                    fast_means_a.append(np.nanmean(f_shuf[:nef, :, :][:, :, t_mask], axis=(0, 2)))
-                    fast_means_b.append(np.nanmean(f_shuf[nef:, :, :][:, :, t_mask], axis=(0, 2)))
-                    idx_s = rng.permutation(pooled_s.shape[0])
-                    s_shuf = pooled_s[idx_s]
-                    slow_means_a.append(np.nanmean(s_shuf[:nes, :, :][:, :, t_mask], axis=(0, 2)))
-                    slow_means_b.append(np.nanmean(s_shuf[nes:, :, :][:, :, t_mask], axis=(0, 2)))
-
-                fa = np.concatenate(fast_means_a)
-                sa = np.concatenate(slow_means_a)
-                fb = np.concatenate(fast_means_b)
-                sb = np.concatenate(slow_means_b)
-
-                w_a = fa - sa
-                w_b = fb - sb
-                na, nb = np.linalg.norm(w_a), np.linalg.norm(w_b)
-                if na > 0 and nb > 0:
-                    null_cos[p] = cosine_similarity(w_a / na, w_b / nb)
-
-            between_block[wl] = {'real': real_cos, 'null': null_cos}
-
-        all_results[animal] = {
-            'tf_t_ax': tf_t_ax,
-            'dimensions': dimensions,
-            'between_block_cosine': between_block,
-            'cross_projections': cross_projections,
-            'included_sessions': included_sessions,
-            'n_neurons_per_session': n_neurons_per_session,
-        }
-
-        del sess_fast, sess_slow
-        gc.collect()
+    all_results = {animal: res for animal, res in results if res is not None}
 
     with open(save_dir / 'tf_dimensions.pkl', 'wb') as f:
         pickle.dump(all_results, f)
@@ -281,169 +283,164 @@ def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
 
 #%% premotor coding dimensions
 
+def _process_motor_animal(animal, sess_dirs, ops, bm_ops, lick_type, save_dir):
+    """process a single animal for motor coding dimensions"""
+    window_bins = _get_window_bins(bm_ops)
+    windows = bm_ops['motor_prelick_windows']
+    bl_win = bm_ops['motor_baseline_window']
+    n_perm = bm_ops['n_permutations']
+
+    sess_lick = {'early': [], 'late': []}
+    included_sessions = []
+    n_neurons_per_session = []
+    lick_t_ax = None
+
+    for sess_dir in sess_dirs:
+        data, t_ax = _load_lick_resps_by_block(sess_dir, lick_type)
+        if t_ax is not None and lick_t_ax is None:
+            lick_t_ax = t_ax
+        if not _session_valid_for_motor(data):
+            continue
+        for block in ['early', 'late']:
+            resp = causal_boxcar(data[block], window_bins, axis=-1)
+            sess_lick[block].append(resp)
+        included_sessions.append(sess_dir.name)
+        n_neurons_per_session.append(data['early'].shape[1])
+
+    if not sess_lick['early'] or lick_t_ax is None:
+        print(f'  skipping {animal}: insufficient lick data')
+        return animal, None
+
+    n_sessions = len(included_sessions)
+    n_total = sum(n_neurons_per_session)
+    print(f'  {animal}: {n_sessions} sessions, {n_total} neurons')
+
+    bl_mask = time_mask(lick_t_ax, bl_win)
+
+    # compute coding directions per block and window
+    dimensions = {}
+    for block in ['early', 'late']:
+        dimensions[block] = {}
+        for win in windows:
+            wl = window_label(win)
+            t_mask = time_mask(lick_t_ax, win)
+            if t_mask.sum() == 0:
+                continue
+
+            win_means = []
+            bl_means = []
+            for s_lick in sess_lick[block]:
+                win_means.append(np.nanmean(s_lick[:, :, t_mask], axis=(0, 2)))
+                bl_means.append(np.nanmean(s_lick[:, :, bl_mask], axis=(0, 2)))
+
+            win_pop = np.concatenate(win_means)
+            bl_pop = np.concatenate(bl_means)
+
+            w = win_pop - bl_pop
+            norm = np.linalg.norm(w)
+            if norm > 0:
+                w /= norm
+            dimensions[block][wl] = w
+
+    # cross-block projections
+    pop_mean = {}
+    for block in ['early', 'late']:
+        pop_mean[block] = np.concatenate(
+            [np.nanmean(r, axis=0) for r in sess_lick[block]], axis=0)
+
+    cross_projections = {}
+    for proj_block in ['early', 'late']:
+        cross_projections[proj_block] = {}
+        for dim_block in ['early', 'late']:
+            cross_projections[proj_block][dim_block] = {}
+            for wl, w in dimensions[dim_block].items():
+                cross_projections[proj_block][dim_block][wl] = (
+                    w @ pop_mean[proj_block])
+
+    # between-block cosine similarity + null
+    between_block = {}
+
+    sess_pooled_lick = []
+    sess_n_early_lick = []
+    for s_early, s_late in zip(sess_lick['early'], sess_lick['late']):
+        sess_pooled_lick.append(np.concatenate([s_early, s_late], axis=0))
+        sess_n_early_lick.append(s_early.shape[0])
+
+    for win in windows:
+        wl = window_label(win)
+        if wl not in dimensions['early'] or wl not in dimensions['late']:
+            continue
+        real_cos = cosine_similarity(dimensions['early'][wl],
+                                     dimensions['late'][wl])
+
+        t_mask = time_mask(lick_t_ax, win)
+        rng = np.random.default_rng(0)
+        null_cos = np.full(n_perm, np.nan)
+
+        # precompute time-averaged vectors
+        pooled_win_tavg = [np.nanmean(p[:, :, t_mask], axis=2)
+                           for p in sess_pooled_lick]
+        pooled_bl_tavg = [np.nanmean(p[:, :, bl_mask], axis=2)
+                          for p in sess_pooled_lick]
+
+        for p in range(n_perm):
+            win_means_a, win_means_b = [], []
+            bl_means_a, bl_means_b = [], []
+            for pw_tavg, pb_tavg, n_e in zip(
+                    pooled_win_tavg, pooled_bl_tavg, sess_n_early_lick):
+                idx = rng.permutation(pw_tavg.shape[0])
+                w_shuf = pw_tavg[idx]
+                b_shuf = pb_tavg[idx]
+                win_means_a.append(np.nanmean(w_shuf[:n_e], axis=0))
+                win_means_b.append(np.nanmean(w_shuf[n_e:], axis=0))
+                bl_means_a.append(np.nanmean(b_shuf[:n_e], axis=0))
+                bl_means_b.append(np.nanmean(b_shuf[n_e:], axis=0))
+
+            wa = np.concatenate(win_means_a) - np.concatenate(bl_means_a)
+            wb = np.concatenate(win_means_b) - np.concatenate(bl_means_b)
+            na, nb = np.linalg.norm(wa), np.linalg.norm(wb)
+            if na > 0 and nb > 0:
+                null_cos[p] = cosine_similarity(wa / na, wb / nb)
+
+        between_block[wl] = {'real': real_cos, 'null': null_cos}
+
+    result = {
+        'lick_t_ax': lick_t_ax,
+        'dimensions': dimensions,
+        'between_block_cosine': between_block,
+        'cross_projections': cross_projections,
+        'included_sessions': included_sessions,
+        'n_neurons_per_session': n_neurons_per_session,
+    }
+
+    with open(save_dir / f'motor_dimensions_{animal}.pkl', 'wb') as f:
+        pickle.dump(result, f)
+
+    return animal, result
+
+
 def extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
                              ops=ANALYSIS_OPTIONS,
                              bm_ops=CODING_DIM_OPS,
-                             lick_type='fa'):
+                             lick_type='fa',
+                             n_jobs=None):
     """
     extract premotor coding directions (pre-lick window vs baseline) at
     defined time windows, per block, per animal (pseudo-population).
-    PCA denoising before coding direction extraction.
     lick_type: 'fa' for false alarms only (motor-only), 'hit', or 'all'
+    n_jobs: number of parallel workers (None = all cores)
     """
     animal_sessions = get_session_dirs_by_animal(npx_dir)
-    window_bins = _get_window_bins(bm_ops)
-    windows = bm_ops['motor_coding_windows']
-    bl_win = bm_ops['motor_baseline_window']
-    n_pcs = bm_ops['motor_denoise_pcs']
-    n_perm = bm_ops['n_permutations']
-    all_results = {}
     save_dir = Path(npx_dir) / 'coding_dims'
     save_dir.mkdir(exist_ok=True)
 
-    for animal, sess_dirs in animal_sessions.items():
-        print(f'Motor coding dimensions: {animal}')
+    args = [(animal, sess_dirs, ops, bm_ops, lick_type, save_dir)
+            for animal, sess_dirs in animal_sessions.items()]
 
-        sess_lick = {'early': [], 'late': []}
-        included_sessions = []
-        n_neurons_per_session = []
-        lick_t_ax = None
+    with Pool(n_jobs) as pool:
+        results = pool.starmap(_process_motor_animal, args)
 
-        for sess_dir in sess_dirs:
-            data, t_ax = _load_lick_trials_by_block(sess_dir, lick_type)
-            if t_ax is not None and lick_t_ax is None:
-                lick_t_ax = t_ax
-            # require both blocks to have sufficient trials
-            if not _session_valid_for_motor(data):
-                continue
-            for block in ['early', 'late']:
-                resp = causal_boxcar(data[block], window_bins, axis=-1)
-                sess_lick[block].append(resp)
-            included_sessions.append(sess_dir.name)
-            n_neurons_per_session.append(data['early'].shape[1])
-
-        if not sess_lick['early'] or lick_t_ax is None:
-            print(f'  Skipping {animal}: insufficient lick data')
-            continue
-
-        n_sessions = len(included_sessions)
-        n_total = sum(n_neurons_per_session)
-        print(f'  {n_sessions} sessions, {n_total} neurons')
-
-        # trial-average per session, concatenate neurons -> (nN_total, nT)
-        lick_mean = {}
-        for block in ['early', 'late']:
-            means = [np.nanmean(r, axis=0) for r in sess_lick[block]]
-            lick_mean[block] = np.concatenate(means, axis=0)
-
-        bl_mask = _time_mask(lick_t_ax, bl_win)
-
-        # PCA denoising: fit on pooled lick trajectories (both blocks)
-        pooled_traj = np.concatenate([lick_mean['early'].T, lick_mean['late'].T], axis=0)
-        pca_mean = np.nanmean(pooled_traj, axis=0)
-        pooled_centred = pooled_traj - pca_mean
-        actual_pcs = min(n_pcs, min(pooled_centred.shape))
-        pca = PCA(n_components=actual_pcs)
-        pca.fit(pooled_centred)
-
-        # extract coding directions per block
-        dimensions = {}
-        dimensions_neuron = {}
-
-        for block in ['early', 'late']:
-            dimensions[block] = {}
-            dimensions_neuron[block] = {}
-            traj = lick_mean[block].T  # (nT, nN)
-            scores = (traj - pca_mean) @ pca.components_.T  # (nT, k)
-
-            bl_scores = scores[bl_mask]
-
-            for win in windows:
-                wl = _window_label(win)
-                t_mask = _time_mask(lick_t_ax, win)
-                if t_mask.sum() == 0:
-                    continue
-                win_scores = scores[t_mask]
-
-                w_pc = coding_direction(win_scores, bl_scores)
-                dimensions[block][wl] = w_pc
-
-                w_neuron = pca.components_.T @ w_pc
-                norm = np.linalg.norm(w_neuron)
-                if norm > 0:
-                    w_neuron = w_neuron / norm
-                dimensions_neuron[block][wl] = w_neuron
-
-        # between-block cosine similarity + null (trial-level block label shuffling)
-        between_block = {}
-
-        # pool per-trial data per session for null
-        sess_pooled_lick = []
-        sess_n_early_lick = []
-        for s_early, s_late in zip(sess_lick['early'], sess_lick['late']):
-            sess_pooled_lick.append(np.concatenate([s_early, s_late], axis=0))
-            sess_n_early_lick.append(s_early.shape[0])
-
-        for win in windows:
-            wl = _window_label(win)
-            if wl not in dimensions_neuron['early'] or wl not in dimensions_neuron['late']:
-                continue
-            real_cos = cosine_similarity(dimensions_neuron['early'][wl],
-                                         dimensions_neuron['late'][wl])
-
-            t_mask = _time_mask(lick_t_ax, win)
-            rng = np.random.default_rng(0)
-            null_cos = np.full(n_perm, np.nan)
-
-            for p in range(n_perm):
-                means_a, means_b = [], []
-                for pooled, n_e in zip(sess_pooled_lick, sess_n_early_lick):
-                    idx = rng.permutation(pooled.shape[0])
-                    shuf = pooled[idx]
-                    means_a.append(np.nanmean(shuf[:n_e], axis=0))   # (nN, nT)
-                    means_b.append(np.nanmean(shuf[n_e:], axis=0))
-
-                pop_a = np.concatenate(means_a, axis=0).T  # (nT, nN_total)
-                pop_b = np.concatenate(means_b, axis=0).T
-
-                sc_a = (pop_a - pca_mean) @ pca.components_.T
-                sc_b = (pop_b - pca_mean) @ pca.components_.T
-
-                w_a_pc = coding_direction(sc_a[t_mask], sc_a[bl_mask])
-                w_b_pc = coding_direction(sc_b[t_mask], sc_b[bl_mask])
-
-                w_a_n = pca.components_.T @ w_a_pc
-                w_b_n = pca.components_.T @ w_b_pc
-                na, nb = np.linalg.norm(w_a_n), np.linalg.norm(w_b_n)
-                if na > 0 and nb > 0:
-                    null_cos[p] = cosine_similarity(w_a_n, w_b_n)
-
-            between_block[wl] = {'real': real_cos, 'null': null_cos}
-
-        # time-resolved projections onto motor dimensions (in neuron space)
-        projections_lick = {}
-        for proj_block in ['early', 'late']:
-            projections_lick[proj_block] = {}
-            for dim_block in ['early', 'late']:
-                projections_lick[proj_block][dim_block] = {}
-                for wl, w in dimensions_neuron[dim_block].items():
-                    projections_lick[proj_block][dim_block][wl] = (
-                        w @ lick_mean[proj_block])
-
-        all_results[animal] = {
-            'lick_t_ax': lick_t_ax,
-            'dimensions_pc': dimensions,
-            'dimensions_neuron': dimensions_neuron,
-            'pca_components': pca.components_,
-            'pca_mean': pca_mean,
-            'between_block_cosine': between_block,
-            'projections_lick': projections_lick,
-            'included_sessions': included_sessions,
-            'n_neurons_per_session': n_neurons_per_session,
-        }
-
-        del sess_lick, lick_mean
-        gc.collect()
+    all_results = {animal: res for animal, res in results if res is not None}
 
     with open(save_dir / 'motor_dimensions.pkl', 'wb') as f:
         pickle.dump(all_results, f)
@@ -487,7 +484,7 @@ def extract_cross_type_analysis(npx_dir=PATHS['npx_dir_local'],
         cross_cosine = {}
         for block in ['early', 'late']:
             tf_dims = tf_r['dimensions'].get(block, {})
-            motor_dims = motor_r['dimensions_neuron'].get(block, {})
+            motor_dims = motor_r['dimensions'].get(block, {})
             cross_cosine[block] = {}
             for tf_wl, tf_w in tf_dims.items():
                 for motor_wl, motor_w in motor_dims.items():
