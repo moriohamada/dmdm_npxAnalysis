@@ -297,6 +297,226 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
     return all_results
 
 
+#%% cross-dimension analysis
+
+def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
+                            bm_ops=CODING_DIM_OPS,
+                            area: str | None = None,
+                            unit_filter: list[str] | None = None,
+                            n_perm: int = 500):
+    """
+    pairwise cosine similarities between block, tf, and motor coding dimensions,
+    with permutation p-values. neurons are matched by unit_ids intersection
+    """
+    save_dir = Path(npx_dir) / 'coding_dims'
+    suffix = _file_suffix(area, unit_filter)
+
+    block_results = load_dimension_results('block', npx_dir, area, unit_filter)
+    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter)
+    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter)
+
+    animals = sorted(set(block_results.keys()) &
+                     set(tf_results.keys()) &
+                     set(motor_results.keys()))
+
+    rng = np.random.default_rng(0)
+    all_results = {}
+
+    for animal in animals:
+        block_r = block_results[animal]
+        tf_r = tf_results[animal]
+        motor_r = motor_results[animal]
+
+        block_ids = block_r.get('unit_ids', [])
+        tf_ids = tf_r.get('unit_ids', [])
+        motor_ids = motor_r.get('unit_ids', [])
+        if not block_ids or not tf_ids or not motor_ids:
+            print(f'  {animal}: missing unit_ids - skipping')
+            continue
+
+        shared = set(block_ids) & set(tf_ids) & set(motor_ids)
+        if len(shared) < 5:
+            print(f'  {animal}: only {len(shared)} shared neurons - skipping')
+            continue
+
+        # build index arrays to reorder each to a common shared neuron ordering
+        shared_order = sorted(shared)
+        block_id_to_idx = {uid: i for i, uid in enumerate(block_ids)}
+        tf_id_to_idx = {uid: i for i, uid in enumerate(tf_ids)}
+        motor_id_to_idx = {uid: i for i, uid in enumerate(motor_ids)}
+        block_idx = np.array([block_id_to_idx[uid] for uid in shared_order])
+        tf_idx = np.array([tf_id_to_idx[uid] for uid in shared_order])
+        motor_idx = np.array([motor_id_to_idx[uid] for uid in shared_order])
+
+        # collect all named dimensions with their vectors (subset to shared neurons)
+        dims = {}
+        for wl, w in block_r['dimensions'].items():
+            dims[f'block_{wl}'] = w[block_idx]
+        for block in ['early', 'late']:
+            for wl, w in tf_r['dimensions'].get(block, {}).items():
+                dims[f'tf_{block}_{wl}'] = w[tf_idx]
+            for wl, w in motor_r['dimensions'].get(block, {}).items():
+                dims[f'motor_{block}_{wl}'] = w[motor_idx]
+
+        dim_names = sorted(dims.keys())
+        n_dims = len(dim_names)
+
+        # pairwise cosine similarity matrix
+        cosine_matrix = np.full((n_dims, n_dims), np.nan)
+        p_matrix = np.full((n_dims, n_dims), np.nan)
+
+        for i in range(n_dims):
+            for j in range(i, n_dims):
+                vi = dims[dim_names[i]]
+                vj = dims[dim_names[j]]
+                real = cosine_similarity(vi, vj)
+                cosine_matrix[i, j] = real
+                cosine_matrix[j, i] = real
+
+                if i == j:
+                    p_matrix[i, j] = 0.0
+                    continue
+
+                # permutation test (two-tailed): shuffle one vector's entries
+                null_cos = np.full(n_perm, np.nan)
+                for p in range(n_perm):
+                    shuffled = rng.permutation(vi)
+                    null_cos[p] = cosine_similarity(shuffled, vj)
+
+                valid_null = null_cos[~np.isnan(null_cos)]
+                if len(valid_null) > 0:
+                    p_val = np.mean(np.abs(valid_null) >= np.abs(real))
+                else:
+                    p_val = np.nan
+                p_matrix[i, j] = p_val
+                p_matrix[j, i] = p_val
+
+        all_results[animal] = dict(
+            cosine_matrix=cosine_matrix,
+            p_matrix=p_matrix,
+            dim_names=dim_names,
+            n_shared=len(shared),
+        )
+        print(f'  {animal}: {n_dims} dimensions, {len(shared)} shared neurons')
+
+    out_path = save_dir / f'cross_dimension_cosines_{suffix}.pkl'
+    with open(out_path, 'wb') as f:
+        pickle.dump(all_results, f)
+    print(f'Saved cross-dimension cosines to {out_path}')
+
+    return all_results
+
+
+def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
+                                bm_ops=CODING_DIM_OPS,
+                                area: str | None = None,
+                                unit_filter: list[str] | None = None):
+    """
+    project event-aligned mean responses onto all block, tf, and motor coding
+    dimensions. neurons matched by unit_ids intersection across all three types
+    """
+    save_dir = Path(npx_dir) / 'coding_dims'
+    suffix = _file_suffix(area, unit_filter)
+
+    block_results = load_dimension_results('block', npx_dir, area, unit_filter)
+    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter)
+    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter)
+
+    animals = sorted(set(block_results.keys()) &
+                     set(tf_results.keys()) &
+                     set(motor_results.keys()))
+
+    all_results = {}
+
+    for animal in animals:
+        block_r = block_results[animal]
+        tf_r = tf_results[animal]
+        motor_r = motor_results[animal]
+
+        block_ids = block_r.get('unit_ids', [])
+        tf_ids = tf_r.get('unit_ids', [])
+        motor_ids = motor_r.get('unit_ids', [])
+        if not block_ids or not tf_ids or not motor_ids:
+            print(f'  {animal}: missing unit_ids - skipping')
+            continue
+
+        shared = set(block_ids) & set(tf_ids) & set(motor_ids)
+        if len(shared) < 5:
+            print(f'  {animal}: only {len(shared)} shared neurons - skipping')
+            continue
+
+        # shared sessions across all three dimension types
+        shared_sessions = sorted(
+            set(block_r['included_sessions']) &
+            set(tf_r['included_sessions']) &
+            set(motor_r['included_sessions'])
+        )
+        if not shared_sessions:
+            print(f'  {animal}: no shared sessions - skipping')
+            continue
+
+        # build index maps for each dimension type
+        shared_order = sorted(shared)
+        block_id_to_idx = {uid: i for i, uid in enumerate(block_ids)}
+        tf_id_to_idx = {uid: i for i, uid in enumerate(tf_ids)}
+        motor_id_to_idx = {uid: i for i, uid in enumerate(motor_ids)}
+        block_idx = np.array([block_id_to_idx[uid] for uid in shared_order])
+        tf_idx = np.array([tf_id_to_idx[uid] for uid in shared_order])
+        motor_idx = np.array([motor_id_to_idx[uid] for uid in shared_order])
+
+        # collect all named dimensions (subset to shared neurons)
+        dims = {}
+        for wl, w in block_r['dimensions'].items():
+            dims[f'block_{wl}'] = w[block_idx]
+        for block in ['early', 'late']:
+            for wl, w in tf_r['dimensions'].get(block, {}).items():
+                dims[f'tf_{block}_{wl}'] = w[tf_idx]
+            for wl, w in motor_r['dimensions'].get(block, {}).items():
+                dims[f'motor_{block}_{wl}'] = w[motor_idx]
+
+        # load mean responses and match to shared neurons
+        mean_resps, t_axes, resp_ids = _load_mean_responses(
+            animal, shared_sessions, npx_dir, area, unit_filter, bm_ops)
+
+        resp_id_to_idx = {uid: i for i, uid in enumerate(resp_ids)}
+        keep = [uid for uid in shared_order if uid in resp_id_to_idx]
+
+        if len(keep) < 5:
+            print(f'  {animal}: only {len(keep)} neurons in responses - skipping')
+            continue
+
+        resp_reorder = np.array([resp_id_to_idx[uid] for uid in keep])
+        # also reorder dimension vectors to match the keep order
+        keep_set = set(keep)
+        keep_in_shared = np.array([i for i, uid in enumerate(shared_order)
+                                   if uid in keep_set])
+
+        # project each response onto each dimension
+        projections = {}
+        for dim_name, w in dims.items():
+            w_sub = w[keep_in_shared]
+            projections[dim_name] = {}
+            for resp_key, resp in mean_resps.items():
+                resp_sub = resp[resp_reorder]
+                projections[dim_name][resp_key] = w_sub @ resp_sub
+
+        all_results[animal] = dict(
+            projections=projections,
+            t_axes=t_axes,
+            dim_names=sorted(dims.keys()),
+            n_shared=len(keep),
+        )
+        print(f'  {animal}: projected {len(mean_resps)} responses onto '
+              f'{len(dims)} dimensions ({len(keep)} neurons)')
+
+    out_path = save_dir / f'cross_dimension_projections_{suffix}.pkl'
+    with open(out_path, 'wb') as f:
+        pickle.dump(all_results, f)
+    print(f'Saved cross-dimension projections to {out_path}')
+
+    return all_results
+
+
 #%% run all combos
 
 def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
