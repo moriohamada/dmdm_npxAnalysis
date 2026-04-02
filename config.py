@@ -271,6 +271,10 @@ CODING_DIM_OPS = dict(
     # premotor coding direction windows (s, relative to lick onset)
     motor_prelick_windows = [(-1.0, -0.6), (-0.5, -0.1), (-0.25, 0.0)],
     motor_baseline_window = (-1.5, -1.0),
+
+    # block coding direction windows (s, relative to baseline onset)
+    # negative = pre-baseline (ITI), positive = post-baseline
+    block_coding_windows = [(-2.0, 0.0), (0.0, 2.0), (2.0, 5.0)],
 )
 
 PLOT_OPTIONS = dict(
