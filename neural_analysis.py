@@ -174,17 +174,19 @@ for area in areas:
         cross_dimension_cosines(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
         cross_dimension_projections(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
 
-#%% coding dimensions: block significance plots
+#%% coding dim plots
+
+# block significance plots
 for area in areas:
     for uf in unit_filters:
         plot_block_significance(area=area, unit_filter=uf)
 
-#%% coding dimensions: projections onto all dimensions
+# projections onto all dimensions
 for area in areas:
     for uf in unit_filters:
         plot_cross_projections(area=area, unit_filter=uf)
 
-#%% coding dimensions: cross-class alignment scatters
+# cross-class alignment scatters
 for area in areas:
     for uf in unit_filters:
         plot_cross_class_alignment(area=area, unit_filter=uf)
