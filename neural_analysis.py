@@ -134,79 +134,62 @@ tc_plot_dir = Path(PATHS['plots_dir']) / 'tuning_curves'
 plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 
-#%% coding dimensions: iterate over areas and unit filters
+#%% coding dimensions extraction
 from config import CODING_DIM_OPS
-from coding_dims.extract import extract_tf_dimensions, extract_motor_dimensions
-from utils.rois import PLOT_CLASS_AREAS
+from coding_dims.extract import (extract_tf_dimensions, extract_motor_dimensions,
+                                 extract_block_dimensions)
+from coding_dims.analysis import (analyse_coding_dimensions, analyse_block_dimensions,
+                                  calculate_tf_motor_alignment,
+                                  cross_dimension_cosines, cross_dimension_projections)
+from coding_dims.plotting import (plot_alignment, plot_block_significance,
+                                 plot_cross_projections, plot_cross_class_alignment)
+from utils.rois import AREA_GROUPS
 
-areas = [None] + list(PLOT_CLASS_AREAS.keys())
+areas = [None] + list(AREA_GROUPS.keys())
 unit_filters = [None, ['tf'], ['tf', 'lick_prep']]
 
 for area in areas:
     for uf in unit_filters:
-        print(f'\n=== TF dimensions: area={area}, filter={uf} ===')
-        extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
-                              ops=ANALYSIS_OPTIONS,
-                              bm_ops=CODING_DIM_OPS,
-                              area=area,
-                              unit_filter=uf,
-                              n_jobs=6)
+        print(f'\n=== extraction: area={area}, filter={uf} ===')
+        extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
+                              bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, n_jobs=6)
+        extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
+                                 bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, n_jobs=6)
+        extract_block_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
+                                 bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, n_jobs=6)
 
-        print(f'\n=== Motor dimensions: area={area}, filter={uf} ===')
-        extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
-                                 ops=ANALYSIS_OPTIONS,
-                                 bm_ops=CODING_DIM_OPS,
-                                 area=area,
-                                 unit_filter=uf,
-                                 n_jobs=6)
-
-#%%
-from coding_dims.analysis import analyse_coding_dimensions
-tf_stats = analyse_coding_dimensions('tf', unit_filter=['tf'])
-motor_stats = analyse_coding_dimensions('motor', unit_filter=['tf'])
-
-#%% coding dim alignment analysis
-
-from coding_dims.analysis import calculate_tf_motor_alignment
-calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
-                             bm_ops=CODING_DIM_OPS,
-                             area=None,
-                             unit_filter=['tf'])
-
-#%% block coding dimensions
-from coding_dims.extract import extract_block_dimensions
-
+#%% coding dimension stats (tf/motor include plots via analyse_coding_dimensions)
 for area in areas:
     for uf in unit_filters:
-        print(f'\n=== Block dimensions: area={area}, filter={uf} ===')
-        extract_block_dimensions(npx_dir=PATHS['npx_dir_local'],
-                                 ops=ANALYSIS_OPTIONS,
-                                 bm_ops=CODING_DIM_OPS,
-                                 area=area,
-                                 unit_filter=uf,
-                                 n_jobs=6)
+        print(f'\n=== stats: area={area}, filter={uf} ===')
+        analyse_coding_dimensions('tf', bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        analyse_coding_dimensions('motor', bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        analyse_block_dimensions(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
 
-#%% block coding dimension analysis
-from coding_dims.analysis import analyse_block_dimensions
-
+#%% coding dimensions alignment
 for area in areas:
     for uf in unit_filters:
-        print(f'\n=== Block analysis: area={area}, filter={uf} ===')
-        analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
-                                 bm_ops=CODING_DIM_OPS,
-                                 area=area,
-                                 unit_filter=uf)
+        print(f'\n=== comparisons: area={area}, filter={uf} ===')
+        calculate_tf_motor_alignment(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        cross_dimension_cosines(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        cross_dimension_projections(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
 
-#%% cross-dimension analysis
-from coding_dims.analysis import cross_dimension_cosines, cross_dimension_projections
-
+#%% coding dimensions: block significance plots
 for area in areas:
     for uf in unit_filters:
-        print(f'\n=== Cross-dimension cosines: area={area}, filter={uf} ===')
-        cross_dimension_cosines(area=area, unit_filter=uf)
+        plot_block_significance(area=area, unit_filter=uf)
 
-        print(f'\n=== Cross-dimension projections: area={area}, filter={uf} ===')
-        cross_dimension_projections(area=area, unit_filter=uf)
+#%% coding dimensions: projections onto all dimensions
+for area in areas:
+    for uf in unit_filters:
+        plot_cross_projections(area=area, unit_filter=uf)
+
+#%% coding dimensions: cross-class alignment scatters
+for area in areas:
+    for uf in unit_filters:
+        plot_cross_class_alignment(area=area, unit_filter=uf)
+        plot_alignment(area=area, unit_filter=uf)
+
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS

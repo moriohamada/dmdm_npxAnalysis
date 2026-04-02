@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pickle
 from pathlib import Path
-
 sns.set_style('whitegrid')
 
 from config import PATHS, PLOT_OPTIONS, CODING_DIM_OPS
@@ -30,7 +29,7 @@ def _load_results(npx_dir, dim_type, area, unit_filter):
 #%% between-block cosine: per-animal figures
 
 def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None):
-    """one subplot per animal per window - cosine sim (with null dist)"""
+    """one subplot per animal per window - cosine sim with null dist"""
     animals = sorted(results.keys())
     if not animals:
         return
@@ -80,8 +79,7 @@ def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None):
 
 def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
     """
-    summary: per-animal real cosines + grand mean against resampled grand-average null
-    distribution
+    summary: per-animal real cosines + grand mean against resampled grand-average null distribution
     """
     from coding_dims.analysis import pooled_null_test
 
@@ -403,3 +401,489 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         figs.append(fig)
 
     return figs
+
+
+#%% block dimension significance plots
+
+def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
+                            area=None, unit_filter=None):
+    """per-animal AUC null distributions + summary for block coding dimensions"""
+    results, suffix = _load_results(npx_dir, 'block', area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    animals = sorted(results.keys())
+    if not animals:
+        return
+
+    sample = results[animals[0]]
+    window_labels = sorted(sample['real_aucs'].keys())
+    n_wins = len(window_labels)
+
+    # per-animal: one subplot per animal per window
+    fig, axes = plt.subplots(len(animals), max(n_wins, 1),
+                             figsize=(5 * max(n_wins, 1), 3 * len(animals)),
+                             squeeze=False)
+
+    for ai, animal in enumerate(animals):
+        for wi, wl in enumerate(window_labels):
+            ax = axes[ai, wi]
+            real_auc = results[animal]['real_aucs'].get(wl)
+            null = results[animal]['null_aucs'].get(wl)
+            if real_auc is None or null is None:
+                ax.set_visible(False)
+                continue
+
+            valid_null = null[~np.isnan(null)]
+            p = np.mean(valid_null >= real_auc) if len(valid_null) > 0 else np.nan
+
+            ax.hist(valid_null, bins=30, density=True, color='grey', alpha=0.5)
+            ax.axvline(real_auc, color='black', linewidth=2)
+            ax.set_title(f'{animal}  (AUC={real_auc:.3f}, p={p:.3f})', fontsize=8)
+            if ai == len(animals) - 1:
+                ax.set_xlabel('AUC')
+            if wi == 0:
+                ax.set_ylabel('Density')
+            if ai == 0:
+                ax.set_title(f'{wl}\n{animal}  (AUC={real_auc:.3f}, p={p:.3f})', fontsize=8)
+
+    fig.suptitle(f'Block coding dim held-out AUC [{suffix}]', fontsize=11)
+    plt.tight_layout()
+    fig.savefig(save_dir / f'block_auc_per_animal_{suffix}.png',
+                dpi=300, bbox_inches='tight')
+
+    # summary: individual animal AUCs + across-animals null
+    from coding_dims.analysis import analyse_block_dimensions
+    block_stats = analyse_block_dimensions(npx_dir=npx_dir, area=area, unit_filter=unit_filter)
+
+    fig_s, axes_s = plt.subplots(1, max(n_wins, 1),
+                                 figsize=(6 * max(n_wins, 1), 4),
+                                 squeeze=False)
+
+    for wi, wl in enumerate(window_labels):
+        ax = axes_s[0, wi]
+        aa = block_stats['across_animals'].get(wl)
+        po = block_stats['pooled'].get(wl)
+        if aa is None:
+            ax.set_visible(False)
+            continue
+
+        # across-animals null distribution
+        valid_null = aa['null_means'][~np.isnan(aa['null_means'])]
+        ax.hist(valid_null, bins=40, density=True, color='grey', alpha=0.4,
+                label='Null (resampled)')
+
+        # individual animal AUCs
+        pa = block_stats['per_animal'].get(wl, {})
+        animal_aucs = pa.get('aucs', [])
+        for auc_val in animal_aucs:
+            ax.axvline(auc_val, color='black', linewidth=0.8, alpha=0.4)
+
+        # grand mean
+        grand_mean = aa['observed_mean']
+        ax.axvline(grand_mean, color='red', linewidth=2.5,
+                   label=f'Grand mean = {grand_mean:.3f}')
+
+        title = f'{wl}  (across p={aa["p_value"]:.4f}'
+        if po is not None:
+            title += f', pooled p={po["p_value"]:.4f}'
+        title += f', n={aa["n_animals"]})'
+        ax.set_title(title)
+        ax.set_xlabel('AUC')
+        ax.set_ylabel('Density')
+        ax.legend(fontsize=7)
+
+    fig_s.suptitle(f'Block coding dim summary [{suffix}]', fontsize=11)
+    plt.tight_layout()
+    fig_s.savefig(save_dir / f'block_auc_summary_{suffix}.png',
+                  dpi=300, bbox_inches='tight')
+
+    return fig, fig_s
+
+
+#%% projections of all event types onto all dimensions
+
+def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
+                           area=None, unit_filter=None):
+    """
+    project baseline, TF, and lick responses onto every coding dimension.
+    one figure per dimension class (block, tf, motor), columns = windows,
+    rows = event types. individual animals as thin lines, mean as thick
+    """
+    suffix = _file_suffix(area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{suffix}.pkl'
+    with open(proj_path, 'rb') as f:
+        proj_results = pickle.load(f)
+
+    animals = sorted(proj_results.keys())
+    if not animals:
+        return
+
+    sample = proj_results[animals[0]]
+    t_axes = sample['t_axes']
+
+    # group dimensions by class
+    dim_classes = {'block': [], 'tf': [], 'motor': []}
+    for dn in sample['dim_names']:
+        if dn.startswith('block_'):
+            dim_classes['block'].append(dn)
+        elif dn.startswith('tf_'):
+            dim_classes['tf'].append(dn)
+        elif dn.startswith('motor_'):
+            dim_classes['motor'].append(dn)
+
+    # each row is an event type with its conditions
+    event_rows = [
+        ('baseline', 'blOn', [
+            ('early block', 'blOn/early', EARLY_COL, '-'),
+            ('late block', 'blOn/late', LATE_COL, '-'),
+        ]),
+        ('TF pulse', 'tf', [
+            ('early block fast', 'tf/earlyBlock_early_pos', EARLY_COL, '-'),
+            ('early block slow', 'tf/earlyBlock_early_neg', EARLY_COL, '--'),
+            ('late block fast', 'tf/lateBlock_early_pos', LATE_COL, '-'),
+            ('late block slow', 'tf/lateBlock_early_neg', LATE_COL, '--'),
+        ]),
+        ('lick (FA)', 'lick', [
+            ('early block', 'lick/earlyBlock_early_fa', EARLY_COL, '-'),
+            ('late block', 'lick/lateBlock_early_fa', LATE_COL, '-'),
+        ]),
+        ('lick (hit)', 'lick', [
+            ('early block', 'lick/earlyBlock_early_hit', EARLY_COL, '-'),
+            ('late block', 'lick/lateBlock_early_hit', LATE_COL, '-'),
+        ]),
+    ]
+
+    figs = []
+    for dim_class, dim_names in dim_classes.items():
+        if not dim_names:
+            continue
+
+        n_cols = len(dim_names)
+        n_rows = len(event_rows)
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                 figsize=(5 * n_cols, 3.5 * n_rows),
+                                 squeeze=False)
+
+        for ci, dim_name in enumerate(sorted(dim_names)):
+            for ri, (row_label, event_type, conditions) in enumerate(event_rows):
+                ax = axes[ri, ci]
+                t_ax = t_axes.get(event_type)
+                if t_ax is None:
+                    ax.set_visible(False)
+                    continue
+
+                for label, resp_key, colour, ls in conditions:
+                    traces = []
+                    for animal in animals:
+                        proj = proj_results[animal]['projections']
+                        trace = proj.get(dim_name, {}).get(resp_key)
+                        if trace is not None:
+                            ax.plot(t_ax, trace, color=colour, alpha=0.15,
+                                    linewidth=0.5, linestyle=ls)
+                            traces.append(trace)
+                    if traces:
+                        mean_trace = np.nanmean(traces, axis=0)
+                        ax.plot(t_ax, mean_trace, color=colour, linewidth=2,
+                                linestyle=ls, label=label)
+
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                if ri == n_rows - 1:
+                    ax.set_xlabel('Time (s)')
+                if ci == 0:
+                    ax.set_ylabel(f'{row_label}\nprojection (a.u.)')
+                if ri == 0:
+                    ax.set_title(dim_name, fontsize=9)
+                ax.legend(fontsize=6, loc='upper right')
+
+        fig.suptitle(f'{dim_class} dimensions — all projections [{suffix}]', fontsize=11)
+        plt.tight_layout()
+        fig.savefig(save_dir / f'projections_{dim_class}_{suffix}.png',
+                    dpi=300, bbox_inches='tight')
+        figs.append(fig)
+
+    return figs
+
+
+#%% cross-class alignment scatters
+
+def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
+                               bm_ops=CODING_DIM_OPS,
+                               area=None, unit_filter=None):
+    """
+    scatter plots of cross-class dimension alignment: early-block cosine vs
+    late-block cosine for each pair of dimensions from different classes.
+    one figure per dimension pair, with null cloud from neuron-shuffled cosines
+    """
+    from utils.stats import cosine_similarity
+
+    suffix = _file_suffix(area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims' / 'alignment'
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    cos_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_cosines_{suffix}.pkl'
+    with open(cos_path, 'rb') as f:
+        cos_results = pickle.load(f)
+
+    # load cross-dimension projections for projection panels
+    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{suffix}.pkl'
+    with open(proj_path, 'rb') as f:
+        proj_results = pickle.load(f)
+
+    # load raw dimensions for null cloud
+    block_results = _load_results(npx_dir, 'block', area, unit_filter)[0]
+    tf_results = _load_results(npx_dir, 'tf', area, unit_filter)[0]
+    motor_results = _load_results(npx_dir, 'motor', area, unit_filter)[0]
+
+    animals = sorted(cos_results.keys())
+    if not animals:
+        return
+
+    sample = cos_results[animals[0]]
+    dim_names = sample['dim_names']
+
+    # classify dimensions
+    block_dims = sorted(d for d in dim_names if d.startswith('block_'))
+    tf_windows = sorted(set(d.replace('tf_early_', '').replace('tf_late_', '')
+                            for d in dim_names if d.startswith('tf_')))
+    motor_windows = sorted(set(d.replace('motor_early_', '').replace('motor_late_', '')
+                               for d in dim_names if d.startswith('motor_')))
+    block_windows = sorted(set(d.replace('block_', '') for d in block_dims))
+
+    rng = np.random.default_rng(0)
+    n_null = 500
+    figs = []
+
+    # tf x block: scatter + TF pulse projections onto block dimension
+    proj_animals = sorted(proj_results.keys())
+    sample_proj = proj_results[proj_animals[0]] if proj_animals else None
+    t_axes = sample_proj['t_axes'] if sample_proj else {}
+
+    for tf_wl in tf_windows:
+        for b_wl in block_windows:
+            tf_e = f'tf_early_{tf_wl}'
+            tf_l = f'tf_late_{tf_wl}'
+            b_d = f'block_{b_wl}'
+            if tf_e not in dim_names or tf_l not in dim_names or b_d not in dim_names:
+                continue
+
+            early_vals, late_vals = [], []
+            null_early, null_late = [], []
+
+            for animal in animals:
+                dn = cos_results[animal]['dim_names']
+                cm = cos_results[animal]['cosine_matrix']
+                if tf_e not in dn or tf_l not in dn or b_d not in dn:
+                    continue
+                i_te, i_tl, i_b = dn.index(tf_e), dn.index(tf_l), dn.index(b_d)
+                early_vals.append(cm[i_te, i_b])
+                late_vals.append(cm[i_tl, i_b])
+
+                tf_r = tf_results.get(animal, {})
+                block_r = block_results.get(animal, {})
+                tf_e_vec = tf_r.get('dimensions', {}).get('early', {}).get(tf_wl)
+                tf_l_vec = tf_r.get('dimensions', {}).get('late', {}).get(tf_wl)
+                block_vec = block_r.get('dimensions', {}).get(b_wl)
+                if tf_e_vec is not None and tf_l_vec is not None and block_vec is not None:
+                    n = min(len(tf_e_vec), len(block_vec))
+                    for _ in range(n_null):
+                        shuf = rng.permutation(n)
+                        null_early.append(cosine_similarity(tf_e_vec[:n][shuf], block_vec[:n]))
+                        null_late.append(cosine_similarity(tf_l_vec[:n][shuf], block_vec[:n]))
+
+            if len(early_vals) < 2:
+                continue
+
+            # 3 panels: scatter, early block TF onto block dim, late block TF onto block dim
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+            _alignment_scatter_ax(axes[0],
+                np.array(early_vals), np.array(late_vals),
+                null_early, null_late,
+                f'Early block: cos(TF {tf_wl}, block {b_wl})',
+                f'Late block: cos(TF {tf_wl}, block {b_wl})')
+
+            tf_t_ax = t_axes.get('tf')
+            for pi, (block, block_col) in enumerate([('early', EARLY_COL),
+                                                      ('late', LATE_COL)]):
+                ax = axes[1 + pi]
+                block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
+                for polarity, ls, label in [('pos', '-', 'fast'), ('neg', '--', 'slow')]:
+                    resp_key = f'tf/{block_prefix}_early_{polarity}'
+                    traces = []
+                    for animal in proj_animals:
+                        trace = proj_results[animal]['projections'].get(b_d, {}).get(resp_key)
+                        if trace is not None and tf_t_ax is not None:
+                            ax.plot(tf_t_ax, trace, color=block_col, alpha=0.15,
+                                    linewidth=0.5, linestyle=ls)
+                            traces.append(trace)
+                    if traces and tf_t_ax is not None:
+                        ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                                linewidth=2, linestyle=ls, label=label)
+
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.set_xlabel('Time from TF pulse (s)')
+                ax.set_ylabel('Projection onto block dim (a.u.)')
+                ax.set_title(f'{block} block TF onto block {b_wl}')
+                ax.legend(fontsize=7)
+
+            fig.suptitle(f'TF {tf_wl} x block {b_wl} [{suffix}]', fontsize=11)
+            plt.tight_layout()
+            fig.savefig(save_dir / f'align_tf{tf_wl}_block{b_wl}_{suffix}.png',
+                        dpi=300, bbox_inches='tight')
+            figs.append(fig)
+
+    # motor x block: scatter + lick projections onto block dimension
+    for m_wl in motor_windows:
+        for b_wl in block_windows:
+            m_e = f'motor_early_{m_wl}'
+            m_l = f'motor_late_{m_wl}'
+            b_d = f'block_{b_wl}'
+            if m_e not in dim_names or m_l not in dim_names or b_d not in dim_names:
+                continue
+
+            early_vals, late_vals = [], []
+            null_early, null_late = [], []
+
+            for animal in animals:
+                dn = cos_results[animal]['dim_names']
+                cm = cos_results[animal]['cosine_matrix']
+                if m_e not in dn or m_l not in dn or b_d not in dn:
+                    continue
+                i_me, i_ml, i_b = dn.index(m_e), dn.index(m_l), dn.index(b_d)
+                early_vals.append(cm[i_me, i_b])
+                late_vals.append(cm[i_ml, i_b])
+
+                motor_r = motor_results.get(animal, {})
+                block_r = block_results.get(animal, {})
+                m_e_vec = motor_r.get('dimensions', {}).get('early', {}).get(m_wl)
+                m_l_vec = motor_r.get('dimensions', {}).get('late', {}).get(m_wl)
+                block_vec = block_r.get('dimensions', {}).get(b_wl)
+                if m_e_vec is not None and m_l_vec is not None and block_vec is not None:
+                    n = min(len(m_e_vec), len(block_vec))
+                    for _ in range(n_null):
+                        shuf = rng.permutation(n)
+                        null_early.append(cosine_similarity(m_e_vec[:n][shuf], block_vec[:n]))
+                        null_late.append(cosine_similarity(m_l_vec[:n][shuf], block_vec[:n]))
+
+            if len(early_vals) < 2:
+                continue
+
+            # 3 panels: scatter, early block licks onto block dim, late block licks onto block dim
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+            _alignment_scatter_ax(axes[0],
+                np.array(early_vals), np.array(late_vals),
+                null_early, null_late,
+                f'Early block: cos(motor {m_wl}, block {b_wl})',
+                f'Late block: cos(motor {m_wl}, block {b_wl})')
+
+            lick_t_ax = t_axes.get('lick')
+            for pi, (block, block_col) in enumerate([('early', EARLY_COL),
+                                                      ('late', LATE_COL)]):
+                ax = axes[1 + pi]
+                block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
+                for lick_type, ls, label in [('fa', '-', 'FA'), ('hit', '--', 'hit')]:
+                    resp_key = f'lick/{block_prefix}_early_{lick_type}'
+                    traces = []
+                    for animal in proj_animals:
+                        trace = proj_results[animal]['projections'].get(b_d, {}).get(resp_key)
+                        if trace is not None and lick_t_ax is not None:
+                            ax.plot(lick_t_ax, trace, color=block_col, alpha=0.15,
+                                    linewidth=0.5, linestyle=ls)
+                            traces.append(trace)
+                    if traces and lick_t_ax is not None:
+                        ax.plot(lick_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                                linewidth=2, linestyle=ls, label=label)
+
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.set_xlabel('Time from lick (s)')
+                ax.set_ylabel('Projection onto block dim (a.u.)')
+                ax.set_title(f'{block} block licks onto block {b_wl}')
+                ax.legend(fontsize=7)
+
+            fig.suptitle(f'Motor {m_wl} x block {b_wl} [{suffix}]', fontsize=11)
+            plt.tight_layout()
+            fig.savefig(save_dir / f'align_motor{m_wl}_block{b_wl}_{suffix}.png',
+                        dpi=300, bbox_inches='tight')
+            figs.append(fig)
+
+    # tf x motor: both have early/late block versions
+    for tf_wl in tf_windows:
+        for m_wl in motor_windows:
+            early_vals, late_vals = [], []
+            null_early, null_late = [], []
+
+            for animal in animals:
+                dn = cos_results[animal]['dim_names']
+                cm = cos_results[animal]['cosine_matrix']
+                for block, vals_list in [('early', early_vals), ('late', late_vals)]:
+                    tf_d = f'tf_{block}_{tf_wl}'
+                    m_d = f'motor_{block}_{m_wl}'
+                    if tf_d not in dn or m_d not in dn:
+                        continue
+                    vals_list.append(cm[dn.index(tf_d), dn.index(m_d)])
+
+                tf_r = tf_results.get(animal, {})
+                motor_r = motor_results.get(animal, {})
+                for block, null_list in [('early', null_early), ('late', null_late)]:
+                    tf_vec = tf_r.get('dimensions', {}).get(block, {}).get(tf_wl)
+                    m_vec = motor_r.get('dimensions', {}).get(block, {}).get(m_wl)
+                    if tf_vec is not None and m_vec is not None:
+                        n = min(len(tf_vec), len(m_vec))
+                        for _ in range(n_null):
+                            shuf = rng.permutation(n)
+                            null_list.append(cosine_similarity(tf_vec[:n][shuf], m_vec[:n]))
+
+            if len(early_vals) < 2:
+                continue
+
+            fig, ax = plt.subplots(figsize=(6, 6))
+            _alignment_scatter_ax(ax,
+                np.array(early_vals), np.array(late_vals),
+                null_early, null_late,
+                f'Early block: cos(TF {tf_wl}, motor {m_wl})',
+                f'Late block: cos(TF {tf_wl}, motor {m_wl})')
+            fig.suptitle(f'TF {tf_wl} x motor {m_wl} [{suffix}]', fontsize=11)
+            plt.tight_layout()
+            fig.savefig(save_dir / f'align_tf{tf_wl}_motor{m_wl}_{suffix}.png',
+                        dpi=300, bbox_inches='tight')
+            figs.append(fig)
+
+    return figs
+
+
+def _alignment_scatter_ax(ax, early_vals, late_vals, null_early, null_late,
+                          xlabel, ylabel):
+    """draw alignment scatter onto an existing axes"""
+    # null cloud
+    if null_early and null_late:
+        n_pts = min(len(null_early), len(null_late))
+        ax.scatter(null_early[:n_pts], null_late[:n_pts], color='grey',
+                   alpha=0.03, s=10, zorder=1, rasterized=True)
+
+    # data
+    ax.scatter(early_vals, late_vals, color='black', s=40, zorder=5)
+
+    # grand mean + CI
+    mean_e = np.nanmean(early_vals)
+    mean_l = np.nanmean(late_vals)
+    ci_e = 1.96 * np.nanstd(early_vals) / np.sqrt(len(early_vals))
+    ci_l = 1.96 * np.nanstd(late_vals) / np.sqrt(len(late_vals))
+    ax.errorbar(mean_e, mean_l, xerr=ci_e, yerr=ci_l,
+                color='red', marker='o', markersize=10, linewidth=2, zorder=10)
+
+    # diagonal
+    lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
+            max(ax.get_xlim()[1], ax.get_ylim()[1])]
+    ax.plot(lims, lims, 'k--', linewidth=0.5, alpha=0.3)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_aspect('equal')

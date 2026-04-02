@@ -334,8 +334,7 @@ def analyse_block_dimensions(npx_dir: str = PATHS['npx_dir_local'],
                              area: str | None = None,
                              unit_filter: list[str] | None = None) -> dict:
     """
-    block coding dimension significance tests: per-animal AUC ROC, across-animals mean AUC, and pooled
-    pseudo-population AUC
+    block cd significance tests: per-animal AUC ROC, across-animals mean AUC, pooled pseudo-population AUC
     """
     from utils.shuffle import circular_shift_labels
     from utils.stats import roc_auc
