@@ -5,7 +5,8 @@ import pickle
 from pathlib import Path
 
 from config import PATHS, CODING_DIM_OPS
-from coding_dims.extract import _file_suffix, cosine_similarity
+from coding_dims.extract import _file_suffix
+from utils.stats import cosine_similarity
 from data.session import Session
 from utils.time import window_label
 

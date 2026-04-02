@@ -299,7 +299,7 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         late_vals = np.array(late_vals)
 
         # null: shuffle neuron identity in TF dim, recompute alignment with motor dim
-        from coding_dims.extract import cosine_similarity
+        from utils.stats import cosine_similarity
         rng = np.random.default_rng(0)
         n_null = 500
         null_early_pts, null_late_pts = [], []

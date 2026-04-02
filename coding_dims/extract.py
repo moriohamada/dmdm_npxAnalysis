@@ -15,16 +15,10 @@ from utils.smoothing import causal_boxcar
 from utils.time import window_label, time_mask
 from utils.rois import AREA_GROUPS, in_group
 from utils.shuffle import circular_shift_labels
-from utils.stats import roc_auc
+from utils.stats import roc_auc, cosine_similarity
 
 
 #%% shared utilities
-
-def cosine_similarity(a, b):
-    na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    if na == 0 or nb == 0:
-        return np.nan
-    return np.clip(np.dot(a, b) / (na * nb), -1, 1)
 
 def _get_window_bins(bm_ops):
     dt = ANALYSIS_OPTIONS['pop_bin_width']
