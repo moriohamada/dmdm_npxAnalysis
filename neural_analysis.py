@@ -165,7 +165,9 @@ motor_stats = analyse_coding_dimensions('motor', unit_filter=['tf'])
 
 from coding_dims.analysis import calculate_tf_motor_alignment
 calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
-                             bm_ops=CODING_DIM_OPS)
+                             bm_ops=CODING_DIM_OPS,
+                             area=None,
+                             unit_filter=['tf'])
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS

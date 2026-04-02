@@ -311,9 +311,9 @@ def _process_tf_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, save_d
 def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
                           ops=ANALYSIS_OPTIONS,
                           bm_ops=CODING_DIM_OPS,
-                          area=None,
-                          unit_filter=None,
-                          n_jobs=None):
+                          area: str | None = None,
+                          unit_filter: list[str] | None = None,
+                          n_jobs: int | None =None):
     """
     extract TF coding directions (fast vs slow) at defined time windows,
     per block, per animal (pseudo-population).
@@ -508,8 +508,8 @@ def extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
                              ops=ANALYSIS_OPTIONS,
                              bm_ops=CODING_DIM_OPS,
                              lick_type='fa',
-                             area=None,
-                             unit_filter=None,
+                             area: str | None = None,
+                             unit_filter: list[str] | None = None,
                              n_jobs=None):
     """
     extract premotor coding directions (pre-lick window vs baseline) at

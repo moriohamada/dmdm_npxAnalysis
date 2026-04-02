@@ -185,8 +185,9 @@ NETWORK_OPTIONS = dict(
 HYBRID_OPTIONS = dict(
     interactions = [
         ('tf', 'block'),
-        ('tf', 'time_ramp'),
-        ('tf', 'block', 'time_ramp'),
+        ('block', 'time_in_trial'),
+        ('tf', 'time_in_trial'),
+        ('tf', 'block', 'time_in_trial'),
     ],
     units_per_group = 2,
 
@@ -265,7 +266,7 @@ CODING_DIM_OPS = dict(
     trial_split_time  = 5,              # s; only use TF pulses before this time
 
     # TF coding direction windows (s, relative to pulse onset)
-    tf_coding_windows = [(0.1, 0.3), (0.3, 0.5)],
+    tf_coding_windows = [(0.1, 0.25), (0.25, 0.4), (0.4, .6) ],
 
     # premotor coding direction windows (s, relative to lick onset)
     motor_prelick_windows = [(-1.0, -0.6), (-0.5, -0.1), (-0.25, 0.0)],

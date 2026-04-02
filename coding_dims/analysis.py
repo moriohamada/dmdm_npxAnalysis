@@ -197,7 +197,8 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
 
 def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
                                  bm_ops=CODING_DIM_OPS,
-                                 area=None, unit_filter=None):
+                                 area: None | str = None,
+                                 unit_filter: None | list[str] = None):
     """
     compare TF and motor coding directions: cosine similarity between all pairs per
     block. also computes TF response projections onto motor dimensions for plotting.
