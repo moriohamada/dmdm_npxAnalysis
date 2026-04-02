@@ -105,6 +105,190 @@ def pooled_null_test(results, n_perm=10000):
     return out
 
 
+def pooled_pseudopop_cosine_test(results, dim_type, n_perm=500):
+    """
+    pooled pseudo-population between-block cosine test. concatenates per-session
+    intermediate data across all animals, computes directions on the full
+    population, and tests between-block cosine with within-session shuffle null.
+    dim_type: 'tf' or 'motor'
+    """
+    # collect per-session intermediate data across all animals
+    if dim_type == 'tf':
+        all_sess_tavg = {}  # {wl: {block: {polarity: [(nEv, nN_sess), ...]}}}
+        all_sess_n = {}     # {block: {polarity: [int, ...]}}
+
+        for animal, res in sorted(results.items()):
+            tavg = res.get('sess_tavg')
+            sn = res.get('sess_n')
+            if tavg is None or sn is None:
+                continue
+            for wl in tavg:
+                if wl not in all_sess_tavg:
+                    all_sess_tavg[wl] = {b: {p: [] for p in ['fast', 'slow']}
+                                          for b in ['early', 'late']}
+                for block in ['early', 'late']:
+                    for polarity in ['fast', 'slow']:
+                        all_sess_tavg[wl][block][polarity].extend(
+                            tavg[wl][block][polarity])
+            # extend sess_n once per animal, outside the window loop
+            if not all_sess_n:
+                all_sess_n = {b: {p: [] for p in ['fast', 'slow']}
+                              for b in ['early', 'late']}
+            for block in ['early', 'late']:
+                for polarity in ['fast', 'slow']:
+                    all_sess_n[block][polarity].extend(
+                        sn[block][polarity])
+
+        rng = np.random.default_rng(0)
+        out = {}
+        for wl in sorted(all_sess_tavg.keys()):
+            # compute real directions on pooled population
+            early_fast = [np.nanmean(s, axis=0) for s in all_sess_tavg[wl]['early']['fast']]
+            early_slow = [np.nanmean(s, axis=0) for s in all_sess_tavg[wl]['early']['slow']]
+            late_fast = [np.nanmean(s, axis=0) for s in all_sess_tavg[wl]['late']['fast']]
+            late_slow = [np.nanmean(s, axis=0) for s in all_sess_tavg[wl]['late']['slow']]
+
+            if not early_fast or not late_fast:
+                continue
+
+            w_early = np.concatenate(early_fast) - np.concatenate(early_slow)
+            w_late = np.concatenate(late_fast) - np.concatenate(late_slow)
+            ne, nl = np.linalg.norm(w_early), np.linalg.norm(w_late)
+            if ne == 0 or nl == 0:
+                continue
+            real_cos = cosine_similarity(w_early / ne, w_late / nl)
+
+            # null: shuffle block labels within session
+            n_sess = len(all_sess_tavg[wl]['early']['fast'])
+            sess_pooled_fast = []
+            sess_pooled_slow = []
+            n_early_fast = []
+            n_early_slow = []
+            for s in range(n_sess):
+                sess_pooled_fast.append(np.concatenate(
+                    [all_sess_tavg[wl]['early']['fast'][s],
+                     all_sess_tavg[wl]['late']['fast'][s]], axis=0))
+                sess_pooled_slow.append(np.concatenate(
+                    [all_sess_tavg[wl]['early']['slow'][s],
+                     all_sess_tavg[wl]['late']['slow'][s]], axis=0))
+                n_early_fast.append(all_sess_n['early']['fast'][s])
+                n_early_slow.append(all_sess_n['early']['slow'][s])
+
+            null_cos = np.full(n_perm, np.nan)
+            for p in range(n_perm):
+                fa, fb, sa, sb = [], [], [], []
+                for pf, ps, nef, nes in zip(
+                        sess_pooled_fast, sess_pooled_slow,
+                        n_early_fast, n_early_slow):
+                    idx_f = rng.permutation(pf.shape[0])
+                    f_shuf = pf[idx_f]
+                    fa.append(np.nanmean(f_shuf[:nef], axis=0))
+                    fb.append(np.nanmean(f_shuf[nef:], axis=0))
+                    idx_s = rng.permutation(ps.shape[0])
+                    s_shuf = ps[idx_s]
+                    sa.append(np.nanmean(s_shuf[:nes], axis=0))
+                    sb.append(np.nanmean(s_shuf[nes:], axis=0))
+
+                wa = np.concatenate(fa) - np.concatenate(sa)
+                wb = np.concatenate(fb) - np.concatenate(sb)
+                na, nb = np.linalg.norm(wa), np.linalg.norm(wb)
+                if na > 0 and nb > 0:
+                    null_cos[p] = cosine_similarity(wa / na, wb / nb)
+
+            valid = null_cos[~np.isnan(null_cos)]
+            p_value = np.mean(valid <= real_cos) if len(valid) > 0 else np.nan
+
+            out[wl] = dict(
+                real_cosine=real_cos,
+                null_cosines=null_cos,
+                p_value=p_value,
+                n_sessions=n_sess,
+            )
+        return out
+
+    elif dim_type == 'motor':
+        all_sess_win = {}   # {wl: {block: [(nEv, nN_sess), ...]}}
+        all_sess_bl = {}    # {block: [(nEv, nN_sess), ...]}
+        all_sess_n = {}     # {block: [int, ...]}
+
+        for animal, res in sorted(results.items()):
+            tw = res.get('sess_tavg_win')
+            tb = res.get('sess_tavg_bl')
+            sn = res.get('sess_n')
+            if tw is None or tb is None or sn is None:
+                continue
+            for wl in tw:
+                if wl not in all_sess_win:
+                    all_sess_win[wl] = {b: [] for b in ['early', 'late']}
+                for block in ['early', 'late']:
+                    all_sess_win[wl][block].extend(tw[wl][block])
+            for block in ['early', 'late']:
+                all_sess_bl.setdefault(block, []).extend(tb[block])
+                all_sess_n.setdefault(block, []).extend(sn[block])
+
+        rng = np.random.default_rng(0)
+        out = {}
+        for wl in sorted(all_sess_win.keys()):
+            # real directions
+            early_win = [np.nanmean(s, axis=0) for s in all_sess_win[wl]['early']]
+            early_bl = [np.nanmean(s, axis=0) for s in all_sess_bl['early']]
+            late_win = [np.nanmean(s, axis=0) for s in all_sess_win[wl]['late']]
+            late_bl = [np.nanmean(s, axis=0) for s in all_sess_bl['late']]
+
+            if not early_win or not late_win:
+                continue
+
+            w_early = np.concatenate(early_win) - np.concatenate(early_bl)
+            w_late = np.concatenate(late_win) - np.concatenate(late_bl)
+            ne, nl = np.linalg.norm(w_early), np.linalg.norm(w_late)
+            if ne == 0 or nl == 0:
+                continue
+            real_cos = cosine_similarity(w_early / ne, w_late / nl)
+
+            # null: shuffle block labels within session
+            n_sess = len(all_sess_win[wl]['early'])
+            sess_pooled_win = []
+            sess_pooled_bl = []
+            n_early = []
+            for s in range(n_sess):
+                sess_pooled_win.append(np.concatenate(
+                    [all_sess_win[wl]['early'][s],
+                     all_sess_win[wl]['late'][s]], axis=0))
+                sess_pooled_bl.append(np.concatenate(
+                    [all_sess_bl['early'][s],
+                     all_sess_bl['late'][s]], axis=0))
+                n_early.append(all_sess_n['early'][s])
+
+            null_cos = np.full(n_perm, np.nan)
+            for p in range(n_perm):
+                wa_w, wb_w, wa_b, wb_b = [], [], [], []
+                for pw, pb, n_e in zip(sess_pooled_win, sess_pooled_bl, n_early):
+                    idx = rng.permutation(pw.shape[0])
+                    w_shuf = pw[idx]
+                    b_shuf = pb[idx]
+                    wa_w.append(np.nanmean(w_shuf[:n_e], axis=0))
+                    wb_w.append(np.nanmean(w_shuf[n_e:], axis=0))
+                    wa_b.append(np.nanmean(b_shuf[:n_e], axis=0))
+                    wb_b.append(np.nanmean(b_shuf[n_e:], axis=0))
+
+                wa = np.concatenate(wa_w) - np.concatenate(wa_b)
+                wb = np.concatenate(wb_w) - np.concatenate(wb_b)
+                na, nb = np.linalg.norm(wa), np.linalg.norm(wb)
+                if na > 0 and nb > 0:
+                    null_cos[p] = cosine_similarity(wa / na, wb / nb)
+
+            valid = null_cos[~np.isnan(null_cos)]
+            p_value = np.mean(valid <= real_cos) if len(valid) > 0 else np.nan
+
+            out[wl] = dict(
+                real_cosine=real_cos,
+                null_cosines=null_cos,
+                p_value=p_value,
+                n_sessions=n_sess,
+            )
+        return out
+
+
 def analyse_coding_dimensions(dim_type: str,
                               npx_dir: str = PATHS['npx_dir_local'],
                               bm_ops: dict = CODING_DIM_OPS,
@@ -116,17 +300,21 @@ def analyse_coding_dimensions(dim_type: str,
     results = load_dimension_results(dim_type, npx_dir, area, unit_filter)
 
     per_animal = per_animal_significance(results)
-    pooled = pooled_null_test(results, n_perm=10000)
+    pooled = pooled_null_test(results, n_perm=bm_ops['n_perm_across'])
+    pooled_pseudopop = pooled_pseudopop_cosine_test(
+        results, dim_type, n_perm=bm_ops['n_perm_pooled'])
 
     for wl in sorted(per_animal.keys()):
         pa = per_animal[wl]
         po = pooled.get(wl, {})
         n_sig = np.sum(pa['p_values'] < 0.05)
+        pp = pooled_pseudopop.get(wl, {})
         print(f'{dim_type} [{suffix}] {wl}: '
               f'{len(pa["animals"])} animals, '
               f'{n_sig}/{len(pa["animals"])} sig at p<0.05, '
               f'mean cosine={np.nanmean(pa["cosines"]):.3f}, '
-              f'pooled p={po.get("p_value", np.nan):.4f}')
+              f'across-animals p={po.get("p_value", np.nan):.4f}, '
+              f'pooled-pseudopop p={pp.get("p_value", np.nan):.4f}')
 
     from coding_dims.plotting import plot_tf_dimensions, plot_motor_dimensions
     plot_fn = plot_tf_dimensions if dim_type == 'tf' else plot_motor_dimensions
@@ -135,7 +323,150 @@ def analyse_coding_dimensions(dim_type: str,
         plot_kwargs['save_dir'] = save_dir
     plot_fn(**plot_kwargs)
 
-    return dict(per_animal=per_animal, pooled=pooled)
+    return dict(per_animal=per_animal, pooled=pooled,
+                pooled_pseudopop=pooled_pseudopop)
+
+
+# separate fn - testing significance of projected data rather than cosine sim for block dims
+def analyse_block_dimensions(npx_dir: str = PATHS['npx_dir_local'],
+                             bm_ops: dict = CODING_DIM_OPS,
+                             area: str | None = None,
+                             unit_filter: list[str] | None = None) -> dict:
+    """
+    block coding dimension significance tests: per-animal AUC ROC, across-animals mean AUC, and pooled
+    pseudo-population AUC
+    """
+    from utils.shuffle import circular_shift_labels
+    from utils.stats import roc_auc
+
+    suffix = _file_suffix(area, unit_filter)
+    results = load_dimension_results('block', npx_dir, area, unit_filter)
+
+    windows = bm_ops['block_coding_windows']
+
+    # per-animal results (already computed during extraction)
+    per_animal = {}
+    for wl in [window_label(w) for w in windows]:
+        animals, aucs, p_values, null_aucs_list = [], [], [], []
+        for animal, res in sorted(results.items()):
+            real_auc = res.get('real_aucs', {}).get(wl)
+            if real_auc is None:
+                continue
+            animals.append(animal)
+            aucs.append(real_auc)
+            p_values.append(res.get('p_values', {}).get(wl, np.nan))
+            null_aucs_list.append(res.get('null_aucs', {}).get(wl, np.array([])))
+
+        if animals:
+            per_animal[wl] = dict(
+                animals=animals,
+                aucs=np.array(aucs),
+                p_values=np.array(p_values),
+                null_aucs=null_aucs_list,
+            )
+
+    # across-animals test: mean AUC, null from sampling per-animal nulls
+    n_perm_across = bm_ops['n_perm_across']
+    rng = np.random.default_rng(0)
+    across_animals = {}
+    for wl, pa in per_animal.items():
+        observed_mean = np.nanmean(pa['aucs'])
+        null_means = np.full(n_perm_across, np.nan)
+        for p in range(n_perm_across):
+            sampled = []
+            for null in pa['null_aucs']:
+                valid = null[~np.isnan(null)]
+                if len(valid) > 0:
+                    sampled.append(rng.choice(valid))
+            if sampled:
+                null_means[p] = np.mean(sampled)
+
+        valid_null = null_means[~np.isnan(null_means)]
+        p_value = np.mean(valid_null >= observed_mean) if len(valid_null) > 0 else np.nan
+
+        across_animals[wl] = dict(
+            observed_mean=observed_mean,
+            null_means=null_means,
+            p_value=p_value,
+            n_animals=len(pa['animals']),
+        )
+
+    # pooled pseudo-population test: concatenate sessions, held-out AUC
+    from coding_dims.extract import (_compute_block_direction, _project_test_auc,
+                                     _get_fit_labels)
+
+    n_perm_pooled = bm_ops['n_perm_pooled']
+
+    # collect all per-session intermediate data across animals
+    all_trial_lists = []
+    all_labels = []
+    all_fit_idx = []
+    all_test_idx = []
+    all_n_neurons = []
+
+    for animal, res in sorted(results.items()):
+        sess_int = res.get('sess_intermediate')
+        if sess_int is None:
+            continue
+        for si in sess_int:
+            all_trial_lists.append(si['trial_list'])
+            all_labels.append(si['all_block_labels'])
+            all_fit_idx.append(si['fit_idx'])
+            all_test_idx.append(si['test_idx'])
+            all_n_neurons.append(si['n_neurons'])
+
+    neuron_offsets = np.cumsum([0] + all_n_neurons)
+    rng_pooled = np.random.default_rng(0)
+    pooled = {}
+
+    real_fit_labels = _get_fit_labels(all_trial_lists, all_fit_idx)
+
+    for win in windows:
+        wl = window_label(win)
+
+        # real AUC
+        w, _ = _compute_block_direction(all_trial_lists, all_fit_idx,
+                                        real_fit_labels, wl)
+        if w is None:
+            continue
+        real_auc = _project_test_auc(all_trial_lists, all_test_idx,
+                                     w, neuron_offsets, wl)
+
+        # circular-shift null
+        null_aucs_arr = np.full(n_perm_pooled, np.nan)
+        for p in range(n_perm_pooled):
+            shifted = [circular_shift_labels(al, rng_pooled) for al in all_labels]
+            shifted_fit_labels = _get_fit_labels(all_trial_lists, all_fit_idx,
+                                                 sess_all_labels=shifted)
+            w_null, _ = _compute_block_direction(all_trial_lists, all_fit_idx,
+                                                 shifted_fit_labels, wl)
+            if w_null is not None:
+                null_aucs_arr[p] = _project_test_auc(all_trial_lists, all_test_idx,
+                                                     w_null, neuron_offsets, wl)
+
+        valid = null_aucs_arr[~np.isnan(null_aucs_arr)]
+        p_value = np.mean(valid >= real_auc) if len(valid) > 0 else np.nan
+
+        pooled[wl] = dict(
+            real_auc=real_auc,
+            null_aucs=null_aucs_arr,
+            p_value=p_value,
+            n_sessions=len(all_trial_lists),
+        )
+
+    for wl in sorted(per_animal.keys()):
+        pa = per_animal[wl]
+        aa = across_animals.get(wl, {})
+        po = pooled.get(wl, {})
+        n_sig = np.sum(pa['p_values'] < 0.05)
+        print(f'block [{suffix}] {wl}: '
+              f'{len(pa["animals"])} animals, '
+              f'{n_sig}/{len(pa["animals"])} sig at p<0.05, '
+              f'mean AUC={np.nanmean(pa["aucs"]):.3f}, '
+              f'across-animals p={aa.get("p_value", np.nan):.4f}, '
+              f'pooled p={po.get("p_value", np.nan):.4f}')
+
+    return dict(per_animal=per_animal, across_animals=across_animals, pooled=pooled)
 
 
 #%% tf-motor alignment
@@ -216,18 +547,18 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
         tf_r = tf_results[animal]
         motor_r = motor_results[animal]
 
-        # match neurons by unit_ids, subset and renormalise
+        # match neurons by unit_ids, subset, renormalise
         tf_ids = tf_r.get('unit_ids', [])
         motor_ids = motor_r.get('unit_ids', [])
         if not tf_ids or not motor_ids:
-            print(f'  {animal}: no unit_ids saved - re-run extraction')
+            print(f'  {animal}: no unit_ids saved! re-run extraction')
             continue
 
         tf_id_set = set(tf_ids)
         motor_id_set = set(motor_ids)
         shared = tf_id_set & motor_id_set
 
-        if len(shared) < 5:
+        if len(shared) < bm_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(shared)} shared neurons - skipping')
             continue
 
@@ -266,6 +597,7 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
 
         # reorder resp rows to match motor_idx neuron order
         resp_id_to_idx = {uid: i for i, uid in enumerate(resp_ids)}
+
         # only keep neurons present in all three: tf, motor, and response data
         keep = [uid for uid in tf_shared_order if uid in resp_id_to_idx]
         resp_reorder = np.array([resp_id_to_idx[uid] for uid in keep])
@@ -305,8 +637,8 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
                             unit_filter: list[str] | None = None,
                             n_perm: int = 500):
     """
-    pairwise cosine similarities between block, tf, and motor coding dimensions,
-    with permutation p-values. neurons are matched by unit_ids intersection
+    pairwise cosine similarities between block, tf, and motor coding dimensions, with permutation p-values. neurons
+    are matched by unit_ids intersection
     """
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
@@ -335,7 +667,7 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
             continue
 
         shared = set(block_ids) & set(tf_ids) & set(motor_ids)
-        if len(shared) < 5:
+        if len(shared) < bm_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(shared)} shared neurons - skipping')
             continue
 
@@ -412,8 +744,8 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
                                 area: str | None = None,
                                 unit_filter: list[str] | None = None):
     """
-    project event-aligned mean responses onto all block, tf, and motor coding
-    dimensions. neurons matched by unit_ids intersection across all three types
+    project event-aligned mean responses onto all block, tf, motor coding dimensions.
+    neurons matched by unit_ids intersection across all three types
     """
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
@@ -441,7 +773,7 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
             continue
 
         shared = set(block_ids) & set(tf_ids) & set(motor_ids)
-        if len(shared) < 5:
+        if len(shared) < bm_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(shared)} shared neurons - skipping')
             continue
 
@@ -481,7 +813,7 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
         resp_id_to_idx = {uid: i for i, uid in enumerate(resp_ids)}
         keep = [uid for uid in shared_order if uid in resp_id_to_idx]
 
-        if len(keep) < 5:
+        if len(keep) < bm_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(keep)} neurons in responses - skipping')
             continue
 

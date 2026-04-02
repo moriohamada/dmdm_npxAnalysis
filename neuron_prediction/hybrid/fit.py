@@ -91,20 +91,17 @@ def train_one(model, X_train, y_train, col_map, ops, lambda_gl=0.0):
 
 
 #%%
-def _predict_numpy(model, X, device, forward_fn=None):
+def _predict_numpy(model, X, device):
     """run forward pass, return predicted counts as numpy array"""
     model.eval()
     with torch.no_grad():
         X_t = torch.tensor(X, dtype=torch.float32, device=device)
-        if forward_fn is not None:
-            log_rate = forward_fn(X_t)
-        else:
-            log_rate = model(X_t)
+        log_rate = model(X_t)
         return torch.exp(log_rate).cpu().numpy()
 
 
 def _eval_model(model, X_test, y_test, group_masks_test, col_map,
-                lesion_groups, device):
+                interactions, lesion_groups, device):
     """evaluate full model, skip-only, and per-interaction lesions
 
     no permutation needed — interactions are architecturally separated
@@ -113,9 +110,9 @@ def _eval_model(model, X_test, y_test, group_masks_test, col_map,
     full_r = pearson_r(y_test, y_pred)
 
     # skip-only baseline
-    y_pred_skip = _predict_numpy(
-        model, X_test, device,
-        forward_fn=model.forward_skip_only)
+    with torch.no_grad():
+        X_t = torch.tensor(X_test, dtype=torch.float32, device=device)
+        y_pred_skip = torch.exp(model.forward_skip_only(X_t)).cpu().numpy()
     skip_r = pearson_r(y_test, y_pred_skip)
 
     # per-group r on bins where that group is active
@@ -128,23 +125,24 @@ def _eval_model(model, X_test, y_test, group_masks_test, col_map,
 
     # per-interaction lesion
     r_lesion = {}
-    for i, interaction in enumerate(model.interactions):
-        key = '_x_'.join(interaction)
-        y_pred_les = _predict_numpy(
-            model, X_test, device,
-            forward_fn=lambda x, idx=i: model.forward_lesion(x, idx))
-        r_lesion[key] = pearson_r(y_test, y_pred_les)
+    with torch.no_grad():
+        X_t = torch.tensor(X_test, dtype=torch.float32, device=device)
+        for i, interaction in enumerate(interactions):
+            key = '_x_'.join(interaction)
+            y_pred_les = torch.exp(model.forward_lesion(X_t, i)).cpu().numpy()
+            r_lesion[key] = pearson_r(y_test, y_pred_les)
 
     # per-group skip lesion
     r_skip_lesion = {}
-    for gname, pred_list in lesion_groups.items():
-        win = group_masks_test[gname]
-        if win.sum() < 5:
-            continue
-        y_pred_les = _predict_numpy(
-            model, X_test, device,
-            forward_fn=lambda x, g=[gname]: model.forward_lesion_skip(x, col_map, g))
-        r_skip_lesion[gname] = pearson_r(y_test[win], y_pred_les[win])
+    with torch.no_grad():
+        X_t = torch.tensor(X_test, dtype=torch.float32, device=device)
+        for gname, pred_list in lesion_groups.items():
+            win = group_masks_test[gname]
+            if win.sum() < 5:
+                continue
+            y_pred_les = torch.exp(
+                model.forward_lesion_skip(X_t, col_map, [gname])).cpu().numpy()
+            r_skip_lesion[gname] = pearson_r(y_test[win], y_pred_les[win])
 
     return full_r, skip_r, r_group, r_lesion, r_skip_lesion
 
@@ -252,7 +250,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
 
         gm_test = {g: group_masks[g][test_mask] for g in group_names}
         r, r_sk, r_g, r_les, r_skl = _eval_model(
-            model, X_test, y_test, gm_test, col_map, lesion_groups, device)
+            model, X_test, y_test, gm_test, col_map, interactions, lesion_groups,
+            device)
 
         full_r[k] = r
         skip_r[k] = r_sk

@@ -24,7 +24,7 @@ def _get_trial_stimulus(row):
 
 
 def _compute_motion_lick_delay(trials):
-    """Median delay between motion_onset and first_lick for trials where both exist."""
+    """median delay between motion_onset and first_lick for trials where both exist"""
     mo = trials['motion_onset']
     fl = trials['first_lick']
     both = mo.notna() & fl.notna() & (trials['IsHit'] | trials['IsFA'])
@@ -35,7 +35,7 @@ def _compute_motion_lick_delay(trials):
 
 
 def _trial_lick_time(row, motion_lick_delay=0.0):
-    """Use motion_onset if available, otherwise infer from first_lick."""
+    """use motion_onset if available, otherwise infer from first_lick"""
     if not (row['IsHit'] or row['IsFA']):
         return np.nan
     if not pd.isna(row['motion_onset']):
@@ -62,7 +62,7 @@ def _trial_outcome_code(row):
 
 
 def _trial_event_time(row, motion_lick_delay=0.0):
-    """Time of outcome event relative to baseline onset."""
+    """time of outcome event relative to baseline onset"""
     bl_on = row['Baseline_ON_rise']
     if row['IsHit'] or row['IsFA']:
         lick = _trial_lick_time(row, motion_lick_delay)
@@ -129,13 +129,10 @@ def build_trial_features(row, prev_outcome, prev_event_time,
                          time_since_reward, trial_num,
                          motion_lick_delay=0.0, ops=LICK_PRED_OPS,
                          truncate_at_change=True):
-    """
-    Build feature matrix X and target vector y for one trial.
+    """build feature matrix X and target vector y for one trial
 
     truncate_at_change: if True, cut trial at change frame (for training).
-        if False, extend through change period (for prediction/visualisation).
-
-    Returns (X, y, n_bins) or (None, None, 0) if trial should be skipped.
+        if False, extend through change period (for prediction/visualisation)
     """
     n_hist = ops['tf_history_bins']
     sigma = ops['lick_sigma_bins']

@@ -190,13 +190,12 @@ def fit_empirical_flow(Z, valid_mask, n_bins=15, grid_edges=None, min_count=5000
     mean_flow = np.full(shape + (n_dims,), np.nan)
     counts = np.zeros(shape, dtype=int)
 
-    # flatten bin indices to 1D for efficient accumulation
-    strides = np.array([n_bins ** (n_dims - 1 - d) for d in range(n_dims)])
-    flat_idx = (bin_idx * strides).sum(axis=1)
+    # accumulate flow per grid bin
+    flat_idx = np.ravel_multi_index(bin_idx.T, shape)
 
     for flat_bin in np.unique(flat_idx):
         mask = flat_idx == flat_bin
-        multi_idx = tuple((flat_bin // strides) % n_bins)
+        multi_idx = np.unravel_index(flat_bin, shape)
         n = mask.sum()
         counts[multi_idx] = n
         if n >= min_count:
@@ -219,7 +218,7 @@ def _flow_r2(Z, valid_mask, grid_edges, mean_flow, n_bins):
     Z_start = Z[:, idx].T
     dZ = (Z[:, idx + 1] - Z[:, idx]).T
 
-    strides = np.array([n_bins ** (n_dims - 1 - d) for d in range(n_dims)])
+    shape = tuple([n_bins] * n_dims)
     bin_idx = np.zeros((len(Z_start), n_dims), dtype=int)
     in_range = np.ones(len(Z_start), dtype=bool)
     for d in range(n_dims):
@@ -234,10 +233,10 @@ def _flow_r2(Z, valid_mask, grid_edges, mean_flow, n_bins):
     if len(dZ) == 0:
         return np.nan
 
-    flat_idx = (bin_idx * strides).sum(axis=1)
+    flat_idx = np.ravel_multi_index(bin_idx.T, shape)
     dZ_pred = np.zeros_like(dZ)
     for i, fi in enumerate(flat_idx):
-        multi_idx = tuple((fi // strides) % n_bins)
+        multi_idx = np.unravel_index(fi, shape)
         flow_val = mean_flow[multi_idx]
         if not np.any(np.isnan(flow_val)):
             dZ_pred[i] = flow_val

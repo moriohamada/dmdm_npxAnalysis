@@ -182,33 +182,34 @@ def extract_elts(lick_triggered_data, config=ANALYSIS_OPTIONS):
     t_early = config['ignore_trial_start']
     t_split = config['tr_split_time']
 
-    conditions = {
-        'earlyBlock_early': lambda row: (row['hazardblock'] == 'early'
-                                         and t_early < row['lickTime'] <= t_split
-                                         and row['lickType'] == 'fa'),
-        'lateBlock_early':  lambda row: (row['hazardblock'] == 'late'
-                                         and t_early < row['lickTime'] <= t_split
-                                         and row['lickType'] == 'fa'),
-        'lateBlock_late':   lambda row: (row['hazardblock'] == 'late'
-                                         and row['lickTime'] > t_split
-                                         and row['lickType'] == 'fa'),
-    }
-    lts = {cond: {} for cond in conditions}
+    cond_names = ['earlyBlock_early', 'lateBlock_early', 'lateBlock_late']
+    lts = {cond: {} for cond in cond_names}
+    n_samples = config.get('n_pre_lick_samples', 40)
 
     for subj, df in lick_triggered_data.items():
         if df.empty:
-            for cond in conditions:
-                lts[cond][subj] = np.full(
-                    (0, config.get('n_pre_lick_samples', 40)), np.nan)
+            for cond in cond_names:
+                lts[cond][subj] = np.full((0, n_samples), np.nan)
             continue
-        for cond, cond_fn in conditions.items():
-            mask = df.apply(cond_fn, axis=1)
+
+        is_fa = df['lickType'] == 'fa'
+        is_early_block = df['hazardblock'] == 'early'
+        is_late_block = df['hazardblock'] == 'late'
+        early_in_trial = (df['lickTime'] > t_early) & (df['lickTime'] <= t_split)
+        late_in_trial = df['lickTime'] > t_split
+
+        masks = {
+            'earlyBlock_early': is_fa & is_early_block & early_in_trial,
+            'lateBlock_early':  is_fa & is_late_block & early_in_trial,
+            'lateBlock_late':   is_fa & is_late_block & late_in_trial,
+        }
+
+        for cond, mask in masks.items():
             trials = df.loc[mask, 'stimBefore'].values
             if len(trials) > 0:
                 lts[cond][subj] = np.stack(trials)
             else:
-                lts[cond][subj] = np.full(
-                    (0, config.get('n_pre_lick_samples', 40)), np.nan)
+                lts[cond][subj] = np.full((0, n_samples), np.nan)
     return lts
 
 
@@ -586,35 +587,63 @@ def extract_all_behavioural(npx_dir=PATHS['npx_dir_local'],
     """extract and save all behavioural analyses"""
     data_dir = os.path.join(npx_dir, 'behaviour')
 
-    def _cached(name, fn):
+    def _load_or_compute(name):
+        """check if cached result exists; return it or None"""
         path = os.path.join(data_dir, f'{name}.pkl')
         if not overwrite and os.path.exists(path):
             print(f'Loading cached {name}')
             return _load(name, data_dir)
-        result = fn()
-        _save(result, name, data_dir)
-        return result
+        return None
 
-    dfs = _cached('dfs_processed', lambda:
-        filter_sessions(build_dfs_from_sessions(npx_dir, config), config))
+    dfs = _load_or_compute('dfs_processed')
+    if dfs is None:
+        dfs = filter_sessions(build_dfs_from_sessions(npx_dir, config), config)
+        _save(dfs, 'dfs_processed', data_dir)
 
-    psycho_chrono = _cached('psychometric',
-                            lambda: extract_psychometric(dfs, config))
-    hazard = _cached('hazard_rates',
-                     lambda: calculate_el_hazard(dfs, config))
+    psycho_chrono = _load_or_compute('psychometric')
+    if psycho_chrono is None:
+        psycho_chrono = extract_psychometric(dfs, config)
+        _save(psycho_chrono, 'psychometric', data_dir)
 
-    lick_triggered = _cached('lick_triggered',
-                             lambda: extract_perilick_info(dfs, config))
-    lts = _cached('elts', lambda: extract_elts(lick_triggered, config))
-    elta = _cached('elta', lambda: calculate_elta(lts, config))
-    eltc = _cached('eltc', lambda: calculate_eltc(lts, config))
-    projections = _cached('eltc_projections',
-                          lambda: extract_baseline_projections(dfs, eltc, config))
-    eltc_aligned = _cached('eltc_aligned',
-                           lambda: align_eltc(eltc, projections))
+    hazard = _load_or_compute('hazard_rates')
+    if hazard is None:
+        hazard = calculate_el_hazard(dfs, config)
+        _save(hazard, 'hazard_rates', data_dir)
 
-    pulse_lick = _cached('pulse_lick_prob',
-                         lambda: calculate_pulse_lick_prob(dfs, config))
+    lick_triggered = _load_or_compute('lick_triggered')
+    if lick_triggered is None:
+        lick_triggered = extract_perilick_info(dfs, config)
+        _save(lick_triggered, 'lick_triggered', data_dir)
+
+    lts = _load_or_compute('elts')
+    if lts is None:
+        lts = extract_elts(lick_triggered, config)
+        _save(lts, 'elts', data_dir)
+
+    elta = _load_or_compute('elta')
+    if elta is None:
+        elta = calculate_elta(lts, config)
+        _save(elta, 'elta', data_dir)
+
+    eltc = _load_or_compute('eltc')
+    if eltc is None:
+        eltc = calculate_eltc(lts, config)
+        _save(eltc, 'eltc', data_dir)
+
+    projections = _load_or_compute('eltc_projections')
+    if projections is None:
+        projections = extract_baseline_projections(dfs, eltc, config)
+        _save(projections, 'eltc_projections', data_dir)
+
+    eltc_aligned = _load_or_compute('eltc_aligned')
+    if eltc_aligned is None:
+        eltc_aligned = align_eltc(eltc, projections)
+        _save(eltc_aligned, 'eltc_aligned', data_dir)
+
+    pulse_lick = _load_or_compute('pulse_lick_prob')
+    if pulse_lick is None:
+        pulse_lick = calculate_pulse_lick_prob(dfs, config)
+        _save(pulse_lick, 'pulse_lick_prob', data_dir)
 
     print('All behavioural analyses extracted')
 

@@ -186,6 +186,17 @@ for area in areas:
                                  unit_filter=uf,
                                  n_jobs=6)
 
+#%% block coding dimension analysis
+from coding_dims.analysis import analyse_block_dimensions
+
+for area in areas:
+    for uf in unit_filters:
+        print(f'\n=== Block analysis: area={area}, filter={uf} ===')
+        analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
+                                 bm_ops=CODING_DIM_OPS,
+                                 area=area,
+                                 unit_filter=uf)
+
 #%% cross-dimension analysis
 from coding_dims.analysis import cross_dimension_cosines, cross_dimension_projections
 

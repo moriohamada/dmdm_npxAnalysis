@@ -260,7 +260,9 @@ TUNING_CURVE_OPS = dict(
 
 CODING_DIM_OPS = dict(
     sliding_window_ms = 100,            # ms; causal boxcar width for FR smoothing
-    n_permutations    = 500,            # shuffles for significance tests
+    n_permutations    = 500,            # shuffles for per-animal significance tests
+    n_perm_across     = 10000,          # shuffles for across-animals tests
+    n_perm_pooled     = 500,            # shuffles for pooled pseudo-population tests
     min_neurons       = 5,              # minimum neurons per session after filtering for tf-responsiveness/area etc
     plot_during_extraction = False,
     trial_split_time  = 5,              # s; only use TF pulses before this time

@@ -14,6 +14,8 @@ from utils.filing import get_session_dirs_by_animal, load_fr_matrix
 from utils.smoothing import causal_boxcar
 from utils.time import window_label, time_mask
 from utils.rois import AREA_GROUPS, in_group
+from utils.shuffle import circular_shift_labels
+from utils.stats import roc_auc
 
 
 #%% shared utilities
@@ -182,8 +184,12 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
     for mt in lick_times + abort_times:
         move_mask &= np.abs(t_ax - mt) > rmv_move
 
+    # collect full chronological block labels (all trials, for circular shift null)
+    all_block_labels = trials['hazardblock'].values.copy()
+
     # iterate trials, extract per-trial mean FR in each window
     results = {b: {window_label(w): [] for w in windows} for b in ['early', 'late']}
+    trial_list = []  # per-included-trial: {seq_idx, block, window_means}
 
     for tr_idx, row in trials.iterrows():
         block = row['hazardblock']
@@ -202,6 +208,8 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
         if pd.isna(change_t):
             change_t = np.inf
 
+        trial_means = {}
+        any_valid = False
         for win in windows:
             wl = window_label(win)
             t_start = bl_onset + win[0]
@@ -215,6 +223,17 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
 
             trial_mean = np.nanmean(fr_vals[:, bin_mask], axis=1)  # (nN,)
             results[block][wl].append(trial_mean)
+            trial_means[wl] = trial_mean
+            any_valid = True
+
+        if any_valid:
+            # seq_idx: position in the full trials DataFrame for circular shift
+            seq_idx = list(trials.index).index(tr_idx)
+            trial_list.append({
+                'seq_idx': seq_idx,
+                'block': block,
+                'window_means': trial_means,
+            })
 
     # stack into arrays
     for block in ['early', 'late']:
@@ -227,7 +246,7 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
 
     del fr_vals
     gc.collect()
-    return results
+    return results, trial_list, all_block_labels
 
 
 def _session_valid_for_block(block_data, min_trials=10):
@@ -242,22 +261,104 @@ def _session_valid_for_block(block_data, min_trials=10):
     return False
 
 
+def _compute_block_direction(sess_trial_lists, sess_fit_idx, fit_labels, wl):
+    """
+    compute block coding direction from fit trials.
+    fit_labels[s] is a list of block labels for the fit trials in session s,
+    in the same order as sess_fit_idx[s].
+    returns (w_normed, norm) or (None, 0) if not enough data
+    """
+    fit_early_means = []
+    fit_late_means = []
+    for s in range(len(sess_trial_lists)):
+        trial_list = sess_trial_lists[s]
+        early_vecs = []
+        late_vecs = []
+        for j, i in enumerate(sess_fit_idx[s]):
+            if wl not in trial_list[i]['window_means']:
+                continue
+            v = trial_list[i]['window_means'][wl]
+            if fit_labels[s][j] == 'early':
+                early_vecs.append(v)
+            elif fit_labels[s][j] == 'late':
+                late_vecs.append(v)
+        if early_vecs and late_vecs:
+            fit_early_means.append(np.mean(early_vecs, axis=0))
+            fit_late_means.append(np.mean(late_vecs, axis=0))
+
+    if not fit_early_means or not fit_late_means:
+        return None, 0.0
+
+    w = np.concatenate(fit_early_means) - np.concatenate(fit_late_means)
+    norm = np.linalg.norm(w)
+    if norm == 0:
+        return None, 0.0
+    return w / norm, norm
+
+
+def _project_test_auc(sess_trial_lists, sess_test_idx, w, neuron_offsets, wl):
+    """
+    project test trials onto direction w and compute AUC-ROC.
+    test trials always use their real block labels
+    """
+    projections = []
+    labels = []
+    for s in range(len(sess_trial_lists)):
+        trial_list = sess_trial_lists[s]
+        w_slice = w[neuron_offsets[s]:neuron_offsets[s + 1]]
+        for i in sess_test_idx[s]:
+            if wl not in trial_list[i]['window_means']:
+                continue
+            projections.append(np.dot(trial_list[i]['window_means'][wl], w_slice))
+            labels.append(trial_list[i]['block'] == 'early')
+
+    if len(projections) < 4:
+        return np.nan
+    return roc_auc(np.array(labels), np.array(projections))
+
+
+def _get_fit_labels(sess_trial_lists, sess_fit_idx, sess_all_labels=None):
+    """
+    get block labels for fit trials in each session.
+    if sess_all_labels is None, use real labels from trial_list.
+    if provided, look up shifted labels by seq_idx
+    """
+    fit_labels = []
+    for s in range(len(sess_trial_lists)):
+        trial_list = sess_trial_lists[s]
+        if sess_all_labels is None:
+            fit_labels.append([trial_list[i]['block'] for i in sess_fit_idx[s]])
+        else:
+            fit_labels.append([sess_all_labels[s][trial_list[i]['seq_idx']]
+                               for i in sess_fit_idx[s]])
+    return fit_labels
+
+
 def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, save_dir):
-    """process a single animal to extract block coding dimensions (early vs late)"""
+    """
+    extract block coding dimensions (early vs late) with held-out AUC test.
+    uses circular shift of block labels on the full trial sequence as null
+    """
     windows = bm_ops['block_coding_windows']
     n_perm = bm_ops['n_permutations']
     min_n = bm_ops.get('min_neurons', 5)
     min_trials = 10
+    test_frac = 0.2
     suffix = _file_suffix(area, unit_filter)
 
-    # per-session: (nTrials, nN_sess) per block per window
-    sess_block_data = []  # list of {block: {wl: array or None}}
+    # per-session data
+    sess_trial_lists = []    # [{seq_idx, block, window_means}, ...]
+    sess_all_labels = []     # full chronological block labels per session
     included_sessions = []
     n_neurons_per_session = []
     unit_ids = []
 
     for sess_dir in sess_dirs:
-        data = _load_block_resps(sess_dir, ops, bm_ops)
+        loaded = _load_block_resps(sess_dir, ops, bm_ops)
+        if loaded is None:
+            continue
+        data, trial_list, all_labels = loaded
+
         if not _session_valid_for_block(data, min_trials):
             continue
 
@@ -265,7 +366,7 @@ def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, sav
         if neuron_mask.sum() < min_n:
             continue
 
-        # apply neuron mask to loaded data
+        # apply neuron mask to aggregated data and re-check
         masked_data = {}
         for block in ['early', 'late']:
             masked_data[block] = {}
@@ -275,15 +376,21 @@ def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, sav
                 else:
                     masked_data[block][wl] = None
 
-        # re-check validity
         if not _session_valid_for_block(masked_data, min_trials):
             continue
+
+        # apply neuron mask to per-trial data
+        for trial in trial_list:
+            trial['window_means'] = {
+                wl: v[neuron_mask] for wl, v in trial['window_means'].items()
+            }
 
         session = Session.load(str(sess_dir / 'session.pkl'))
         cluster_ids = session.unit_info['cluster_id'].values[neuron_mask]
         unit_ids.extend([(sess_dir.name, int(cid)) for cid in cluster_ids])
 
-        sess_block_data.append(masked_data)
+        sess_trial_lists.append(trial_list)
+        sess_all_labels.append(all_labels)
         included_sessions.append(sess_dir.name)
         n_neurons_per_session.append(int(neuron_mask.sum()))
 
@@ -298,78 +405,88 @@ def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, sav
     n_total = sum(n_neurons_per_session)
     print(f'  {animal} [{suffix}] block: {n_sessions} sessions, {n_total} neurons')
 
-    # compute block coding direction per window
-    # direction = mean(early) - mean(late), concatenated across sessions
+    neuron_offsets = np.cumsum([0] + n_neurons_per_session)
+
+    # stratified fit/test split within each session (fixed across permutations)
+    sess_fit_idx = []
+    sess_test_idx = []
+    rng_split = np.random.default_rng(42)
+    for trial_list in sess_trial_lists:
+        early_idx = [i for i, t in enumerate(trial_list) if t['block'] == 'early']
+        late_idx = [i for i, t in enumerate(trial_list) if t['block'] == 'late']
+        rng_split.shuffle(early_idx)
+        rng_split.shuffle(late_idx)
+        n_test_e = max(1, int(len(early_idx) * test_frac))
+        n_test_l = max(1, int(len(late_idx) * test_frac))
+        sess_test_idx.append(early_idx[:n_test_e] + late_idx[:n_test_l])
+        sess_fit_idx.append(early_idx[n_test_e:] + late_idx[n_test_l:])
+
+    # real direction and AUC per window
+    real_fit_labels = _get_fit_labels(sess_trial_lists, sess_fit_idx)
+
     dimensions = {}
     direction_norm = {}
+    real_aucs = {}
 
     for win in windows:
         wl = window_label(win)
-        early_means = []
-        late_means = []
-        for s_data in sess_block_data:
-            if s_data['early'][wl] is not None and s_data['late'][wl] is not None:
-                early_means.append(np.nanmean(s_data['early'][wl], axis=0))  # (nN_sess,)
-                late_means.append(np.nanmean(s_data['late'][wl], axis=0))
-
-        if not early_means:
+        w, norm = _compute_block_direction(
+            sess_trial_lists, sess_fit_idx, real_fit_labels, wl)
+        if w is None:
             continue
-
-        w = np.concatenate(early_means) - np.concatenate(late_means)  # (nN_total,)
-        norm = np.linalg.norm(w)
+        dimensions[wl] = w
         direction_norm[wl] = norm
-        if norm > 0:
-            dimensions[wl] = w / norm
-        else:
-            dimensions[wl] = w
+        real_aucs[wl] = _project_test_auc(
+            sess_trial_lists, sess_test_idx, w, neuron_offsets, wl)
 
-    # shuffle block labels within each session, recompute direction norm
-    null_norms = {window_label(w): np.full(n_perm, np.nan) for w in windows}
-    p_values = {}
-
-    # pool early+late trials per session per window for shuffling
-    sess_pooled = {}
-    sess_n_early = {}
-    for win in windows:
-        wl = window_label(win)
-        sess_pooled[wl] = []
-        sess_n_early[wl] = []
-        for s_data in sess_block_data:
-            if s_data['early'][wl] is not None and s_data['late'][wl] is not None:
-                pooled = np.concatenate([s_data['early'][wl], s_data['late'][wl]], axis=0)
-                sess_pooled[wl].append(pooled)
-                sess_n_early[wl].append(s_data['early'][wl].shape[0])
-
+    # circular-shift null
+    null_aucs = {window_label(w): np.full(n_perm, np.nan) for w in windows}
     rng = np.random.default_rng(0)
+
     for p in range(n_perm):
+        shifted = [circular_shift_labels(al, rng) for al in sess_all_labels]
+        shifted_fit_labels = _get_fit_labels(
+            sess_trial_lists, sess_fit_idx, sess_all_labels=shifted)
+
         for win in windows:
             wl = window_label(win)
             if wl not in dimensions:
                 continue
-            shuf_early_means = []
-            shuf_late_means = []
-            for pooled, n_e in zip(sess_pooled[wl], sess_n_early[wl]):
-                idx = rng.permutation(pooled.shape[0])
-                shuf = pooled[idx]
-                shuf_early_means.append(np.nanmean(shuf[:n_e], axis=0))
-                shuf_late_means.append(np.nanmean(shuf[n_e:], axis=0))
+            w, _ = _compute_block_direction(
+                sess_trial_lists, sess_fit_idx, shifted_fit_labels, wl)
+            if w is None:
+                continue
+            null_aucs[wl][p] = _project_test_auc(
+                sess_trial_lists, sess_test_idx, w, neuron_offsets, wl)
 
-            w_shuf = np.concatenate(shuf_early_means) - np.concatenate(shuf_late_means)
-            null_norms[wl][p] = np.linalg.norm(w_shuf)
-
+    p_values = {}
     for win in windows:
         wl = window_label(win)
-        if wl in direction_norm:
-            p_values[wl] = np.mean(null_norms[wl] >= direction_norm[wl])
+        if wl in real_aucs:
+            valid = null_aucs[wl][~np.isnan(null_aucs[wl])]
+            p_values[wl] = np.mean(valid >= real_aucs[wl]) if len(valid) > 0 else np.nan
+
+    # save per-session intermediate data for pooled aggregation
+    sess_intermediate = []
+    for s in range(n_sessions):
+        sess_intermediate.append({
+            'trial_list': sess_trial_lists[s],
+            'all_block_labels': sess_all_labels[s],
+            'fit_idx': sess_fit_idx[s],
+            'test_idx': sess_test_idx[s],
+            'n_neurons': n_neurons_per_session[s],
+        })
 
     result = {
         'dimensions': dimensions,
         'direction_norm': direction_norm,
-        'null_norms': null_norms,
+        'real_aucs': real_aucs,
+        'null_aucs': null_aucs,
         'p_values': p_values,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
         'unit_ids': unit_ids,
+        'sess_intermediate': sess_intermediate,
     }
 
     with open(save_dir / f'block_dimensions_{animal}_{suffix}.pkl', 'wb') as f:
@@ -549,6 +666,8 @@ def _process_tf_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, save_d
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
         'unit_ids': unit_ids,
+        'sess_tavg': sess_tavg,
+        'sess_n': sess_n,
     }
 
     with open(save_dir / f'tf_dimensions_{animal}_{suffix}.pkl', 'wb') as f:
@@ -582,13 +701,6 @@ def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
         results = pool.starmap(_process_tf_animal, args)
 
     all_results = {animal: res for animal, res in results if res is not None}
-
-    # pooled across all animals
-    all_sess_dirs = [sd for dirs in animal_sessions.values() for sd in dirs]
-    _, pooled_res = _process_tf_animal(
-        'pooled', all_sess_dirs, ops, bm_ops, area, unit_filter, save_dir)
-    if pooled_res is not None:
-        all_results['pooled'] = pooled_res
 
     out_path = save_dir / f'tf_dimensions_{suffix}.pkl'
     with open(out_path, 'wb') as f:
@@ -752,6 +864,9 @@ def _process_motor_animal(animal, sess_dirs, ops, bm_ops, lick_type,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
         'unit_ids': unit_ids,
+        'sess_tavg_win': sess_tavg_win,
+        'sess_tavg_bl': sess_tavg_bl,
+        'sess_n': sess_n,
     }
 
     with open(save_dir / f'motor_dimensions_{animal}_{suffix}.pkl', 'wb') as f:
@@ -788,13 +903,6 @@ def extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
 
     all_results = {animal: res for animal, res in results if res is not None}
 
-    # pooled across all animals
-    all_sess_dirs = [sd for dirs in animal_sessions.values() for sd in dirs]
-    _, pooled_res = _process_motor_animal(
-        'pooled', all_sess_dirs, ops, bm_ops, lick_type, area, unit_filter, save_dir)
-    if pooled_res is not None:
-        all_results['pooled'] = pooled_res
-
     out_path = save_dir / f'motor_dimensions_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
@@ -813,7 +921,7 @@ def extract_block_dimensions(npx_dir=PATHS['npx_dir_local'],
                              n_jobs: int | None = None):
     """
     extract block coding directions (early vs late block) at defined time
-    windows, per animal (pseudo-population) and pooled across all animals.
+    windows, per animal (pseudo-population).
     area: brain region, AREA_GROUPS key, or None/'all' for all neurons
     unit_filter: list of GLM classification names, OR logic (e.g. ['tf', 'lick_prep'])
     n_jobs: number of parallel workers (None = all cores)
@@ -831,13 +939,6 @@ def extract_block_dimensions(npx_dir=PATHS['npx_dir_local'],
         results = pool.starmap(_process_block_animal, args)
 
     all_results = {animal: res for animal, res in results if res is not None}
-
-    # pooled across all animals
-    all_sess_dirs = [sd for dirs in animal_sessions.values() for sd in dirs]
-    _, pooled_res = _process_block_animal(
-        'pooled', all_sess_dirs, ops, bm_ops, area, unit_filter, save_dir)
-    if pooled_res is not None:
-        all_results['pooled'] = pooled_res
 
     out_path = save_dir / f'block_dimensions_{suffix}.pkl'
     with open(out_path, 'wb') as f:
