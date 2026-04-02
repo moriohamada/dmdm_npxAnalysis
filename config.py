@@ -261,8 +261,8 @@ TUNING_CURVE_OPS = dict(
 CODING_DIM_OPS = dict(
     sliding_window_ms = 100,            # ms; causal boxcar width for FR smoothing
     n_permutations    = 500,            # shuffles for per-animal significance tests
-    n_perm_across     = 10000,          # shuffles for across-animals tests
-    n_perm_pooled     = 500,            # shuffles for pooled pseudo-population tests
+    n_perm_across     = 1000,           # shuffles for across-animals tests
+    n_perm_pooled     = 500,             # shuffles for pooled pseudo-population tests
     min_neurons       = 5,              # minimum neurons per session after filtering for tf-responsiveness/area etc
     plot_during_extraction = False,
     trial_split_time  = 5,              # s; only use TF pulses before this time
@@ -271,7 +271,7 @@ CODING_DIM_OPS = dict(
     tf_coding_windows = [(0.1, 0.25), (0.25, 0.4), (0.4, .6) ],
 
     # premotor coding direction windows (s, relative to lick onset)
-    motor_prelick_windows = [(-1.0, -0.6), (-0.5, -0.1), (-0.25, 0.0)],
+    motor_prelick_windows = [(-1.0, -0.6), (-0.5, -0.2), (-0.25, 0.0)],
     motor_baseline_window = (-1.5, -1.0),
 
     # block coding direction windows (s, relative to baseline onset)
