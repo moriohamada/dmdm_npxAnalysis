@@ -69,6 +69,10 @@ from neuron_prediction.glm.plotting import plot_fraction_significant
 plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
                           save_dir=PATHS['plots_dir'])
 
+#%% Visualise mean psths of tf-responsive units
+
+
+
 #%% Downsample FR matrices for population analyses
 from utils.downsampling import save_downsampled_fr
 save_downsampled_fr(npx_dir=PATHS['npx_dir_local'],
@@ -168,6 +172,30 @@ calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
                              bm_ops=CODING_DIM_OPS,
                              area=None,
                              unit_filter=['tf'])
+
+#%% block coding dimensions
+from coding_dims.extract import extract_block_dimensions
+
+for area in areas:
+    for uf in unit_filters:
+        print(f'\n=== Block dimensions: area={area}, filter={uf} ===')
+        extract_block_dimensions(npx_dir=PATHS['npx_dir_local'],
+                                 ops=ANALYSIS_OPTIONS,
+                                 bm_ops=CODING_DIM_OPS,
+                                 area=area,
+                                 unit_filter=uf,
+                                 n_jobs=6)
+
+#%% cross-dimension analysis
+from coding_dims.analysis import cross_dimension_cosines, cross_dimension_projections
+
+for area in areas:
+    for uf in unit_filters:
+        print(f'\n=== Cross-dimension cosines: area={area}, filter={uf} ===')
+        cross_dimension_cosines(area=area, unit_filter=uf)
+
+        print(f'\n=== Cross-dimension projections: area={area}, filter={uf} ===')
+        cross_dimension_projections(area=area, unit_filter=uf)
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS

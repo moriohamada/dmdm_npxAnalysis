@@ -71,7 +71,9 @@ def _file_suffix(area=None, unit_filter=None):
 def _load_tf_resps_by_block(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
     """
     load per-trial outlier TF responses, split by block and fast/slow.
-    returns {block: {'fast': (nEv, nN, nT), 'slow': (nEv, nN, nT)}}, t_ax
+    returns:
+        {block: {'fast': (nEv, nN, nT), 'slow': (nEv, nN, nT)}}
+        t_ax
     """
     psth_path = str(sess_dir / 'psths.h5')
 
@@ -124,7 +126,6 @@ def _session_valid_for_tf(tf_data):
 
 
 def _session_valid_for_motor(lick_data, min_trials=2):
-    """both blocks need sufficient lick trials"""
     return all(lick_data[b] is not None and lick_data[b].shape[0] >= min_trials
                for b in ['early', 'late'])
 
@@ -230,7 +231,7 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, bm_ops=CODING_DIM_OPS):
 
 
 def _session_valid_for_block(block_data, min_trials=10):
-    """both blocks need sufficient trials in at least one window"""
+    """keep only blocks with sufficient trials in at least one window"""
     if block_data is None:
         return False
     for wl in block_data['early']:
@@ -274,7 +275,7 @@ def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, sav
                 else:
                     masked_data[block][wl] = None
 
-        # re-check validity after masking
+        # re-check validity
         if not _session_valid_for_block(masked_data, min_trials):
             continue
 
@@ -298,7 +299,7 @@ def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, sav
     print(f'  {animal} [{suffix}] block: {n_sessions} sessions, {n_total} neurons')
 
     # compute block coding direction per window
-    # direction = mean(early) - mean(late), concatenated across sessions along neuron dim
+    # direction = mean(early) - mean(late), concatenated across sessions
     dimensions = {}
     direction_norm = {}
 
@@ -322,7 +323,7 @@ def _process_block_animal(animal, sess_dirs, ops, bm_ops, area, unit_filter, sav
         else:
             dimensions[wl] = w
 
-    # permutation test: shuffle block labels within each session, recompute direction norm
+    # shuffle block labels within each session, recompute direction norm
     null_norms = {window_label(w): np.full(n_perm, np.nan) for w in windows}
     p_values = {}
 
@@ -582,6 +583,13 @@ def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
 
     all_results = {animal: res for animal, res in results if res is not None}
 
+    # pooled across all animals
+    all_sess_dirs = [sd for dirs in animal_sessions.values() for sd in dirs]
+    _, pooled_res = _process_tf_animal(
+        'pooled', all_sess_dirs, ops, bm_ops, area, unit_filter, save_dir)
+    if pooled_res is not None:
+        all_results['pooled'] = pooled_res
+
     out_path = save_dir / f'tf_dimensions_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
@@ -779,6 +787,13 @@ def extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
         results = pool.starmap(_process_motor_animal, args)
 
     all_results = {animal: res for animal, res in results if res is not None}
+
+    # pooled across all animals
+    all_sess_dirs = [sd for dirs in animal_sessions.values() for sd in dirs]
+    _, pooled_res = _process_motor_animal(
+        'pooled', all_sess_dirs, ops, bm_ops, lick_type, area, unit_filter, save_dir)
+    if pooled_res is not None:
+        all_results['pooled'] = pooled_res
 
     out_path = save_dir / f'motor_dimensions_{suffix}.pkl'
     with open(out_path, 'wb') as f:
