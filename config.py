@@ -273,7 +273,7 @@ CODING_DIM_OPS = dict(
     motor_baseline_window = (-1.5, -1.0),
 
     # block coding direction windows (s, relative to baseline onset)
-    # negative = pre-baseline (ITI), positive = post-baseline
+    # negative = pre-baseline (ITI)
     block_coding_windows = [(-2.0, 0.0), (0.0, 2.0), (2.0, 5.0)],
 )
 
