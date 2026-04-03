@@ -502,8 +502,10 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
 
         session = Session.load(str(sess_dir / 'session.pkl'))
         cids = session.unit_info['cluster_id'].values[neuron_mask]
-        unit_ids.extend([(sess_name, int(c)) for c in cids])
 
+        # load all conditions for this session first
+        sess_means = {}
+        sess_complete = True
         for event_type, conditions in [('tf', tf_conditions),
                                         ('lick', lick_conditions),
                                         ('blOn', bl_conditions)]:
@@ -511,12 +513,23 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
                 mean, _, t_ax = load_psth_mean(psth_path, event_type, cond,
                                                baseline_subtract=False)
                 if mean is None:
-                    continue
+                    sess_complete = False
+                    break
                 key = f'{event_type}/{cond}'
                 t_axes[event_type] = t_ax
                 masked = mean[neuron_mask]
                 smoothed = causal_boxcar(masked, window_bins, axis=-1)
-                means.setdefault(key, []).append(smoothed)
+                sess_means[key] = smoothed
+            if not sess_complete:
+                break
+
+        if not sess_complete:
+            continue
+
+        # session has all conditions - include its neurons
+        unit_ids.extend([(sess_name, int(c)) for c in cids])
+        for key, smoothed in sess_means.items():
+            means.setdefault(key, []).append(smoothed)
 
     # concatenate across sessions (n_neurons dimension)
     concat_means = {}

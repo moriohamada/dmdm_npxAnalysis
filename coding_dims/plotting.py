@@ -7,9 +7,10 @@ import pickle
 from pathlib import Path
 sns.set_style('whitegrid')
 
-from config import PATHS, PLOT_OPTIONS, CODING_DIM_OPS
+from config import PATHS, PLOT_OPTIONS, CODING_DIM_OPS, ANALYSIS_OPTIONS
 from coding_dims.extract import _file_suffix
 from utils.time import window_label
+from utils.norm import baseline_subtract
 
 
 
@@ -17,6 +18,11 @@ EARLY_COL = PLOT_OPTIONS['colours']['block']['early']
 LATE_COL = PLOT_OPTIONS['colours']['block']['late']
 FAST_COL = PLOT_OPTIONS['colours']['tf_pref']['fast']
 SLOW_COL = PLOT_OPTIONS['colours']['tf_pref']['slow']
+
+# pre-event baseline windows for projection plots
+TF_BL_WINDOW = ANALYSIS_OPTIONS['tf_context']
+LICK_BL_WINDOW = ANALYSIS_OPTIONS['lick_bl']
+BLON_BL_WINDOW = (-1.0, 0.0)
 
 
 def _load_results(npx_dir, dim_type, area, unit_filter):
@@ -162,34 +168,85 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
     n_wins = len(window_labels)
     tf_t_ax = sample['tf_t_ax']
 
-    fig, axes = plt.subplots(1, max(n_wins, 1),
-                             figsize=(6 * max(n_wins, 1), 4),
+    fig, axes = plt.subplots(3, max(n_wins, 1),
+                             figsize=(6 * max(n_wins, 1), 11),
                              squeeze=False)
 
     for wi, wl in enumerate(window_labels):
+        # collect traces per animal
+        animal_traces = {}
+        for animal in animals:
+            animal_traces[animal] = {}
+            for block in ('early', 'late'):
+                proj = results[animal]['cross_projections'][block][block].get(wl)
+                if proj is not None:
+                    animal_traces[animal][block] = {
+                        'fast': proj['fast'], 'slow': proj['slow']}
+
+        # raw projections
         ax = axes[0, wi]
         for block, block_col in [('early', EARLY_COL), ('late', LATE_COL)]:
-            for polarity, pol_col, ls in [('fast', FAST_COL, '-'),
-                                           ('slow', SLOW_COL, '--')]:
+            for polarity, ls in [('fast', '-'), ('slow', '--')]:
                 traces = []
                 for animal in animals:
-                    proj = results[animal]['cross_projections'][block][block].get(wl)
-                    if proj is None:
-                        continue
-                    trace = proj[polarity]
-                    ax.plot(tf_t_ax, trace, color=block_col, alpha=0.15,
-                            linewidth=0.5, linestyle=ls)
-                    traces.append(trace)
+                    trace = animal_traces[animal].get(block, {}).get(polarity)
+                    if trace is not None:
+                        ax.plot(tf_t_ax, trace, color=block_col, alpha=0.15,
+                                linewidth=0.5, linestyle=ls)
+                        traces.append(trace)
                 if traces:
-                    mean_proj = np.nanmean(traces, axis=0)
-                    ax.plot(tf_t_ax, mean_proj, color=block_col, linewidth=2,
-                            linestyle=ls, label=f'{block} {polarity}')
+                    ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                            linewidth=2, linestyle=ls, label=f'{block} {polarity}')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Projection (a.u.)')
+        ax.set_title(f'TF onto TF dim {wl} (same-block)')
+        ax.legend(fontsize=7)
 
+        # baseline-subtracted
+        ax = axes[1, wi]
+        for block, block_col in [('early', EARLY_COL), ('late', LATE_COL)]:
+            for polarity, ls in [('fast', '-'), ('slow', '--')]:
+                traces = []
+                for animal in animals:
+                    trace = animal_traces[animal].get(block, {}).get(polarity)
+                    if trace is not None:
+                        sub = baseline_subtract(trace, tf_t_ax, TF_BL_WINDOW)
+                        ax.plot(tf_t_ax, sub, color=block_col, alpha=0.15,
+                                linewidth=0.5, linestyle=ls)
+                        traces.append(sub)
+                if traces:
+                    ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                            linewidth=2, linestyle=ls, label=f'{block} {polarity}')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Projection (bl-sub)')
+        ax.set_title('Baseline-subtracted')
+        ax.legend(fontsize=7)
+
+        # (fast-slow)_early - (fast-slow)_late, baseline-subtracted
+        ax = axes[2, wi]
+        diffs = []
+        for animal in animals:
+            e = animal_traces[animal].get('early', {})
+            l = animal_traces[animal].get('late', {})
+            if all(k in e for k in ('fast', 'slow')) and \
+               all(k in l for k in ('fast', 'slow')):
+                e_fast = baseline_subtract(e['fast'], tf_t_ax, TF_BL_WINDOW)
+                e_slow = baseline_subtract(e['slow'], tf_t_ax, TF_BL_WINDOW)
+                l_fast = baseline_subtract(l['fast'], tf_t_ax, TF_BL_WINDOW)
+                l_slow = baseline_subtract(l['slow'], tf_t_ax, TF_BL_WINDOW)
+                diff = (e_fast - e_slow) - (l_fast - l_slow)
+                ax.plot(tf_t_ax, diff, color='grey', alpha=0.3, linewidth=0.7)
+                diffs.append(diff)
+        if diffs:
+            ax.plot(tf_t_ax, np.nanmean(diffs, axis=0), color='black',
+                    linewidth=2, label=f'Mean (n={len(diffs)})')
         ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
         ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
         ax.set_xlabel('Time from TF pulse (s)')
-        ax.set_ylabel('Projection (a.u.)')
-        ax.set_title(f'TF onto TF dim {wl} (same-block)')
+        ax.set_ylabel('Δ projection')
+        ax.set_title('(fast−slow)early − (fast−slow)late')
         ax.legend(fontsize=7)
 
     fig.suptitle(f'TF projections [{suffix}]', fontsize=11)
@@ -219,29 +276,77 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
     n_wins = len(window_labels)
     lick_t_ax = sample['lick_t_ax']
 
-    fig, axes = plt.subplots(1, max(n_wins, 1),
-                             figsize=(6 * max(n_wins, 1), 4),
+    fig, axes = plt.subplots(3, max(n_wins, 1),
+                             figsize=(6 * max(n_wins, 1), 11),
                              squeeze=False)
 
     for wi, wl in enumerate(window_labels):
+        # collect traces per animal
+        animal_traces = {}
+        for animal in animals:
+            animal_traces[animal] = {}
+            for block in ('early', 'late'):
+                proj = results[animal]['cross_projections'][block][block].get(wl)
+                if proj is not None:
+                    animal_traces[animal][block] = proj
+
+        # raw projections
         ax = axes[0, wi]
         for block, colour in [('early', EARLY_COL), ('late', LATE_COL)]:
             traces = []
             for animal in animals:
-                proj = results[animal]['cross_projections'][block][block].get(wl)
-                if proj is not None:
-                    ax.plot(lick_t_ax, proj, color=colour, alpha=0.2, linewidth=0.7)
-                    traces.append(proj)
+                trace = animal_traces[animal].get(block)
+                if trace is not None:
+                    ax.plot(lick_t_ax, trace, color=colour, alpha=0.2, linewidth=0.7)
+                    traces.append(trace)
             if traces:
-                mean_proj = np.nanmean(traces, axis=0)
-                ax.plot(lick_t_ax, mean_proj, color=colour, linewidth=2,
-                        label=f'{block} block')
+                ax.plot(lick_t_ax, np.nanmean(traces, axis=0), color=colour,
+                        linewidth=2, label=f'{block} block')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Projection (a.u.)')
+        ax.set_title(f'Lick onto motor dim {wl} (same-block)')
+        ax.legend(fontsize=7)
 
+        # baseline-subtracted
+        ax = axes[1, wi]
+        for block, colour in [('early', EARLY_COL), ('late', LATE_COL)]:
+            traces = []
+            for animal in animals:
+                trace = animal_traces[animal].get(block)
+                if trace is not None:
+                    sub = baseline_subtract(trace, lick_t_ax, LICK_BL_WINDOW)
+                    ax.plot(lick_t_ax, sub, color=colour, alpha=0.2, linewidth=0.7)
+                    traces.append(sub)
+            if traces:
+                ax.plot(lick_t_ax, np.nanmean(traces, axis=0), color=colour,
+                        linewidth=2, label=f'{block} block')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Projection (bl-sub)')
+        ax.set_title('Baseline-subtracted')
+        ax.legend(fontsize=7)
+
+        # early - late per animal
+        ax = axes[2, wi]
+        diffs = []
+        for animal in animals:
+            e = animal_traces[animal].get('early')
+            l = animal_traces[animal].get('late')
+            if e is not None and l is not None:
+                e_sub = baseline_subtract(e, lick_t_ax, LICK_BL_WINDOW)
+                l_sub = baseline_subtract(l, lick_t_ax, LICK_BL_WINDOW)
+                diff = e_sub - l_sub
+                ax.plot(lick_t_ax, diff, color='grey', alpha=0.3, linewidth=0.7)
+                diffs.append(diff)
+        if diffs:
+            ax.plot(lick_t_ax, np.nanmean(diffs, axis=0), color='black',
+                    linewidth=2, label=f'Mean (n={len(diffs)})')
         ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
         ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
         ax.set_xlabel('Time from lick (s)')
-        ax.set_ylabel('Projection (a.u.)')
-        ax.set_title(f'Lick onto motor dim {wl} (same-block)')
+        ax.set_ylabel('Δ projection')
+        ax.set_title('Early − late')
         ax.legend(fontsize=7)
 
     fig.suptitle(f'Motor projections [{suffix}]', fontsize=11)
@@ -314,10 +419,13 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                     shuf = tf_w[rng.permutation(len(tf_w))]
                     null_list.append(cosine_similarity(shuf, motor_w))
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+        axes[1, 0].set_visible(False)
+        axes[2, 0].set_visible(False)
+        axes[2, 2].set_visible(False)
 
         # early vs late alignment scatter
-        ax = axes[0]
+        ax = axes[0, 0]
 
         # null cloud (random direction vs motor dim)
         n_null_pts = min(len(null_early_pts), len(null_late_pts))
@@ -356,41 +464,89 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         ax.legend(fontsize=7)
         ax.set_aspect('equal')
 
-        #  tf resp onto motor dim, per block
+        # collect TF-onto-motor traces per animal for all rows
+        block_animal_traces = {}
+        for animal in animals:
+            block_animal_traces[animal] = {}
+            for block in ('early', 'late'):
+                block_animal_traces[animal][block] = {}
+                block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
+                for cond_suffix, polarity in [('_pos', 'fast'), ('_neg', 'slow')]:
+                    cond_key = f'tf/{block_prefix}_early{cond_suffix}'
+                    trace = results[animal].get('tf_onto_motor', {}).get(
+                        block, {}).get(motor_wl, {}).get(cond_key)
+                    if trace is not None:
+                        block_animal_traces[animal][block][polarity] = trace
+
+        # raw projections
         for pi, (block, block_col) in enumerate([('early', EARLY_COL),
                                                    ('late', LATE_COL)]):
-            ax = axes[1 + pi]
-
-            for cond_suffix, colour, ls, label in [
-                ('_pos', FAST_COL, '-', 'fast'),
-                ('_neg', SLOW_COL, '--', 'slow'),
-            ]:
-                # find matching TF conditions for this block
-                block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
-                cond_key = f'tf/{block_prefix}_early{cond_suffix}'
-
+            ax = axes[0, 1 + pi]
+            for polarity, colour, ls in [('fast', FAST_COL, '-'),
+                                          ('slow', SLOW_COL, '--')]:
                 traces = []
                 for animal in animals:
-                    tom = results[animal].get('tf_onto_motor', {})
-                    block_tom = tom.get(block, {})
-                    motor_tom = block_tom.get(motor_wl, {})
-                    trace = motor_tom.get(cond_key)
+                    trace = block_animal_traces[animal].get(block, {}).get(polarity)
                     if trace is not None and tf_t_ax is not None:
                         ax.plot(tf_t_ax, trace, color=colour, alpha=0.15,
                                 linewidth=0.5, linestyle=ls)
                         traces.append(trace)
-
                 if traces and tf_t_ax is not None:
-                    mean_trace = np.nanmean(traces, axis=0)
-                    ax.plot(tf_t_ax, mean_trace, color=colour, linewidth=2,
-                            linestyle=ls, label=label)
-
+                    ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=colour,
+                            linewidth=2, linestyle=ls, label=polarity)
             ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
             ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
-            ax.set_xlabel('Time from TF pulse (s)')
             ax.set_ylabel('Projection onto motor dim (a.u.)')
             ax.set_title(f'{block.capitalize()} block TF onto {block} motor dim {motor_wl}')
             ax.legend(fontsize=7)
+
+        # baseline-subtracted projections
+        for pi, (block, block_col) in enumerate([('early', EARLY_COL),
+                                                   ('late', LATE_COL)]):
+            ax = axes[1, 1 + pi]
+            for polarity, colour, ls in [('fast', FAST_COL, '-'),
+                                          ('slow', SLOW_COL, '--')]:
+                traces = []
+                for animal in animals:
+                    trace = block_animal_traces[animal].get(block, {}).get(polarity)
+                    if trace is not None and tf_t_ax is not None:
+                        sub = baseline_subtract(trace, tf_t_ax, TF_BL_WINDOW)
+                        ax.plot(tf_t_ax, sub, color=colour, alpha=0.15,
+                                linewidth=0.5, linestyle=ls)
+                        traces.append(sub)
+                if traces and tf_t_ax is not None:
+                    ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=colour,
+                            linewidth=2, linestyle=ls, label=polarity)
+            ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.set_ylabel('Projection (bl-sub)')
+            ax.set_title(f'{block.capitalize()} block (bl-sub)')
+            ax.legend(fontsize=7)
+
+        # (fast−slow)_early − (fast−slow)_late
+        ax = axes[2, 1]
+        gain_diffs = []
+        for animal in animals:
+            e = block_animal_traces[animal].get('early', {})
+            l = block_animal_traces[animal].get('late', {})
+            if all(k in e for k in ('fast', 'slow')) and \
+               all(k in l for k in ('fast', 'slow')) and tf_t_ax is not None:
+                ef = baseline_subtract(e['fast'], tf_t_ax, TF_BL_WINDOW)
+                es = baseline_subtract(e['slow'], tf_t_ax, TF_BL_WINDOW)
+                lf = baseline_subtract(l['fast'], tf_t_ax, TF_BL_WINDOW)
+                ls_sub = baseline_subtract(l['slow'], tf_t_ax, TF_BL_WINDOW)
+                gain_diffs.append((ef - es) - (lf - ls_sub))
+        for d in gain_diffs:
+            ax.plot(tf_t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+        if gain_diffs:
+            ax.plot(tf_t_ax, np.nanmean(gain_diffs, axis=0), color='black',
+                    linewidth=2, label=f'Mean (n={len(gain_diffs)})')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_xlabel('Time from TF pulse (s)')
+        ax.set_ylabel('Δ projection')
+        ax.set_title('(fast−slow)early − (fast−slow)late')
+        ax.legend(fontsize=7)
 
         fig.suptitle(f'TF {tf_wl} x motor {motor_wl} [{suffix}]', fontsize=11)
         plt.tight_layout()
@@ -535,25 +691,21 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
         elif dn.startswith('motor_'):
             dim_classes['motor'].append(dn)
 
-    # each row is an event type with its conditions
+    # each row: (label, event_type, baseline_window, conditions)
     event_rows = [
-        ('baseline', 'blOn', [
+        ('baseline', 'blOn', BLON_BL_WINDOW, [
             ('early block', 'blOn/early', EARLY_COL, '-'),
             ('late block', 'blOn/late', LATE_COL, '-'),
         ]),
-        ('TF pulse', 'tf', [
-            ('early block fast', 'tf/earlyBlock_early_pos', EARLY_COL, '-'),
-            ('early block slow', 'tf/earlyBlock_early_neg', EARLY_COL, '--'),
-            ('late block fast', 'tf/lateBlock_early_pos', LATE_COL, '-'),
-            ('late block slow', 'tf/lateBlock_early_neg', LATE_COL, '--'),
+        ('TF pulse', 'tf', TF_BL_WINDOW, [
+            ('early fast', 'tf/earlyBlock_early_pos', EARLY_COL, '-'),
+            ('early slow', 'tf/earlyBlock_early_neg', EARLY_COL, '--'),
+            ('late fast', 'tf/lateBlock_early_pos', LATE_COL, '-'),
+            ('late slow', 'tf/lateBlock_early_neg', LATE_COL, '--'),
         ]),
-        ('lick (FA)', 'lick', [
+        ('lick (FA)', 'lick', LICK_BL_WINDOW, [
             ('early block', 'lick/earlyBlock_early_fa', EARLY_COL, '-'),
             ('late block', 'lick/lateBlock_early_fa', LATE_COL, '-'),
-        ]),
-        ('lick (hit)', 'lick', [
-            ('early block', 'lick/earlyBlock_early_hit', EARLY_COL, '-'),
-            ('late block', 'lick/lateBlock_early_hit', LATE_COL, '-'),
         ]),
     ]
 
@@ -563,41 +715,95 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
             continue
 
         n_cols = len(dim_names)
-        n_rows = len(event_rows)
+        n_rows = len(event_rows) * 3
         fig, axes = plt.subplots(n_rows, n_cols,
-                                 figsize=(5 * n_cols, 3.5 * n_rows),
+                                 figsize=(5 * n_cols, 3 * n_rows),
                                  squeeze=False)
 
         for ci, dim_name in enumerate(sorted(dim_names)):
-            for ri, (row_label, event_type, conditions) in enumerate(event_rows):
-                ax = axes[ri, ci]
+            for ri, (row_label, event_type, bl_window, conditions) in enumerate(event_rows):
+                base_row = ri * 3
                 t_ax = t_axes.get(event_type)
+
                 if t_ax is None:
-                    ax.set_visible(False)
+                    for offset in range(3):
+                        axes[base_row + offset, ci].set_visible(False)
                     continue
 
-                for label, resp_key, colour, ls in conditions:
-                    traces = []
-                    for animal in animals:
-                        proj = proj_results[animal]['projections']
-                        trace = proj.get(dim_name, {}).get(resp_key)
-                        if trace is not None:
-                            ax.plot(t_ax, trace, color=colour, alpha=0.15,
-                                    linewidth=0.5, linestyle=ls)
-                            traces.append(trace)
-                    if traces:
-                        mean_trace = np.nanmean(traces, axis=0)
-                        ax.plot(t_ax, mean_trace, color=colour, linewidth=2,
-                                linestyle=ls, label=label)
+                # collect per-animal traces for this event type + dimension
+                animal_traces = {}
+                for animal in animals:
+                    proj = proj_results[animal]['projections'].get(dim_name, {})
+                    animal_traces[animal] = {
+                        rk: proj[rk] for _, rk, _, _ in conditions if rk in proj}
 
+                # raw projections
+                ax = axes[base_row, ci]
+                for label, rk, colour, ls in conditions:
+                    traces = [animal_traces[a][rk] for a in animals
+                              if rk in animal_traces[a]]
+                    for t in traces:
+                        ax.plot(t_ax, t, color=colour, alpha=0.15,
+                                linewidth=0.5, linestyle=ls)
+                    if traces:
+                        ax.plot(t_ax, np.nanmean(traces, axis=0), color=colour,
+                                linewidth=2, linestyle=ls, label=label)
                 ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
-                if ri == n_rows - 1:
-                    ax.set_xlabel('Time (s)')
                 if ci == 0:
-                    ax.set_ylabel(f'{row_label}\nprojection (a.u.)')
-                if ri == 0:
+                    ax.set_ylabel(f'{row_label}\nraw')
+                if base_row == 0:
                     ax.set_title(dim_name, fontsize=9)
+                ax.legend(fontsize=6, loc='upper right')
+
+                # baseline-subtracted
+                ax = axes[base_row + 1, ci]
+                for label, rk, colour, ls in conditions:
+                    traces = [baseline_subtract(animal_traces[a][rk], t_ax, bl_window)
+                              for a in animals if rk in animal_traces[a]]
+                    for t in traces:
+                        ax.plot(t_ax, t, color=colour, alpha=0.15,
+                                linewidth=0.5, linestyle=ls)
+                    if traces:
+                        ax.plot(t_ax, np.nanmean(traces, axis=0), color=colour,
+                                linewidth=2, linestyle=ls, label=label)
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                if ci == 0:
+                    ax.set_ylabel(f'{row_label}\nbl-sub')
+                ax.legend(fontsize=6, loc='upper right')
+
+                # early−late difference
+                ax = axes[base_row + 2, ci]
+                diffs = []
+                if event_type == 'tf':
+                    # (fast−slow)_early − (fast−slow)_late
+                    keys = [rk for _, rk, _, _ in conditions]
+                    for a in animals:
+                        at = animal_traces[a]
+                        if len(at) == 4:
+                            bs = [baseline_subtract(at[k], t_ax, bl_window)
+                                  for k in keys]
+                            diffs.append((bs[0] - bs[1]) - (bs[2] - bs[3]))
+                else:
+                    keys = [rk for _, rk, _, _ in conditions]
+                    for a in animals:
+                        at = animal_traces[a]
+                        if len(at) == 2:
+                            diffs.append(
+                                baseline_subtract(at[keys[0]], t_ax, bl_window) -
+                                baseline_subtract(at[keys[1]], t_ax, bl_window))
+                for d in diffs:
+                    ax.plot(t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+                if diffs:
+                    ax.plot(t_ax, np.nanmean(diffs, axis=0), color='black',
+                            linewidth=2, label=f'Mean (n={len(diffs)})')
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                if ci == 0:
+                    diff_label = 'Δ(fast−slow)' if event_type == 'tf' else 'early−late'
+                    ax.set_ylabel(f'{row_label}\n{diff_label}')
+                ax.set_xlabel('Time (s)')
                 ax.legend(fontsize=6, loc='upper right')
 
         fig.suptitle(f'{dim_class} dimensions — all projections [{suffix}]', fontsize=11)
@@ -698,25 +904,42 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             if len(early_vals) < 2:
                 continue
 
-            # 3 panels: scatter, early block TF onto block dim, late block TF onto block dim
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+            axes[1, 0].set_visible(False)
+            axes[2, 0].set_visible(False)
+            axes[2, 2].set_visible(False)
 
-            _alignment_scatter_ax(axes[0],
+            _alignment_scatter_ax(axes[0, 0],
                 np.array(early_vals), np.array(late_vals),
                 null_early, null_late,
                 f'Early block: cos(TF {tf_wl}, block {b_wl})',
                 f'Late block: cos(TF {tf_wl}, block {b_wl})')
 
             tf_t_ax = t_axes.get('tf')
+
+            # collect traces per animal
+            block_animal_traces = {}
+            for animal in proj_animals:
+                block_animal_traces[animal] = {}
+                for block in ('early', 'late'):
+                    block_animal_traces[animal][block] = {}
+                    block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
+                    for pol_key, pol_name in [('pos', 'fast'), ('neg', 'slow')]:
+                        resp_key = f'tf/{block_prefix}_early_{pol_key}'
+                        trace = proj_results[animal]['projections'].get(
+                            b_d, {}).get(resp_key)
+                        if trace is not None:
+                            block_animal_traces[animal][block][pol_name] = trace
+
+            # raw projections
             for pi, (block, block_col) in enumerate([('early', EARLY_COL),
                                                       ('late', LATE_COL)]):
-                ax = axes[1 + pi]
-                block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
-                for polarity, ls, label in [('pos', '-', 'fast'), ('neg', '--', 'slow')]:
-                    resp_key = f'tf/{block_prefix}_early_{polarity}'
+                ax = axes[0, 1 + pi]
+                for polarity, ls, label in [('fast', '-', 'fast'), ('slow', '--', 'slow')]:
                     traces = []
                     for animal in proj_animals:
-                        trace = proj_results[animal]['projections'].get(b_d, {}).get(resp_key)
+                        trace = block_animal_traces[animal].get(
+                            block, {}).get(polarity)
                         if trace is not None and tf_t_ax is not None:
                             ax.plot(tf_t_ax, trace, color=block_col, alpha=0.15,
                                     linewidth=0.5, linestyle=ls)
@@ -724,13 +947,59 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                     if traces and tf_t_ax is not None:
                         ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
                                 linewidth=2, linestyle=ls, label=label)
-
                 ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
-                ax.set_xlabel('Time from TF pulse (s)')
                 ax.set_ylabel('Projection onto block dim (a.u.)')
                 ax.set_title(f'{block} block TF onto block {b_wl}')
                 ax.legend(fontsize=7)
+
+            # baseline-subtracted
+            for pi, (block, block_col) in enumerate([('early', EARLY_COL),
+                                                      ('late', LATE_COL)]):
+                ax = axes[1, 1 + pi]
+                for polarity, ls, label in [('fast', '-', 'fast'), ('slow', '--', 'slow')]:
+                    traces = []
+                    for animal in proj_animals:
+                        trace = block_animal_traces[animal].get(
+                            block, {}).get(polarity)
+                        if trace is not None and tf_t_ax is not None:
+                            sub = baseline_subtract(trace, tf_t_ax, TF_BL_WINDOW)
+                            ax.plot(tf_t_ax, sub, color=block_col, alpha=0.15,
+                                    linewidth=0.5, linestyle=ls)
+                            traces.append(sub)
+                    if traces and tf_t_ax is not None:
+                        ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                                linewidth=2, linestyle=ls, label=label)
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.set_ylabel('Projection (bl-sub)')
+                ax.set_title(f'{block} block (bl-sub)')
+                ax.legend(fontsize=7)
+
+            # (fast−slow)_early − (fast−slow)_late
+            ax = axes[2, 1]
+            gain_diffs = []
+            for animal in proj_animals:
+                e = block_animal_traces[animal].get('early', {})
+                l = block_animal_traces[animal].get('late', {})
+                if all(k in e for k in ('fast', 'slow')) and \
+                   all(k in l for k in ('fast', 'slow')) and tf_t_ax is not None:
+                    ef = baseline_subtract(e['fast'], tf_t_ax, TF_BL_WINDOW)
+                    es = baseline_subtract(e['slow'], tf_t_ax, TF_BL_WINDOW)
+                    lf = baseline_subtract(l['fast'], tf_t_ax, TF_BL_WINDOW)
+                    ls_sub = baseline_subtract(l['slow'], tf_t_ax, TF_BL_WINDOW)
+                    gain_diffs.append((ef - es) - (lf - ls_sub))
+            for d in gain_diffs:
+                ax.plot(tf_t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+            if gain_diffs:
+                ax.plot(tf_t_ax, np.nanmean(gain_diffs, axis=0), color='black',
+                        linewidth=2, label=f'Mean (n={len(gain_diffs)})')
+            ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.set_xlabel('Time from TF pulse (s)')
+            ax.set_ylabel('Δ projection')
+            ax.set_title('(fast−slow)early − (fast−slow)late')
+            ax.legend(fontsize=7)
 
             fig.suptitle(f'TF {tf_wl} x block {b_wl} [{suffix}]', fontsize=11)
             plt.tight_layout()
@@ -774,39 +1043,92 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             if len(early_vals) < 2:
                 continue
 
-            # 3 panels: scatter, early block licks onto block dim, late block licks onto block dim
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+            axes[1, 0].set_visible(False)
+            axes[2, 0].set_visible(False)
+            axes[2, 2].set_visible(False)
 
-            _alignment_scatter_ax(axes[0],
+            _alignment_scatter_ax(axes[0, 0],
                 np.array(early_vals), np.array(late_vals),
                 null_early, null_late,
                 f'Early block: cos(motor {m_wl}, block {b_wl})',
                 f'Late block: cos(motor {m_wl}, block {b_wl})')
 
             lick_t_ax = t_axes.get('lick')
+
+            # collect FA lick traces per animal per block
+            block_traces = {a: {} for a in proj_animals}
+            for animal in proj_animals:
+                for block in ('early', 'late'):
+                    block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
+                    resp_key = f'lick/{block_prefix}_early_fa'
+                    trace = proj_results[animal]['projections'].get(
+                        b_d, {}).get(resp_key)
+                    if trace is not None:
+                        block_traces[animal][block] = trace
+
+            # raw projections
             for pi, (block, block_col) in enumerate([('early', EARLY_COL),
                                                       ('late', LATE_COL)]):
-                ax = axes[1 + pi]
-                block_prefix = 'earlyBlock' if block == 'early' else 'lateBlock'
-                for lick_type, ls, label in [('fa', '-', 'FA'), ('hit', '--', 'hit')]:
-                    resp_key = f'lick/{block_prefix}_early_{lick_type}'
-                    traces = []
-                    for animal in proj_animals:
-                        trace = proj_results[animal]['projections'].get(b_d, {}).get(resp_key)
-                        if trace is not None and lick_t_ax is not None:
-                            ax.plot(lick_t_ax, trace, color=block_col, alpha=0.15,
-                                    linewidth=0.5, linestyle=ls)
-                            traces.append(trace)
-                    if traces and lick_t_ax is not None:
-                        ax.plot(lick_t_ax, np.nanmean(traces, axis=0), color=block_col,
-                                linewidth=2, linestyle=ls, label=label)
-
+                ax = axes[0, 1 + pi]
+                traces = []
+                for animal in proj_animals:
+                    trace = block_traces[animal].get(block)
+                    if trace is not None and lick_t_ax is not None:
+                        ax.plot(lick_t_ax, trace, color=block_col, alpha=0.15,
+                                linewidth=0.5)
+                        traces.append(trace)
+                if traces and lick_t_ax is not None:
+                    ax.plot(lick_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                            linewidth=2, label=f'{block} block')
                 ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
-                ax.set_xlabel('Time from lick (s)')
                 ax.set_ylabel('Projection onto block dim (a.u.)')
-                ax.set_title(f'{block} block licks onto block {b_wl}')
+                ax.set_title(f'{block} block FA licks onto block {b_wl}')
                 ax.legend(fontsize=7)
+
+            # baseline-subtracted
+            for pi, (block, block_col) in enumerate([('early', EARLY_COL),
+                                                      ('late', LATE_COL)]):
+                ax = axes[1, 1 + pi]
+                traces = []
+                for animal in proj_animals:
+                    trace = block_traces[animal].get(block)
+                    if trace is not None and lick_t_ax is not None:
+                        sub = baseline_subtract(trace, lick_t_ax, LICK_BL_WINDOW)
+                        ax.plot(lick_t_ax, sub, color=block_col, alpha=0.15,
+                                linewidth=0.5)
+                        traces.append(sub)
+                if traces and lick_t_ax is not None:
+                    ax.plot(lick_t_ax, np.nanmean(traces, axis=0), color=block_col,
+                            linewidth=2, label=f'{block} block')
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.set_ylabel('Projection (bl-sub)')
+                ax.set_title(f'{block} block (bl-sub)')
+                ax.legend(fontsize=7)
+
+            # early − late
+            ax = axes[2, 1]
+            diffs = []
+            for animal in proj_animals:
+                e = block_traces[animal].get('early')
+                l = block_traces[animal].get('late')
+                if e is not None and l is not None and lick_t_ax is not None:
+                    diffs.append(
+                        baseline_subtract(e, lick_t_ax, LICK_BL_WINDOW) -
+                        baseline_subtract(l, lick_t_ax, LICK_BL_WINDOW))
+            for d in diffs:
+                ax.plot(lick_t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+            if diffs:
+                ax.plot(lick_t_ax, np.nanmean(diffs, axis=0), color='black',
+                        linewidth=2, label=f'Mean (n={len(diffs)})')
+            ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.set_xlabel('Time from lick (s)')
+            ax.set_ylabel('Δ projection')
+            ax.set_title('Early − late (FA)')
+            ax.legend(fontsize=7)
 
             fig.suptitle(f'Motor {m_wl} x block {b_wl} [{suffix}]', fontsize=11)
             plt.tight_layout()
