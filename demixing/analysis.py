@@ -193,13 +193,17 @@ def align_to_lick_onset(z_all, dataset, session,
 
 #%% helpers
 
-def _filter_events(df, block=None, tr_in_block_min=None, **extra):
+def _filter_events(df, block=None, tr_in_block_min=None,
+                    is_hit=None, ch_tf=None, is_FA=None):
     mask = pd.Series(True, index=df.index)
     if block is not None and 'block' in df.columns:
         mask &= df['block'] == block
     if tr_in_block_min is not None and 'tr_in_block' in df.columns:
         mask &= df['tr_in_block'] > tr_in_block_min
-    for col, val in extra.items():
-        if val is not None and col in df.columns:
-            mask &= df[col] == val
+    if is_hit is not None:
+        mask &= df['is_hit'] == is_hit
+    if ch_tf is not None:
+        mask &= df['ch_tf'] == ch_tf
+    if is_FA is not None:
+        mask &= df['is_FA'] == is_FA
     return df[mask]

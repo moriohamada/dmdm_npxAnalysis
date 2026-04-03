@@ -86,6 +86,15 @@ def _calculate_preference_index(r1: np.ndarray,
 def _denorm(r: np.ndarray, means: np.ndarray, sds: np.ndarray):
     return r * sds[:,None] + means[:,None]
 
+def _denorm_pair(r1, r2, sess_data):
+    """denorm both arrays if session was z-scored"""
+    if sess_data.fr_normed:
+        means = sess_data.fr_stats['mean'].values
+        sds = sess_data.fr_stats['sd'].values
+        r1 = _denorm(r1, means, sds)
+        r2 = _denorm(r2, means, sds)
+    return r1, r2
+
 def _extract_tf_preference(psth_path, sess_data, ops):
     resp_win = ops['tf_resp_win']
     comps = {
@@ -98,9 +107,7 @@ def _extract_tf_preference(psth_path, sess_data, ops):
     for name, conds in comps.items():
         r1 = _load_condition_resp(psth_path, 'tf', conds[0], resp_win)
         r2 = _load_condition_resp(psth_path, 'tf', conds[1], resp_win)
-        if sess_data.fr_normed:
-            r1 = _denorm(r1, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
-            r2 = _denorm(r2, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
+        r1, r2 = _denorm_pair(r1, r2, sess_data)
 
         idx, p = _calculate_preference_index(r1, r2, stat='mean', compute='index',
                                              n_iter=ops['n_iter'])
@@ -114,18 +121,14 @@ def _extract_block_preference(psth_path, sess_data, ops):
     prefs={}
     r1 = _load_condition_resp(psth_path, 'tf', 'earlyBlock_early_*', resp_win)
     r2 = _load_condition_resp(psth_path, 'tf', 'lateBlock_early_*', resp_win)
-    if sess_data.fr_normed:
-        r1 = _denorm(r1, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
-        r2 = _denorm(r2, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
+    r1, r2 = _denorm_pair(r1, r2, sess_data)
 
     block_idx, block_p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
     # also from pre-lick
     resp_win = ops['lick_bl']
     r1 = _load_condition_resp(psth_path, 'lick', 'earlyBlock_early_fa', resp_win)
     r2 = _load_condition_resp(psth_path, 'lick', 'lateBlock_early_fa', resp_win)
-    if sess_data.fr_normed:
-        r1 = _denorm(r1, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
-        r2 = _denorm(r2, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
+    r1, r2 = _denorm_pair(r1, r2, sess_data)
 
     block_lick_idx, block_lick_p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
     prefs = {
@@ -140,10 +143,7 @@ def _extract_time_preference(psth_path, sess_data, ops):
     resp_win = ops['tf_context']
     r1 = _load_condition_resp(psth_path, 'tf', 'lateBlock_early_*', resp_win)
     r2 = _load_condition_resp(psth_path, 'tf', 'lateBlock_late_*', resp_win)
-
-    if sess_data.fr_normed:
-        r1 = _denorm(r1, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
-        r2 = _denorm(r2, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
+    r1, r2 = _denorm_pair(r1, r2, sess_data)
 
     idx, p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
     prefs = {'time_idx': idx,
@@ -163,10 +163,7 @@ def _extract_lick_modulation(psth_path, sess_data, ops):
     for name, cond in comps.items():
         r1 = _load_condition_resp(psth_path, 'lick', cond, resp_win=win_pre)
         r2 = _load_condition_resp(psth_path, 'lick', cond, resp_win=win_lick)
-
-        if sess_data.fr_normed:
-            r1 = _denorm(r1, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
-            r2 = _denorm(r2, sess_data.fr_stats['mean'].values, sess_data.fr_stats['sd'].values)
+        r1, r2 = _denorm_pair(r1, r2, sess_data)
 
         idx, p = _calculate_preference_index(r2, r1, n_iter=ops['n_iter'])
         prefs[f'{name}_idx'] = idx
