@@ -152,45 +152,45 @@ for area in areas:
     for uf in unit_filters:
         print(f'\n=== extraction: area: {area}, filter: {uf} ===')
         extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
-                              bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, n_jobs=6)
+                              bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd', n_jobs=6)
         extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
-                                 bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, n_jobs=6)
+                                 bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd', n_jobs=6)
         extract_block_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
-                                 bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, n_jobs=6)
+                                 bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd', n_jobs=6)
 
 #%% coding dimension stats (tf/motor include plots via analyse_coding_dimensions)
 for area in areas:
     for uf in unit_filters:
         print(f'\n=== stats: area: {area}, filter: {uf} ===')
-        analyse_coding_dimensions('tf', bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-        analyse_coding_dimensions('motor', bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-        analyse_block_dimensions(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        analyse_coding_dimensions('tf', bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd')
+        analyse_coding_dimensions('motor', bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd')
+        analyse_block_dimensions(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd')
 
 #%% coding dimensions alignment
 for area in areas:
     for uf in unit_filters:
         print(f'\n=== comparisons: area: {area}, filter: {uf} ===')
-        calculate_tf_motor_alignment(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-        cross_dimension_cosines(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-        cross_dimension_projections(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        calculate_tf_motor_alignment(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd')
+        cross_dimension_cosines(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd')
+        cross_dimension_projections(bm_ops=CODING_DIM_OPS, area=area, unit_filter=uf, method='cd')
 
 #%% coding dim plots
 
 # block significance plots
 for area in areas:
     for uf in unit_filters:
-        plot_block_significance(area=area, unit_filter=uf)
+        plot_block_significance(area=area, unit_filter=uf, method='cd')
 
 # projections onto all dimensions
 for area in areas:
     for uf in unit_filters:
-        plot_cross_projections(area=area, unit_filter=uf)
+        plot_cross_projections(area=area, unit_filter=uf, method='cd')
 
 # cross-class alignment scatters
 for area in areas:
     for uf in unit_filters:
-        plot_cross_class_alignment(area=area, unit_filter=uf)
-        plot_alignment(area=area, unit_filter=uf)
+        plot_cross_class_alignment(area=area, unit_filter=uf, method='cd')
+        plot_alignment(area=area, unit_filter=uf, method='cd')
 
 
 #%% Demixing - train and save per session

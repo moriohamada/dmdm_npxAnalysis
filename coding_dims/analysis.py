@@ -13,11 +13,13 @@ from utils.time import window_label
 #%% between-block rotation analysis
 
 def load_dimension_results(dim_type, npx_dir=PATHS['npx_dir_local'],
-                           area=None, unit_filter=None):
-    """load extracted tf or motor dimension results from pickle"""
+                           area: str | None = None,
+                           unit_filter: list[str] | None = None,
+                           method: str = 'cd'):
+    """load extracted dimension results from pickle"""
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
-    with open(save_dir / f'{dim_type}_dimensions_{suffix}.pkl', 'rb') as f:
+    with open(save_dir / f'{dim_type}_dimensions_{method}_{suffix}.pkl', 'rb') as f:
         return pickle.load(f)
 
 
@@ -291,14 +293,15 @@ def pooled_pseudopop_cosine_test(results, dim_type, n_perm=500):
 
 
 def analyse_coding_dimensions(dim_type: str,
-                              npx_dir: str = PATHS['npx_dir_local'],
+                              npx_dir=PATHS['npx_dir_local'],
                               bm_ops: dict = CODING_DIM_OPS,
                               area: str | None = None,
                               unit_filter: list[str] | None = None,
-                              save_dir: str | None = None) -> dict:
+                              method: str = 'cd',
+                              save_dir=None) -> dict:
     """load results, run stats, plot"""
     suffix = _file_suffix(area, unit_filter)
-    results = load_dimension_results(dim_type, npx_dir, area, unit_filter)
+    results = load_dimension_results(dim_type, npx_dir, area, unit_filter, method=method)
 
     per_animal = per_animal_significance(results)
     pooled = pooled_null_test(results, n_perm=bm_ops['n_perm_across'])
@@ -319,7 +322,7 @@ def analyse_coding_dimensions(dim_type: str,
 
     from coding_dims.plotting import plot_tf_dimensions, plot_motor_dimensions
     plot_fn = plot_tf_dimensions if dim_type == 'tf' else plot_motor_dimensions
-    plot_kwargs = dict(npx_dir=npx_dir, area=area, unit_filter=unit_filter)
+    plot_kwargs = dict(npx_dir=npx_dir, area=area, unit_filter=unit_filter, method=method)
     if save_dir is not None:
         plot_kwargs['save_dir'] = save_dir
     plot_fn(**plot_kwargs)
@@ -329,10 +332,11 @@ def analyse_coding_dimensions(dim_type: str,
 
 
 # separate fn - testing significance of projected data rather than cosine sim for block dims
-def analyse_block_dimensions(npx_dir: str = PATHS['npx_dir_local'],
+def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
                              bm_ops: dict = CODING_DIM_OPS,
                              area: str | None = None,
-                             unit_filter: list[str] | None = None) -> dict:
+                             unit_filter: list[str] | None = None,
+                             method: str = 'cd') -> dict:
     """
     block cd significance tests: per-animal AUC ROC, across-animals mean AUC, pooled pseudo-population AUC
     """
@@ -340,7 +344,7 @@ def analyse_block_dimensions(npx_dir: str = PATHS['npx_dir_local'],
     from utils.stats import roc_auc
 
     suffix = _file_suffix(area, unit_filter)
-    results = load_dimension_results('block', npx_dir, area, unit_filter)
+    results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
 
     windows = bm_ops['block_coding_windows']
 
@@ -541,8 +545,9 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
 
 def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
                                  bm_ops=CODING_DIM_OPS,
-                                 area: None | str = None,
-                                 unit_filter: None | list[str] = None):
+                                 area: str | None = None,
+                                 unit_filter: list[str] | None = None,
+                                 method: str = 'cd'):
     """
     compare TF and motor coding directions: cosine similarity between all pairs per
     block. also computes TF response projections onto motor dimensions for plotting.
@@ -550,8 +555,8 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
 
-    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter)
-    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter)
+    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter, method=method)
+    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter, method=method)
 
     animals = set(tf_results.keys()) & set(motor_results.keys())
     all_results = {}
@@ -586,8 +591,7 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
         n_tf = len(tf_ids)
         n_motor = len(motor_ids)
         n_shared = len(shared)
-        if n_shared < n_tf or n_shared < n_motor:
-            print(f'  {animal}: {n_shared}/{n_tf} TF, {n_shared}/{n_motor} motor neurons shared')
+        print(f'  {animal}: {n_shared}/{n_tf} TF, {n_shared}/{n_motor} motor neurons shared')
 
         # cosine similarity between all TF x motor dimension pairs (shared neurons)
         alignment = {}
@@ -634,10 +638,10 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
             tf_t_ax=t_axes.get('tf'),
         )
 
-    out_path = save_dir / f'alignment_{suffix}.pkl'
+    out_path = save_dir / f'alignment_{method}_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
-    print(f'Saved alignment to {out_path}')
+    print(f'Saved alignment ({method}) to {out_path}')
 
     return all_results
 
@@ -648,6 +652,7 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
                             bm_ops=CODING_DIM_OPS,
                             area: str | None = None,
                             unit_filter: list[str] | None = None,
+                            method: str = 'cd',
                             n_perm: int = 500):
     """
     pairwise cosine similarities between block, tf, and motor coding dimensions, with permutation p-values. neurons
@@ -656,9 +661,9 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
 
-    block_results = load_dimension_results('block', npx_dir, area, unit_filter)
-    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter)
-    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter)
+    block_results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
+    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter, method=method)
+    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter, method=method)
 
     animals = sorted(set(block_results.keys()) &
                      set(tf_results.keys()) &
@@ -744,10 +749,10 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
         )
         print(f'  {animal}: {n_dims} dimensions, {len(shared)} shared neurons')
 
-    out_path = save_dir / f'cross_dimension_cosines_{suffix}.pkl'
+    out_path = save_dir / f'cross_dimension_cosines_{method}_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
-    print(f'Saved cross-dimension cosines to {out_path}')
+    print(f'Saved cross-dimension cosines ({method}) to {out_path}')
 
     return all_results
 
@@ -755,7 +760,8 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
 def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
                                 bm_ops=CODING_DIM_OPS,
                                 area: str | None = None,
-                                unit_filter: list[str] | None = None):
+                                unit_filter: list[str] | None = None,
+                                method: str = 'cd'):
     """
     project event-aligned mean responses onto all block, tf, motor coding dimensions.
     neurons matched by unit_ids intersection across all three types
@@ -763,9 +769,9 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
     save_dir = Path(npx_dir) / 'coding_dims'
     suffix = _file_suffix(area, unit_filter)
 
-    block_results = load_dimension_results('block', npx_dir, area, unit_filter)
-    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter)
-    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter)
+    block_results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
+    tf_results = load_dimension_results('tf', npx_dir, area, unit_filter, method=method)
+    motor_results = load_dimension_results('motor', npx_dir, area, unit_filter, method=method)
 
     animals = sorted(set(block_results.keys()) &
                      set(tf_results.keys()) &
@@ -854,10 +860,10 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
         print(f'  {animal}: projected {len(mean_resps)} responses onto '
               f'{len(dims)} dimensions ({len(keep)} neurons)')
 
-    out_path = save_dir / f'cross_dimension_projections_{suffix}.pkl'
+    out_path = save_dir / f'cross_dimension_projections_{method}_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
-    print(f'Saved cross-dimension projections to {out_path}')
+    print(f'Saved cross-dimension projections ({method}) to {out_path}')
 
     return all_results
 
@@ -866,6 +872,7 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
 
 def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
                                 bm_ops=CODING_DIM_OPS,
+                                method: str = 'cd',
                                 save_dir=None):
     """
     run extraction, analysis, and plotting for all area/unit_filter combos.
@@ -898,17 +905,19 @@ def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
 
         for dim_type, extract_fn in [('tf', extract_tf_dimensions),
                                       ('motor', extract_motor_dimensions)]:
-            extract_fn(npx_dir=npx_dir, bm_ops=bm_ops, n_jobs=6, **combo)
+            extract_fn(npx_dir=npx_dir, bm_ops=bm_ops, method=method,
+                       n_jobs=6, **combo)
 
-        calculate_tf_motor_alignment(npx_dir=npx_dir, bm_ops=bm_ops, **combo)
+        calculate_tf_motor_alignment(npx_dir=npx_dir, bm_ops=bm_ops,
+                                     method=method, **combo)
 
         for dim_type in ['tf', 'motor']:
             stats = analyse_coding_dimensions(
-                dim_type, npx_dir=npx_dir, bm_ops=bm_ops,
+                dim_type, npx_dir=npx_dir, bm_ops=bm_ops, method=method,
                 save_dir=str(combo_save) if combo_save else None, **combo)
             all_stats[(suffix, dim_type)] = stats
 
-        plot_alignment(npx_dir=npx_dir,
+        plot_alignment(npx_dir=npx_dir, method=method,
                        save_dir=str(combo_save) if combo_save else None,
                        **combo)
 

@@ -25,9 +25,9 @@ LICK_BL_WINDOW = ANALYSIS_OPTIONS['lick_bl']
 BLON_BL_WINDOW = (-1.0, 0.0)
 
 
-def _load_results(npx_dir, dim_type, area, unit_filter):
+def _load_results(npx_dir, dim_type, area, unit_filter, method='cd'):
     suffix = _file_suffix(area, unit_filter)
-    path = Path(npx_dir) / 'coding_dims' / f'{dim_type}_dimensions_{suffix}.pkl'
+    path = Path(npx_dir) / 'coding_dims' / f'{dim_type}_dimensions_{method}_{suffix}.pkl'
     with open(path, 'rb') as f:
         return pickle.load(f), suffix
 
@@ -147,12 +147,12 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
 #%% TF and motor dimension plots
 
 def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                       area=None, unit_filter=None):
+                       area=None, unit_filter=None, method='cd'):
     """
     between-block consistency of TF coding directions + projected tf resps
     """
-    results, suffix = _load_results(npx_dir, 'tf', area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims'
+    results, suffix = _load_results(npx_dir, 'tf', area, unit_filter, method=method)
+    save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_between_block_per_animal(results, 'tf', suffix, save_dir)
@@ -257,10 +257,10 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
 
 
 def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                          area=None, unit_filter=None):
+                          area=None, unit_filter=None, method='cd'):
     """between-block consistency of motor coding directions + projected lick resps"""
-    results, suffix = _load_results(npx_dir, 'motor', area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims'
+    results, suffix = _load_results(npx_dir, 'motor', area, unit_filter, method=method)
+    save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_between_block_per_animal(results, 'motor', suffix, save_dir)
@@ -359,13 +359,13 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
 #%% alignment plots
 
 def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                   area=None, unit_filter=None):
+                   area=None, unit_filter=None, method='cd'):
     """early vs late alignment scatter + TF onto motor dim projections"""
     suffix = _file_suffix(area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    path = Path(npx_dir) / 'coding_dims' / f'alignment_{suffix}.pkl'
+    path = Path(npx_dir) / 'coding_dims' / f'alignment_{method}_{suffix}.pkl'
     with open(path, 'rb') as f:
         results = pickle.load(f)
 
@@ -374,8 +374,8 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         return
 
     # dimensions needed for null cloud (shuffle neuron identity)
-    tf_results = _load_results(npx_dir, 'tf', area, unit_filter)[0]
-    motor_results = _load_results(npx_dir, 'motor', area, unit_filter)[0]
+    tf_results = _load_results(npx_dir, 'tf', area, unit_filter, method=method)[0]
+    motor_results = _load_results(npx_dir, 'motor', area, unit_filter, method=method)[0]
 
     # one figure per TF x motor window combo
     sample = results[animals[0]]
@@ -402,22 +402,41 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         late_vals = np.array(late_vals)
 
         # null: shuffle neuron identity in TF dim, recompute alignment with motor dim
+        # must match neurons between tf and motor via unit_ids first
         from utils.stats import cosine_similarity
         rng = np.random.default_rng(0)
         n_null = 500
         null_early_pts, null_late_pts = [], []
         for animal in animals:
-            tf_dims = tf_results.get(animal, {}).get('dimensions', {})
-            motor_dims_a = motor_results.get(animal, {}).get('dimensions', {})
+            tf_r = tf_results.get(animal, {})
+            motor_r = motor_results.get(animal, {})
+            tf_ids = tf_r.get('unit_ids', [])
+            motor_ids = motor_r.get('unit_ids', [])
+            if not tf_ids or not motor_ids:
+                continue
+
+            shared = set(tf_ids) & set(motor_ids)
+            if len(shared) < 5:
+                continue
+
+            tf_idx = np.array([i for i, uid in enumerate(tf_ids) if uid in shared])
+            tf_shared_order = [tf_ids[i] for i in tf_idx]
+            motor_id_to_idx = {uid: i for i, uid in enumerate(motor_ids)}
+            motor_idx = np.array([motor_id_to_idx[uid] for uid in tf_shared_order])
+
+            tf_dims = tf_r.get('dimensions', {})
+            motor_dims_a = motor_r.get('dimensions', {})
             for block, null_list in [('early', null_early_pts),
                                       ('late', null_late_pts)]:
                 tf_w = tf_dims.get(block, {}).get(tf_wl)
                 motor_w = motor_dims_a.get(block, {}).get(motor_wl)
                 if tf_w is None or motor_w is None:
                     continue
+                tf_sub = tf_w[tf_idx]
+                motor_sub = motor_w[motor_idx]
                 for _ in range(n_null):
-                    shuf = tf_w[rng.permutation(len(tf_w))]
-                    null_list.append(cosine_similarity(shuf, motor_w))
+                    shuf = tf_sub[rng.permutation(len(tf_sub))]
+                    null_list.append(cosine_similarity(shuf, motor_sub))
 
         fig, axes = plt.subplots(3, 3, figsize=(18, 14))
         axes[1, 0].set_visible(False)
@@ -562,10 +581,10 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
 #%% block dimension significance plots
 
 def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                            area=None, unit_filter=None):
+                            area=None, unit_filter=None, method='cd'):
     """per-animal AUC null distributions + summary for block coding dimensions"""
-    results, suffix = _load_results(npx_dir, 'block', area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims'
+    results, suffix = _load_results(npx_dir, 'block', area, unit_filter, method=method)
+    save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
     animals = sorted(results.keys())
@@ -660,17 +679,17 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
 #%% projections of all event types onto all dimensions
 
 def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                           area=None, unit_filter=None):
+                           area=None, unit_filter=None, method='cd'):
     """
     project baseline, TF, and lick responses onto every coding dimension.
     one figure per dimension class (block, tf, motor), columns = windows,
     rows = event types. individual animals as thin lines, mean as thick
     """
     suffix = _file_suffix(area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims'
+    save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{suffix}.pkl'
+    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{method}_{suffix}.pkl'
     with open(proj_path, 'rb') as f:
         proj_results = pickle.load(f)
 
@@ -819,7 +838,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
 
 def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                                bm_ops=CODING_DIM_OPS,
-                               area=None, unit_filter=None):
+                               area=None, unit_filter=None, method='cd'):
     """
     scatter plots of cross-class dimension alignment: early-block cosine vs
     late-block cosine for each pair of dimensions from different classes.
@@ -828,22 +847,22 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
     from utils.stats import cosine_similarity
 
     suffix = _file_suffix(area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims' / 'alignment'
+    save_dir = Path(save_dir) / 'coding_dims' / method / 'alignment'
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    cos_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_cosines_{suffix}.pkl'
+    cos_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_cosines_{method}_{suffix}.pkl'
     with open(cos_path, 'rb') as f:
         cos_results = pickle.load(f)
 
     # load cross-dimension projections for projection panels
-    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{suffix}.pkl'
+    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{method}_{suffix}.pkl'
     with open(proj_path, 'rb') as f:
         proj_results = pickle.load(f)
 
     # load raw dimensions for null cloud
-    block_results = _load_results(npx_dir, 'block', area, unit_filter)[0]
-    tf_results = _load_results(npx_dir, 'tf', area, unit_filter)[0]
-    motor_results = _load_results(npx_dir, 'motor', area, unit_filter)[0]
+    block_results = _load_results(npx_dir, 'block', area, unit_filter, method=method)[0]
+    tf_results = _load_results(npx_dir, 'tf', area, unit_filter, method=method)[0]
+    motor_results = _load_results(npx_dir, 'motor', area, unit_filter, method=method)[0]
 
     animals = sorted(cos_results.keys())
     if not animals:
