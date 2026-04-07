@@ -5,7 +5,7 @@ import pickle
 from pathlib import Path
 
 from config import PATHS, CODING_DIM_OPS
-from coding_dims.extract import _file_suffix
+from utils.filing import file_suffix
 from utils.stats import cosine_similarity
 from data.session import Session
 from utils.time import window_label
@@ -18,7 +18,7 @@ def load_dimension_results(dim_type, npx_dir=PATHS['npx_dir_local'],
                            method: str = 'cd'):
     """load extracted dimension results from pickle"""
     save_dir = Path(npx_dir) / 'coding_dims'
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     with open(save_dir / f'{dim_type}_dimensions_{method}_{suffix}.pkl', 'rb') as f:
         return pickle.load(f)
 
@@ -300,7 +300,7 @@ def analyse_coding_dimensions(dim_type: str,
                               method: str = 'cd',
                               save_dir=None) -> dict:
     """load results, run stats, plot"""
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     results = load_dimension_results(dim_type, npx_dir, area, unit_filter, method=method)
 
     per_animal = per_animal_significance(results)
@@ -343,60 +343,69 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
     from utils.shuffle import circular_shift_labels
     from utils.stats import roc_auc
 
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
 
     windows = bm_ops['block_coding_windows']
+    wls = [window_label(w) for w in windows]
+
+    # per-variant keys in the saved results dict
+    variant_keys = {
+        'raw':    dict(aucs='real_aucs', nulls='null_aucs', p='p_values'),
+        'dprime': dict(aucs='real_aucs_dprime', nulls='null_aucs_dprime', p='p_values_dprime'),
+    }
 
     # per-animal results (already computed during extraction)
-    per_animal = {}
-    for wl in [window_label(w) for w in windows]:
-        animals, aucs, p_values, null_aucs_list = [], [], [], []
-        for animal, res in sorted(results.items()):
-            real_auc = res.get('real_aucs', {}).get(wl)
-            if real_auc is None:
-                continue
-            animals.append(animal)
-            aucs.append(real_auc)
-            p_values.append(res.get('p_values', {}).get(wl, np.nan))
-            null_aucs_list.append(res.get('null_aucs', {}).get(wl, np.array([])))
+    per_animal = {'raw': {}, 'dprime': {}}
+    for variant, keys in variant_keys.items():
+        for wl in wls:
+            animals, aucs, p_values, null_aucs_list = [], [], [], []
+            for animal, res in sorted(results.items()):
+                real_auc = res.get(keys['aucs'], {}).get(wl)
+                if real_auc is None:
+                    continue
+                animals.append(animal)
+                aucs.append(real_auc)
+                p_values.append(res.get(keys['p'], {}).get(wl, np.nan))
+                null_aucs_list.append(res.get(keys['nulls'], {}).get(wl, np.array([])))
 
-        if animals:
-            per_animal[wl] = dict(
-                animals=animals,
-                aucs=np.array(aucs),
-                p_values=np.array(p_values),
-                null_aucs=null_aucs_list,
-            )
+            if animals:
+                per_animal[variant][wl] = dict(
+                    animals=animals,
+                    aucs=np.array(aucs),
+                    p_values=np.array(p_values),
+                    null_aucs=null_aucs_list,
+                )
 
     # across-animals test: mean AUC, null from sampling per-animal nulls
     n_perm_across = bm_ops['n_perm_across']
-    rng = np.random.default_rng(0)
-    across_animals = {}
-    for wl, pa in per_animal.items():
-        observed_mean = np.nanmean(pa['aucs'])
-        null_means = np.full(n_perm_across, np.nan)
-        for p in range(n_perm_across):
-            sampled = []
-            for null in pa['null_aucs']:
-                valid = null[~np.isnan(null)]
-                if len(valid) > 0:
-                    sampled.append(rng.choice(valid))
-            if sampled:
-                null_means[p] = np.mean(sampled)
+    across_animals = {'raw': {}, 'dprime': {}}
+    for variant in ['raw', 'dprime']:
+        rng = np.random.default_rng(0)
+        for wl, pa in per_animal[variant].items():
+            observed_mean = np.nanmean(pa['aucs'])
+            null_means = np.full(n_perm_across, np.nan)
+            for p in range(n_perm_across):
+                sampled = []
+                for null in pa['null_aucs']:
+                    valid = null[~np.isnan(null)]
+                    if len(valid) > 0:
+                        sampled.append(rng.choice(valid))
+                if sampled:
+                    null_means[p] = np.mean(sampled)
 
-        valid_null = null_means[~np.isnan(null_means)]
-        p_value = np.mean(valid_null >= observed_mean) if len(valid_null) > 0 else np.nan
+            valid_null = null_means[~np.isnan(null_means)]
+            p_value = np.mean(valid_null >= observed_mean) if len(valid_null) > 0 else np.nan
 
-        across_animals[wl] = dict(
-            observed_mean=observed_mean,
-            null_means=null_means,
-            p_value=p_value,
-            n_animals=len(pa['animals']),
-        )
+            across_animals[variant][wl] = dict(
+                observed_mean=observed_mean,
+                null_means=null_means,
+                p_value=p_value,
+                n_animals=len(pa['animals']),
+            )
 
     # pooled pseudo-population test: concatenate sessions, held-out AUC
-    from coding_dims.extract import (_compute_block_direction, _project_test_auc,
+    from coding_dims.extract import (_compute_block_directions, _project_test_auc,
                                      _get_fit_labels)
 
     n_perm_pooled = bm_ops['n_perm_pooled']
@@ -420,55 +429,68 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
             all_n_neurons.append(si['n_neurons'])
 
     neuron_offsets = np.cumsum([0] + all_n_neurons)
-    rng_pooled = np.random.default_rng(0)
-    pooled = {}
+    pooled = {'raw': {}, 'dprime': {}}
 
     real_fit_labels = _get_fit_labels(all_trial_lists, all_fit_idx)
 
+    # real AUCs per window, per variant
+    real_aucs_pooled = {'raw': {}, 'dprime': {}}
     for win in windows:
         wl = window_label(win)
+        dirs = _compute_block_directions(all_trial_lists, all_fit_idx,
+                                         real_fit_labels, wl)
+        for variant in ['raw', 'dprime']:
+            w, _ = dirs[variant]
+            if w is None:
+                continue
+            real_aucs_pooled[variant][wl] = _project_test_auc(
+                all_trial_lists, all_test_idx, w, neuron_offsets, wl)
 
-        # real AUC
-        w, _ = _compute_block_direction(all_trial_lists, all_fit_idx,
-                                        real_fit_labels, wl)
-        if w is None:
-            continue
-        real_auc = _project_test_auc(all_trial_lists, all_test_idx,
-                                     w, neuron_offsets, wl)
+    # circular-shift null (compute both variants per permutation)
+    null_aucs_pooled = {
+        variant: {wl: np.full(n_perm_pooled, np.nan) for wl in wls}
+        for variant in ['raw', 'dprime']
+    }
+    rng_pooled = np.random.default_rng(0)
+    for p in range(n_perm_pooled):
+        shifted = [circular_shift_labels(al, rng_pooled) for al in all_labels]
+        shifted_fit_labels = _get_fit_labels(all_trial_lists, all_fit_idx,
+                                             sess_all_labels=shifted)
+        for win in windows:
+            wl = window_label(win)
+            dirs = _compute_block_directions(all_trial_lists, all_fit_idx,
+                                             shifted_fit_labels, wl)
+            for variant in ['raw', 'dprime']:
+                w_null, _ = dirs[variant]
+                if w_null is None or wl not in real_aucs_pooled[variant]:
+                    continue
+                null_aucs_pooled[variant][wl][p] = _project_test_auc(
+                    all_trial_lists, all_test_idx, w_null, neuron_offsets, wl)
 
-        # circular-shift null
-        null_aucs_arr = np.full(n_perm_pooled, np.nan)
-        for p in range(n_perm_pooled):
-            shifted = [circular_shift_labels(al, rng_pooled) for al in all_labels]
-            shifted_fit_labels = _get_fit_labels(all_trial_lists, all_fit_idx,
-                                                 sess_all_labels=shifted)
-            w_null, _ = _compute_block_direction(all_trial_lists, all_fit_idx,
-                                                 shifted_fit_labels, wl)
-            if w_null is not None:
-                null_aucs_arr[p] = _project_test_auc(all_trial_lists, all_test_idx,
-                                                     w_null, neuron_offsets, wl)
+    for variant in ['raw', 'dprime']:
+        for wl, real_auc in real_aucs_pooled[variant].items():
+            null_arr = null_aucs_pooled[variant][wl]
+            valid = null_arr[~np.isnan(null_arr)]
+            p_value = np.mean(valid >= real_auc) if len(valid) > 0 else np.nan
+            pooled[variant][wl] = dict(
+                real_auc=real_auc,
+                null_aucs=null_arr,
+                p_value=p_value,
+                n_sessions=len(all_trial_lists),
+            )
 
-        valid = null_aucs_arr[~np.isnan(null_aucs_arr)]
-        p_value = np.mean(valid >= real_auc) if len(valid) > 0 else np.nan
-
-        pooled[wl] = dict(
-            real_auc=real_auc,
-            null_aucs=null_aucs_arr,
-            p_value=p_value,
-            n_sessions=len(all_trial_lists),
-        )
-
-    for wl in sorted(per_animal.keys()):
-        pa = per_animal[wl]
-        aa = across_animals.get(wl, {})
-        po = pooled.get(wl, {})
-        n_sig = np.sum(pa['p_values'] < 0.05)
-        print(f'block [{suffix}] {wl}: '
-              f'{len(pa["animals"])} animals, '
-              f'{n_sig}/{len(pa["animals"])} sig at p<0.05, '
-              f'mean AUC={np.nanmean(pa["aucs"]):.3f}, '
-              f'across-animals p={aa.get("p_value", np.nan):.4f}, '
-              f'pooled p={po.get("p_value", np.nan):.4f}')
+    for variant in ['raw', 'dprime']:
+        for wl in sorted(per_animal[variant].keys()):
+            pa = per_animal[variant][wl]
+            aa = across_animals[variant].get(wl, {})
+            po = pooled[variant].get(wl, {})
+            n_sig = np.sum(pa['p_values'] < 0.05)
+            print(f'block [{suffix}] [{variant}] {wl}: '
+                  f'{len(pa["animals"])} animals, '
+                  f'{n_sig}/{len(pa["animals"])} sig at p<0.05, '
+                  f'mean AUC={np.nanmean(pa["aucs"]):.3f}, '
+                  f'across-animals p={aa.get("p_value", np.nan):.4f}, '
+                  f'pooled p={po.get("p_value", np.nan):.4f}')
 
     return dict(per_animal=per_animal, across_animals=across_animals, pooled=pooled)
 
@@ -477,11 +499,14 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
 
 def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, bm_ops):
     """load neuron-masked and session-concatenated mean responses to tf/licks"""
-    from coding_dims.extract import _get_neuron_mask, _get_window_bins
+    from utils.selection import get_window_bins
+    from utils.selection import get_neuron_mask
+    from config import ANALYSIS_OPTIONS
     from data.load_responses import load_psth_mean
     from utils.smoothing import causal_boxcar
 
-    window_bins = _get_window_bins(bm_ops)
+    # PSTH means are at sp_bin_width
+    window_bins = get_window_bins(bm_ops, ANALYSIS_OPTIONS['sp_bin_width'])
 
     tf_conditions = [
         'earlyBlock_early_pos', 'earlyBlock_early_neg',
@@ -502,7 +527,7 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
     for sess_name in included_sessions:
         sess_dir = Path(npx_dir) / animal / sess_name
         psth_path = str(sess_dir / 'psths.h5')
-        neuron_mask = _get_neuron_mask(sess_dir, area, unit_filter)
+        neuron_mask = get_neuron_mask(sess_dir, area, unit_filter)
 
         session = Session.load(str(sess_dir / 'session.pkl'))
         cids = session.unit_info['cluster_id'].values[neuron_mask]
@@ -553,7 +578,7 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
     block. also computes TF response projections onto motor dimensions for plotting.
     """
     save_dir = Path(npx_dir) / 'coding_dims'
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
 
     tf_results = load_dimension_results('tf', npx_dir, area, unit_filter, method=method)
     motor_results = load_dimension_results('motor', npx_dir, area, unit_filter, method=method)
@@ -659,7 +684,7 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
     are matched by unit_ids intersection
     """
     save_dir = Path(npx_dir) / 'coding_dims'
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
 
     block_results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
     tf_results = load_dimension_results('tf', npx_dir, area, unit_filter, method=method)
@@ -767,7 +792,7 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
     neurons matched by unit_ids intersection across all three types
     """
     save_dir = Path(npx_dir) / 'coding_dims'
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
 
     block_results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
     tf_results = load_dimension_results('tf', npx_dir, area, unit_filter, method=method)
@@ -896,7 +921,7 @@ def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
 
     all_stats = {}
     for combo in combos:
-        suffix = _file_suffix(**combo)
+        suffix = file_suffix(**combo)
         print(f'\n{"=" * 60}')
         print(f'  {suffix}')
         print(f'{"=" * 60}')

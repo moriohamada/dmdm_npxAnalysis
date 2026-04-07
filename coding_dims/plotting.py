@@ -8,7 +8,7 @@ from pathlib import Path
 sns.set_style('whitegrid')
 
 from config import PATHS, PLOT_OPTIONS, CODING_DIM_OPS, ANALYSIS_OPTIONS
-from coding_dims.extract import _file_suffix
+from utils.filing import file_suffix
 from utils.time import window_label
 from utils.norm import baseline_subtract
 
@@ -26,7 +26,7 @@ BLON_BL_WINDOW = (-1.0, 0.0)
 
 
 def _load_results(npx_dir, dim_type, area, unit_filter, method='cd'):
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     path = Path(npx_dir) / 'coding_dims' / f'{dim_type}_dimensions_{method}_{suffix}.pkl'
     with open(path, 'rb') as f:
         return pickle.load(f), suffix
@@ -361,7 +361,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
 def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                    area=None, unit_filter=None, method='cd'):
     """early vs late alignment scatter + TF onto motor dim projections"""
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -637,8 +637,8 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
 
     for wi, wl in enumerate(window_labels):
         ax = axes_s[0, wi]
-        aa = block_stats['across_animals'].get(wl)
-        po = block_stats['pooled'].get(wl)
+        aa = block_stats['across_animals']['raw'].get(wl)
+        po = block_stats['pooled']['raw'].get(wl)
         if aa is None:
             ax.set_visible(False)
             continue
@@ -649,7 +649,7 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
                 label='Null (resampled)')
 
         # individual animal AUCs
-        pa = block_stats['per_animal'].get(wl, {})
+        pa = block_stats['per_animal']['raw'].get(wl, {})
         animal_aucs = pa.get('aucs', [])
         for auc_val in animal_aucs:
             ax.axvline(auc_val, color='black', linewidth=0.8, alpha=0.4)
@@ -685,7 +685,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
     one figure per dimension class (block, tf, motor), columns = windows,
     rows = event types. individual animals as thin lines, mean as thick
     """
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -846,7 +846,7 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
     """
     from utils.stats import cosine_similarity
 
-    suffix = _file_suffix(area, unit_filter)
+    suffix = file_suffix(area, unit_filter)
     save_dir = Path(save_dir) / 'coding_dims' / method / 'alignment'
     save_dir.mkdir(parents=True, exist_ok=True)
 

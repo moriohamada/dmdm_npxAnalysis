@@ -19,3 +19,11 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray):
     if na == 0 or nb == 0:
         return np.nan
     return np.clip(np.dot(a, b) / (na * nb), -1, 1)
+
+
+def l2_normalise(w: np.ndarray):
+    """L2-normalise a vector; returns (w_normed, norm). if norm=0, returns (w, 0)"""
+    norm = np.linalg.norm(w)
+    if norm > 0:
+        return w / norm, norm
+    return w, 0.0

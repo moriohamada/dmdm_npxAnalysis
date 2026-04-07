@@ -64,3 +64,11 @@ def get_session_files(npx_dir: str,
                 session_paths.append(os.path.join(sess_folder, 'session.pkl'))
 
     return session_paths
+
+
+def file_suffix(area=None, unit_filter=None):
+    """build filename suffix from area and unit filter"""
+    parts = [area if area and area != 'all' else 'all']
+    if unit_filter:
+        parts.append('-'.join(unit_filter))
+    return '_'.join(parts)

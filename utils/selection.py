@@ -4,6 +4,7 @@ Functions for selecting/filtering units, trials, time
 import numpy as np
 import pandas as pd
 from data.session import Session
+from utils.rois import AREA_GROUPS, in_group
 
 
 def filter_units(fr_stats: pd.DataFrame,
@@ -120,3 +121,36 @@ def get_condition_mask(session, t_ax, condition, ops, trial_indices=None):
                                 ops['rmv_time_around_bl'],
                                 ops['rmv_time_around_move'])
     return mask
+
+
+def get_neuron_mask(sess_dir, area=None, unit_filter=None):
+    """boolean mask for neurons matching area and/or GLM classification (OR logic)"""
+    session = Session.load(str(sess_dir / 'session.pkl'))
+    regions = session.unit_info['brain_region_comb'].values
+    n = len(regions)
+
+    if area is None or area == 'all':
+        mask = np.ones(n, dtype=bool)
+    elif area in AREA_GROUPS:
+        mask = in_group(regions, area)
+    else:
+        mask = np.array([r == area for r in regions])
+
+    if unit_filter is not None:
+        glm_path = sess_dir / 'glm_classifications.csv'
+        if not glm_path.exists():
+            return np.zeros(n, dtype=bool)
+        glm = pd.read_csv(glm_path)
+        glm_mask = np.zeros(n, dtype=bool)
+        n_glm = min(len(glm), n)
+        for f in unit_filter:
+            col = f'{f}_sig'
+            if col in glm.columns:
+                glm_mask[:n_glm] |= glm[col].values[:n_glm].astype(bool)
+        mask &= glm_mask
+
+    return mask
+
+
+def get_window_bins(ops, dt):
+    return max(1, int(round(ops['sliding_window_ms'] / 1000 / dt)))
