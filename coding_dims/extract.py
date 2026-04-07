@@ -590,13 +590,13 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
             fast_sess = sess_tavg[wl][block]['fast']
             slow_sess = sess_tavg[wl][block]['slow']
 
-            # raw: session-averaged mean(fast) - mean(slow)
+            # 'raw' cd: session-averaged mean(fast) - mean(slow)
             fast_means = [np.nanmean(s, axis=0) for s in fast_sess]
             slow_means = [np.nanmean(s, axis=0) for s in slow_sess]
             w_raw = np.concatenate(fast_means) - np.concatenate(slow_means)
             dimensions[block][wl], _ = l2_normalise(w_raw)
 
-            # dprime: per-session unpaired d', concatenated
+            # dprime variance: per-session unpaired d', concatenated (normed by sd)
             d_parts = [_dprime_unpaired(f, s) for f, s in zip(fast_sess, slow_sess)]
             w_dp = np.concatenate(d_parts)
             dimensions_dprime[block][wl], _ = l2_normalise(w_dp)
