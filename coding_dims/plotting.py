@@ -34,14 +34,14 @@ def _load_results(npx_dir, dim_type, area, unit_filter, method='cd'):
 
 #%% between-block cosine: per-animal figures
 
-def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None):
+def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None, dim_name='cd'):
     """one subplot per animal per window - cosine sim with null dist"""
     animals = sorted(results.keys())
     if not animals:
         return
 
     sample = results[animals[0]]
-    window_labels = sorted(sample['between_block_cosine'].keys())
+    window_labels = sorted(sample['between_block_cosine'][dim_name].keys())
     n_wins = len(window_labels)
 
     fig, axes = plt.subplots(len(animals), max(n_wins, 1),
@@ -51,7 +51,7 @@ def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None):
     for ai, animal in enumerate(animals):
         for wi, wl in enumerate(window_labels):
             ax = axes[ai, wi]
-            bc = results[animal]['between_block_cosine'].get(wl)
+            bc = results[animal]['between_block_cosine'][dim_name].get(wl)
             if bc is None:
                 ax.set_visible(False)
                 continue
@@ -72,21 +72,19 @@ def _plot_between_block_per_animal(results, dim_type, suffix, save_dir=None):
             if ai == 0:
                 ax.set_title(f'{wl}\n{animal}  (cos={real:.3f}, p={p:.3f})', fontsize=8)
 
-    fig.suptitle(f'{dim_type} coding dim between-block consistency [{suffix}]', fontsize=11)
+    fig.suptitle(f'{dim_type} [{dim_name}] between-block consistency [{suffix}]', fontsize=11)
     plt.tight_layout()
 
     if save_dir:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_dir / f'{dim_type}_between_block_per_animal_{suffix}.png',
+        fig.savefig(save_dir / f'{dim_type}_{dim_name}_between_block_per_animal_{suffix}.png',
                     dpi=300, bbox_inches='tight')
     return fig
 
 
-def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
-    """
-    summary: per-animal real cosines + grand mean against resampled grand-average null distribution
-    """
+def _plot_between_block_summary(results, dim_type, suffix, save_dir=None, dim_name='cd'):
+    """summary: per-animal real cosines + grand mean vs resampled null"""
     from coding_dims.analysis import pooled_null_test
 
     animals = sorted(results.keys())
@@ -94,7 +92,7 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
         return
 
     sample = results[animals[0]]
-    window_labels = sorted(sample['between_block_cosine'].keys())
+    window_labels = sorted(sample['between_block_cosine'][dim_name].keys())
     n_wins = len(window_labels)
 
     pooled = pooled_null_test(results, n_perm=10000)
@@ -105,25 +103,22 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
 
     for wi, wl in enumerate(window_labels):
         ax = axes[0, wi]
-        po = pooled.get(wl)
+        po = pooled[dim_name].get(wl)
         if po is None:
             ax.set_visible(False)
             continue
 
-        # null distribution of population means
         valid_null = po['null_means'][~np.isnan(po['null_means'])]
         ax.hist(valid_null, bins=40, density=True,
                 color='grey', alpha=0.4, label='Null (resampled)')
 
-        # individual animal cosines
         real_vals = []
         for animal in animals:
-            bc = results[animal]['between_block_cosine'].get(wl)
+            bc = results[animal]['between_block_cosine'][dim_name].get(wl)
             if bc is not None:
                 real_vals.append(bc['real'])
                 ax.axvline(bc['real'], color='black', linewidth=0.8, alpha=0.4)
 
-        # grand mean
         grand_mean = np.nanmean(real_vals)
         ax.axvline(grand_mean, color='red', linewidth=2.5,
                    label=f'Grand mean = {grand_mean:.3f}')
@@ -133,13 +128,13 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
         ax.set_ylabel('Density')
         ax.legend(fontsize=7)
 
-    fig.suptitle(f'{dim_type} coding dim between-block consistency [{suffix}]', fontsize=11)
+    fig.suptitle(f'{dim_type} [{dim_name}] between-block consistency [{suffix}]', fontsize=11)
     plt.tight_layout()
 
     if save_dir:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_dir / f'{dim_type}_between_block_summary_{suffix}.png',
+        fig.savefig(save_dir / f'{dim_type}_{dim_name}_between_block_summary_{suffix}.png',
                     dpi=300, bbox_inches='tight')
     return fig
 
@@ -147,7 +142,7 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None):
 #%% TF and motor dimension plots
 
 def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                       area=None, unit_filter=None, method='cd'):
+                       area=None, unit_filter=None, method='cd', dim_name='cd'):
     """
     between-block consistency of TF coding directions + projected tf resps
     """
@@ -155,8 +150,8 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
     save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    _plot_between_block_per_animal(results, 'tf', suffix, save_dir)
-    _plot_between_block_summary(results, 'tf', suffix, save_dir)
+    _plot_between_block_per_animal(results, 'tf', suffix, save_dir, dim_name=dim_name)
+    _plot_between_block_summary(results, 'tf', suffix, save_dir, dim_name=dim_name)
 
     # time-resolved projections (same-block)
     animals = sorted(results.keys())
@@ -164,7 +159,7 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
         return
 
     sample = results[animals[0]]
-    window_labels = sorted(sample['dimensions']['early'].keys())
+    window_labels = sorted(sample['dimensions'][dim_name]['early'].keys())
     n_wins = len(window_labels)
     tf_t_ax = sample['tf_t_ax']
 
@@ -178,7 +173,7 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
         for animal in animals:
             animal_traces[animal] = {}
             for block in ('early', 'late'):
-                proj = results[animal]['cross_projections'][block][block].get(wl)
+                proj = results[animal]['cross_projections'][dim_name][block][block].get(wl)
                 if proj is not None:
                     animal_traces[animal][block] = {
                         'fast': proj['fast'], 'slow': proj['slow']}
@@ -249,22 +244,22 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
         ax.set_title('(fast−slow)early − (fast−slow)late')
         ax.legend(fontsize=7)
 
-    fig.suptitle(f'TF projections [{suffix}]', fontsize=11)
+    fig.suptitle(f'TF [{dim_name}] projections [{suffix}]', fontsize=11)
     plt.tight_layout()
-    fig.savefig(save_dir / f'tf_projections_{suffix}.png',
+    fig.savefig(save_dir / f'tf_{dim_name}_projections_{suffix}.png',
                 dpi=300, bbox_inches='tight')
     return fig
 
 
 def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                          area=None, unit_filter=None, method='cd'):
+                          area=None, unit_filter=None, method='cd', dim_name='cd'):
     """between-block consistency of motor coding directions + projected lick resps"""
     results, suffix = _load_results(npx_dir, 'motor', area, unit_filter, method=method)
     save_dir = Path(save_dir) / 'coding_dims' / method
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    _plot_between_block_per_animal(results, 'motor', suffix, save_dir)
-    _plot_between_block_summary(results, 'motor', suffix, save_dir)
+    _plot_between_block_per_animal(results, 'motor', suffix, save_dir, dim_name=dim_name)
+    _plot_between_block_summary(results, 'motor', suffix, save_dir, dim_name=dim_name)
 
     # projections (same-block)
     animals = sorted(results.keys())
@@ -272,7 +267,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
         return
 
     sample = results[animals[0]]
-    window_labels = sorted(sample['dimensions']['early'].keys())
+    window_labels = sorted(sample['dimensions'][dim_name]['early'].keys())
     n_wins = len(window_labels)
     lick_t_ax = sample['lick_t_ax']
 
@@ -286,7 +281,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
         for animal in animals:
             animal_traces[animal] = {}
             for block in ('early', 'late'):
-                proj = results[animal]['cross_projections'][block][block].get(wl)
+                proj = results[animal]['cross_projections'][dim_name][block][block].get(wl)
                 if proj is not None:
                     animal_traces[animal][block] = proj
 
@@ -349,9 +344,9 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
         ax.set_title('Early − late')
         ax.legend(fontsize=7)
 
-    fig.suptitle(f'Motor projections [{suffix}]', fontsize=11)
+    fig.suptitle(f'Motor [{dim_name}] projections [{suffix}]', fontsize=11)
     plt.tight_layout()
-    fig.savefig(save_dir / f'motor_projections_{suffix}.png',
+    fig.savefig(save_dir / f'motor_{dim_name}_projections_{suffix}.png',
                 dpi=300, bbox_inches='tight')
     return fig
 
@@ -359,7 +354,7 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
 #%% alignment plots
 
 def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                   area=None, unit_filter=None, method='cd'):
+                   area=None, unit_filter=None, method='cd', dim_name='cd'):
     """early vs late alignment scatter + TF onto motor dim projections"""
     suffix = file_suffix(area, unit_filter)
     save_dir = Path(save_dir) / 'coding_dims' / method
@@ -379,19 +374,17 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
 
     # one figure per TF x motor window combo
     sample = results[animals[0]]
-    combo_keys = sorted(sample['alignment'].get('early', {}).keys())
+    combo_keys = sorted(sample['alignment'][dim_name].get('early', {}).keys())
     tf_t_ax = sample.get('tf_t_ax')
 
     figs = []
     for combo_key in combo_keys:
-        # parse window labels from key like 'tf_0.10_0.30_x_motor_-1.00_-0.60'
         tf_wl = combo_key.split('_x_motor_')[0].replace('tf_', '')
         motor_wl = combo_key.split('_x_motor_')[1]
 
-        # collect early/late alignment per animal
         early_vals, late_vals = [], []
         for animal in animals:
-            aln = results[animal]['alignment']
+            aln = results[animal]['alignment'][dim_name]
             e = aln.get('early', {}).get(combo_key)
             l = aln.get('late', {}).get(combo_key)
             if e is not None and l is not None:
@@ -402,7 +395,6 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         late_vals = np.array(late_vals)
 
         # null: shuffle neuron identity in TF dim, recompute alignment with motor dim
-        # must match neurons between tf and motor via unit_ids first
         from utils.stats import cosine_similarity
         rng = np.random.default_rng(0)
         n_null = 500
@@ -424,8 +416,8 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
             motor_id_to_idx = {uid: i for i, uid in enumerate(motor_ids)}
             motor_idx = np.array([motor_id_to_idx[uid] for uid in tf_shared_order])
 
-            tf_dims = tf_r.get('dimensions', {})
-            motor_dims_a = motor_r.get('dimensions', {})
+            tf_dims = tf_r.get('dimensions', {}).get(dim_name, {})
+            motor_dims_a = motor_r.get('dimensions', {}).get(dim_name, {})
             for block, null_list in [('early', null_early_pts),
                                       ('late', null_late_pts)]:
                 tf_w = tf_dims.get(block, {}).get(tf_wl)
@@ -493,7 +485,7 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                 for cond_suffix, polarity in [('_pos', 'fast'), ('_neg', 'slow')]:
                     cond_key = f'tf/{block_prefix}_early{cond_suffix}'
                     trace = results[animal].get('tf_onto_motor', {}).get(
-                        block, {}).get(motor_wl, {}).get(cond_key)
+                        dim_name, {}).get(block, {}).get(motor_wl, {}).get(cond_key)
                     if trace is not None:
                         block_animal_traces[animal][block][polarity] = trace
 
@@ -567,10 +559,10 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         ax.set_title('(fast−slow)early − (fast−slow)late')
         ax.legend(fontsize=7)
 
-        fig.suptitle(f'TF {tf_wl} x motor {motor_wl} [{suffix}]', fontsize=11)
+        fig.suptitle(f'TF {tf_wl} x motor {motor_wl} [{dim_name}] [{suffix}]', fontsize=11)
         plt.tight_layout()
 
-        fig.savefig(save_dir / f'alignment_tf{tf_wl}_motor{motor_wl}_{suffix}.png',
+        fig.savefig(save_dir / f'alignment_{dim_name}_tf{tf_wl}_motor{motor_wl}_{suffix}.png',
                     dpi=300, bbox_inches='tight')
 
         figs.append(fig)
@@ -581,7 +573,7 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
 #%% block dimension significance plots
 
 def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                            area=None, unit_filter=None, method='cd'):
+                            area=None, unit_filter=None, method='cd', dim_name='cd'):
     """per-animal AUC null distributions + summary for block coding dimensions"""
     results, suffix = _load_results(npx_dir, 'block', area, unit_filter, method=method)
     save_dir = Path(save_dir) / 'coding_dims' / method
@@ -592,7 +584,7 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
         return
 
     sample = results[animals[0]]
-    window_labels = sorted(sample['real_aucs'].keys())
+    window_labels = sorted(sample['real_aucs'][dim_name].keys())
     n_wins = len(window_labels)
 
     # per-animal: one subplot per animal per window
@@ -603,8 +595,8 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
     for ai, animal in enumerate(animals):
         for wi, wl in enumerate(window_labels):
             ax = axes[ai, wi]
-            real_auc = results[animal]['real_aucs'].get(wl)
-            null = results[animal]['null_aucs'].get(wl)
+            real_auc = results[animal]['real_aucs'][dim_name].get(wl)
+            null = results[animal]['null_aucs'][dim_name].get(wl)
             if real_auc is None or null is None:
                 ax.set_visible(False)
                 continue
@@ -622,9 +614,9 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
             if ai == 0:
                 ax.set_title(f'{wl}\n{animal}  (AUC={real_auc:.3f}, p={p:.3f})', fontsize=8)
 
-    fig.suptitle(f'Block coding dim held-out AUC [{suffix}]', fontsize=11)
+    fig.suptitle(f'Block [{dim_name}] held-out AUC [{suffix}]', fontsize=11)
     plt.tight_layout()
-    fig.savefig(save_dir / f'block_auc_per_animal_{suffix}.png',
+    fig.savefig(save_dir / f'block_{dim_name}_auc_per_animal_{suffix}.png',
                 dpi=300, bbox_inches='tight')
 
     # summary: individual animal AUCs + across-animals null
@@ -637,24 +629,21 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
 
     for wi, wl in enumerate(window_labels):
         ax = axes_s[0, wi]
-        aa = block_stats['across_animals']['raw'].get(wl)
-        po = block_stats['pooled']['raw'].get(wl)
+        aa = block_stats['across_animals'][dim_name].get(wl)
+        po = block_stats['pooled'][dim_name].get(wl)
         if aa is None:
             ax.set_visible(False)
             continue
 
-        # across-animals null distribution
         valid_null = aa['null_means'][~np.isnan(aa['null_means'])]
         ax.hist(valid_null, bins=40, density=True, color='grey', alpha=0.4,
                 label='Null (resampled)')
 
-        # individual animal AUCs
-        pa = block_stats['per_animal']['raw'].get(wl, {})
+        pa = block_stats['per_animal'][dim_name].get(wl, {})
         animal_aucs = pa.get('aucs', [])
         for auc_val in animal_aucs:
             ax.axvline(auc_val, color='black', linewidth=0.8, alpha=0.4)
 
-        # grand mean
         grand_mean = aa['observed_mean']
         ax.axvline(grand_mean, color='red', linewidth=2.5,
                    label=f'Grand mean = {grand_mean:.3f}')
@@ -668,9 +657,9 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
         ax.set_ylabel('Density')
         ax.legend(fontsize=7)
 
-    fig_s.suptitle(f'Block coding dim summary [{suffix}]', fontsize=11)
+    fig_s.suptitle(f'Block [{dim_name}] summary [{suffix}]', fontsize=11)
     plt.tight_layout()
-    fig_s.savefig(save_dir / f'block_auc_summary_{suffix}.png',
+    fig_s.savefig(save_dir / f'block_{dim_name}_auc_summary_{suffix}.png',
                   dpi=300, bbox_inches='tight')
 
     return fig, fig_s
@@ -739,7 +728,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
                                  figsize=(5 * n_cols, 3 * n_rows),
                                  squeeze=False)
 
-        for ci, dim_name in enumerate(sorted(dim_names)):
+        for ci, dn in enumerate(sorted(dim_names)):
             for ri, (row_label, event_type, bl_window, conditions) in enumerate(event_rows):
                 base_row = ri * 3
                 t_ax = t_axes.get(event_type)
@@ -752,7 +741,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
                 # collect per-animal traces for this event type + dimension
                 animal_traces = {}
                 for animal in animals:
-                    proj = proj_results[animal]['projections'].get(dim_name, {})
+                    proj = proj_results[animal]['projections'].get(dn, {})
                     animal_traces[animal] = {
                         rk: proj[rk] for _, rk, _, _ in conditions if rk in proj}
 
@@ -772,7 +761,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
                 if ci == 0:
                     ax.set_ylabel(f'{row_label}\nraw')
                 if base_row == 0:
-                    ax.set_title(dim_name, fontsize=9)
+                    ax.set_title(dn, fontsize=9)
                 ax.legend(fontsize=6, loc='upper right')
 
                 # baseline-subtracted

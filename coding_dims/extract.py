@@ -18,9 +18,13 @@ from utils.shuffle import circular_shift_labels
 from utils.stats import roc_auc, cosine_similarity, l2_normalise
 
 
+def _mean_diff(a, b):
+    # a, b: (nEv, nN) -> (nN,)
+    return np.nanmean(a, axis=0) - np.nanmean(b, axis=0)
+
+
 def _dprime_unpaired(a, b):
-    """per-neuron d' from two unpaired sample arrays shaped (nEv, nN).
-    neurons with sigma=0 get weight 0"""
+    # a, b: (nEv, nN) -> (nN,)
     mu_diff = np.nanmean(a, axis=0) - np.nanmean(b, axis=0)
     sigma = np.sqrt((np.nanvar(a, axis=0) + np.nanvar(b, axis=0)) / 2)
     d = np.zeros_like(mu_diff)
@@ -30,8 +34,7 @@ def _dprime_unpaired(a, b):
 
 
 def _dprime_paired(a, b):
-    """per-neuron paired d' from two arrays shaped (nEv, nN) with matched events.
-    neurons with sigma=0 get weight 0"""
+    # a, b: (nEv, nN), matched events -> (nN,)
     diff = a - b
     mu = np.nanmean(diff, axis=0)
     sigma = np.nanstd(diff, axis=0)
@@ -39,6 +42,42 @@ def _dprime_paired(a, b):
     valid = sigma > 0
     d[valid] = mu[valid] / sigma[valid]
     return d
+
+
+def _lda_unpaired(a, b):
+    # a, b: (nEv, nN) -> (nN,); Ledoit-Wolf shrinkage LDA
+    from sklearn.covariance import LedoitWolf
+    mu_diff = np.nanmean(a, axis=0) - np.nanmean(b, axis=0)
+    X = np.concatenate([a - np.nanmean(a, axis=0),
+                        b - np.nanmean(b, axis=0)], axis=0)
+    X = X[~np.any(np.isnan(X), axis=1)]
+    if X.shape[0] < 2:
+        return np.zeros_like(mu_diff)
+    cov = LedoitWolf().fit(X).covariance_
+    try:
+        return np.linalg.solve(cov, mu_diff)
+    except np.linalg.LinAlgError:
+        return np.zeros_like(mu_diff)
+
+
+def _lda_paired(a, b):
+    # a, b: (nEv, nN), matched events -> (nN,); Hotelling's T² direction
+    from sklearn.covariance import LedoitWolf
+    diff = a - b
+    mu = np.nanmean(diff, axis=0)
+    diff = diff[~np.any(np.isnan(diff), axis=1)]
+    if diff.shape[0] < 2:
+        return np.zeros_like(mu)
+    cov = LedoitWolf().fit(diff).covariance_
+    try:
+        return np.linalg.solve(cov, mu)
+    except np.linalg.LinAlgError:
+        return np.zeros_like(mu)
+
+
+TF_DIM_FNS    = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired, 'lda': _lda_unpaired}
+MOTOR_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_paired,   'lda': _lda_paired}
+BLOCK_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired, 'lda': _lda_unpaired}
 
 
 #%% data loading
@@ -235,16 +274,10 @@ def _session_valid_for_block(block_data, min_trials=10):
 
 
 def _compute_block_directions(sess_trial_lists, sess_fit_idx, fit_labels, wl):
-    """
-    compute block coding directions (raw + dprime) from fit trials.
-    fit_labels[s] is a list of block labels for the fit trials in session s,
-    in the same order as sess_fit_idx[s].
-    returns {'raw': (w_normed, norm), 'dprime': (w_normed, norm)}
-    either entry can be (None, 0.0) if not enough data
-    """
-    raw_early_means = []
-    raw_late_means = []
-    dp_parts = []
+    # returns {dim_name: (w_normed, norm)} per dim_name in BLOCK_DIM_FNS.
+    # entry can be (None, 0.0) if not enough data
+    sess_early = []  # list of (n_early_trials, nN) per session
+    sess_late  = []  # list of (n_late_trials, nN) per session
     for s in range(len(sess_trial_lists)):
         trial_list = sess_trial_lists[s]
         early_vecs = []
@@ -257,31 +290,20 @@ def _compute_block_directions(sess_trial_lists, sess_fit_idx, fit_labels, wl):
                 early_vecs.append(v)
             elif fit_labels[s][j] == 'late':
                 late_vecs.append(v)
-        if not early_vecs or not late_vecs:
-            continue
+        if early_vecs and late_vecs:
+            sess_early.append(np.stack(early_vecs))
+            sess_late.append(np.stack(late_vecs))
 
-        early_arr = np.stack(early_vecs)  # (n_early_trials, n_neurons)
-        late_arr = np.stack(late_vecs)    # (n_late_trials, n_neurons)
-        raw_early_means.append(early_arr.mean(axis=0))
-        raw_late_means.append(late_arr.mean(axis=0))
-        dp_parts.append(_dprime_unpaired(early_arr, late_arr))
+    out = {v: (None, 0.0) for v in BLOCK_DIM_FNS}
+    if not sess_early:
+        return out
 
-    raw_out = (None, 0.0)
-    dp_out = (None, 0.0)
-
-    if raw_early_means and raw_late_means:
-        w = np.concatenate(raw_early_means) - np.concatenate(raw_late_means)
+    for dim_name, fn in BLOCK_DIM_FNS.items():
+        w = np.concatenate([fn(e, l) for e, l in zip(sess_early, sess_late)])
         w, norm = l2_normalise(w)
         if norm > 0:
-            raw_out = (w, norm)
-
-    if dp_parts:
-        w = np.concatenate(dp_parts)
-        w, norm = l2_normalise(w)
-        if norm > 0:
-            dp_out = (w, norm)
-
-    return {'raw': raw_out, 'dprime': dp_out}
+            out[dim_name] = (w, norm)
+    return out
 
 
 def _project_test_auc(sess_trial_lists, sess_test_idx, w, neuron_offsets, wl):
@@ -409,38 +431,30 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
         sess_test_idx.append(early_idx[:n_test_e] + late_idx[:n_test_l])
         sess_fit_idx.append(early_idx[n_test_e:] + late_idx[n_test_l:])
 
-    # real direction and AUC per window (raw + dprime)
+    # real direction and AUC per window, per dim_name
     real_fit_labels = _get_fit_labels(sess_trial_lists, sess_fit_idx)
 
-    dimensions = {}
-    direction_norm = {}
-    real_aucs = {}
-    dimensions_dprime = {}
-    direction_norm_dprime = {}
-    real_aucs_dprime = {}
+    dimensions     = {v: {} for v in BLOCK_DIM_FNS}
+    direction_norm = {v: {} for v in BLOCK_DIM_FNS}
+    real_aucs      = {v: {} for v in BLOCK_DIM_FNS}
+    null_aucs = {v: {window_label(w): np.full(n_perm, np.nan) for w in windows}
+                 for v in BLOCK_DIM_FNS}
+    p_values = {v: {} for v in BLOCK_DIM_FNS}
 
     for win in windows:
         wl = window_label(win)
         dirs = _compute_block_directions(
             sess_trial_lists, sess_fit_idx, real_fit_labels, wl)
-        w, norm = dirs['raw']
-        if w is not None:
-            dimensions[wl] = w
-            direction_norm[wl] = norm
-            real_aucs[wl] = _project_test_auc(
+        for dim_name, (w, norm) in dirs.items():
+            if w is None:
+                continue
+            dimensions[dim_name][wl] = w
+            direction_norm[dim_name][wl] = norm
+            real_aucs[dim_name][wl] = _project_test_auc(
                 sess_trial_lists, sess_test_idx, w, neuron_offsets, wl)
-        w_dp, norm_dp = dirs['dprime']
-        if w_dp is not None:
-            dimensions_dprime[wl] = w_dp
-            direction_norm_dprime[wl] = norm_dp
-            real_aucs_dprime[wl] = _project_test_auc(
-                sess_trial_lists, sess_test_idx, w_dp, neuron_offsets, wl)
 
-    # circular-shift null (raw + dprime)
-    null_aucs = {window_label(w): np.full(n_perm, np.nan) for w in windows}
-    null_aucs_dprime = {window_label(w): np.full(n_perm, np.nan) for w in windows}
+    # circular-shift null
     rng = np.random.default_rng(0)
-
     for p in range(n_perm):
         shifted = [circular_shift_labels(al, rng) for al in sess_all_labels]
         shifted_fit_labels = _get_fit_labels(
@@ -450,25 +464,17 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
             wl = window_label(win)
             dirs = _compute_block_directions(
                 sess_trial_lists, sess_fit_idx, shifted_fit_labels, wl)
-            if wl in dimensions and dirs['raw'][0] is not None:
-                null_aucs[wl][p] = _project_test_auc(
-                    sess_trial_lists, sess_test_idx, dirs['raw'][0],
-                    neuron_offsets, wl)
-            if wl in dimensions_dprime and dirs['dprime'][0] is not None:
-                null_aucs_dprime[wl][p] = _project_test_auc(
-                    sess_trial_lists, sess_test_idx, dirs['dprime'][0],
-                    neuron_offsets, wl)
+            for dim_name, (w_null, _) in dirs.items():
+                if w_null is None or wl not in dimensions[dim_name]:
+                    continue
+                null_aucs[dim_name][wl][p] = _project_test_auc(
+                    sess_trial_lists, sess_test_idx, w_null, neuron_offsets, wl)
 
-    p_values = {}
-    p_values_dprime = {}
-    for win in windows:
-        wl = window_label(win)
-        if wl in real_aucs:
-            valid = null_aucs[wl][~np.isnan(null_aucs[wl])]
-            p_values[wl] = np.mean(valid >= real_aucs[wl]) if len(valid) > 0 else np.nan
-        if wl in real_aucs_dprime:
-            valid = null_aucs_dprime[wl][~np.isnan(null_aucs_dprime[wl])]
-            p_values_dprime[wl] = np.mean(valid >= real_aucs_dprime[wl]) if len(valid) > 0 else np.nan
+    for dim_name in BLOCK_DIM_FNS:
+        for wl, real_auc in real_aucs[dim_name].items():
+            null = null_aucs[dim_name][wl]
+            valid = null[~np.isnan(null)]
+            p_values[dim_name][wl] = np.mean(valid >= real_auc) if len(valid) > 0 else np.nan
 
     # save per-session intermediate data for pooled aggregation
     sess_intermediate = []
@@ -483,15 +489,10 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
 
     result = {
         'dimensions': dimensions,
-        'dimensions_dprime': dimensions_dprime,
         'direction_norm': direction_norm,
-        'direction_norm_dprime': direction_norm_dprime,
         'real_aucs': real_aucs,
-        'real_aucs_dprime': real_aucs_dprime,
         'null_aucs': null_aucs,
-        'null_aucs_dprime': null_aucs_dprime,
         'p_values': p_values,
-        'p_values_dprime': p_values_dprime,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
         'unit_ids': unit_ids,
@@ -581,27 +582,18 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
     n_total = sum(n_neurons_per_session)
     print(f'  {animal} [{suffix}]: {n_sessions} sessions, {n_total} neurons')
 
-    # compute coding directions per block and window (raw + dprime)
-    dimensions = {'early': {}, 'late': {}}
-    dimensions_dprime = {'early': {}, 'late': {}}
+    # compute coding directions per dim_name, block, window
+    dimensions = {v: {'early': {}, 'late': {}} for v in TF_DIM_FNS}
     for block in ['early', 'late']:
         for win in windows:
             wl = window_label(win)
             fast_sess = sess_tavg[wl][block]['fast']
             slow_sess = sess_tavg[wl][block]['slow']
+            for dim_name, fn in TF_DIM_FNS.items():
+                w = np.concatenate([fn(f, s) for f, s in zip(fast_sess, slow_sess)])
+                dimensions[dim_name][block][wl], _ = l2_normalise(w)
 
-            # 'raw' cd: session-averaged mean(fast) - mean(slow)
-            fast_means = [np.nanmean(s, axis=0) for s in fast_sess]
-            slow_means = [np.nanmean(s, axis=0) for s in slow_sess]
-            w_raw = np.concatenate(fast_means) - np.concatenate(slow_means)
-            dimensions[block][wl], _ = l2_normalise(w_raw)
-
-            # dprime variance: per-session unpaired d', concatenated (normed by sd)
-            d_parts = [_dprime_unpaired(f, s) for f, s in zip(fast_sess, slow_sess)]
-            w_dp = np.concatenate(d_parts)
-            dimensions_dprime[block][wl], _ = l2_normalise(w_dp)
-
-    # cross-block projections with separate fast and slow
+    # cross-block projections with separate fast and slow, per dim_name
     pop_mean = {}
     for block in ['early', 'late']:
         pop_mean[block] = {
@@ -610,40 +602,31 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
         }
     del sess_mean
 
-    cross_projections = {}
-    cross_projections_dprime = {}
-    for proj_block in ['early', 'late']:
-        cross_projections[proj_block] = {}
-        cross_projections_dprime[proj_block] = {}
-        for dim_block in ['early', 'late']:
-            cross_projections[proj_block][dim_block] = {}
-            cross_projections_dprime[proj_block][dim_block] = {}
-            for wl in dimensions[dim_block]:
-                w = dimensions[dim_block][wl]
-                w_dp = dimensions_dprime[dim_block][wl]
-                cross_projections[proj_block][dim_block][wl] = {
-                    'fast': w @ pop_mean[proj_block]['fast'],
-                    'slow': w @ pop_mean[proj_block]['slow'],
-                }
-                cross_projections_dprime[proj_block][dim_block][wl] = {
-                    'fast': w_dp @ pop_mean[proj_block]['fast'],
-                    'slow': w_dp @ pop_mean[proj_block]['slow'],
-                }
+    cross_projections = {v: {} for v in TF_DIM_FNS}
+    for dim_name in TF_DIM_FNS:
+        for proj_block in ['early', 'late']:
+            cross_projections[dim_name][proj_block] = {}
+            for dim_block in ['early', 'late']:
+                cross_projections[dim_name][proj_block][dim_block] = {}
+                for wl, w in dimensions[dim_name][dim_block].items():
+                    cross_projections[dim_name][proj_block][dim_block][wl] = {
+                        'fast': w @ pop_mean[proj_block]['fast'],
+                        'slow': w @ pop_mean[proj_block]['slow'],
+                    }
     del pop_mean
 
-    # between-block cosine similarity + null (raw + dprime)
-    between_block = {}
-    between_block_dprime = {}
+    # between-block cosine similarity + null
+    between_block = {v: {} for v in TF_DIM_FNS}
     for win in windows:
         wl = window_label(win)
-        if wl not in dimensions['early'] or wl not in dimensions['late']:
+        if not all(wl in dimensions[v]['early'] and wl in dimensions[v]['late']
+                   for v in TF_DIM_FNS):
             continue
-        real_cos = cosine_similarity(dimensions['early'][wl],
-                                     dimensions['late'][wl])
-        real_cos_dp = cosine_similarity(dimensions_dprime['early'][wl],
-                                        dimensions_dprime['late'][wl])
-        null_cos = np.full(n_perm, np.nan)
-        null_cos_dp = np.full(n_perm, np.nan)
+
+        real_cos = {v: cosine_similarity(dimensions[v]['early'][wl],
+                                          dimensions[v]['late'][wl])
+                    for v in TF_DIM_FNS}
+        null_cos = {v: np.full(n_perm, np.nan) for v in TF_DIM_FNS}
 
         sess_pooled_fast = []
         sess_pooled_slow = []
@@ -661,39 +644,33 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
 
         rng = np.random.default_rng(0)
         for p in range(n_perm):
-            raw_a, raw_b = [], []
-            dp_a, dp_b = [], []
+            fast_a, fast_b, slow_a, slow_b = [], [], [], []
             for pf, ps, nef, nes in zip(
                     sess_pooled_fast, sess_pooled_slow,
                     n_early_fast, n_early_slow):
                 idx_f = rng.permutation(pf.shape[0])
                 f_shuf = pf[idx_f]
-                fa_half, fb_half = f_shuf[:nef], f_shuf[nef:]
+                fast_a.append(f_shuf[:nef])
+                fast_b.append(f_shuf[nef:])
                 idx_s = rng.permutation(ps.shape[0])
                 s_shuf = ps[idx_s]
-                sa_half, sb_half = s_shuf[:nes], s_shuf[nes:]
+                slow_a.append(s_shuf[:nes])
+                slow_b.append(s_shuf[nes:])
 
-                raw_a.append(np.nanmean(fa_half, axis=0) - np.nanmean(sa_half, axis=0))
-                raw_b.append(np.nanmean(fb_half, axis=0) - np.nanmean(sb_half, axis=0))
-                dp_a.append(_dprime_unpaired(fa_half, sa_half))
-                dp_b.append(_dprime_unpaired(fb_half, sb_half))
+            for dim_name, fn in TF_DIM_FNS.items():
+                w_a = np.concatenate([fn(f, s) for f, s in zip(fast_a, slow_a)])
+                w_b = np.concatenate([fn(f, s) for f, s in zip(fast_b, slow_b)])
+                null_cos[dim_name][p] = cosine_similarity(w_a, w_b)
 
-            null_cos[p] = cosine_similarity(np.concatenate(raw_a),
-                                            np.concatenate(raw_b))
-            null_cos_dp[p] = cosine_similarity(np.concatenate(dp_a),
-                                               np.concatenate(dp_b))
-
-        between_block[wl] = {'real': real_cos, 'null': null_cos}
-        between_block_dprime[wl] = {'real': real_cos_dp, 'null': null_cos_dp}
+        for dim_name in TF_DIM_FNS:
+            between_block[dim_name][wl] = {'real': real_cos[dim_name],
+                                           'null': null_cos[dim_name]}
 
     result = {
         'tf_t_ax': t_ax,
         'dimensions': dimensions,
-        'dimensions_dprime': dimensions_dprime,
         'between_block_cosine': between_block,
-        'between_block_cosine_dprime': between_block_dprime,
         'cross_projections': cross_projections,
-        'cross_projections_dprime': cross_projections_dprime,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
         'unit_ids': unit_ids,
@@ -811,8 +788,8 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
     print(f'  {animal} [{suffix}]: {n_sessions} sessions, {n_total} neurons')
 
     # compute coding directions per block and window (raw + paired dprime)
-    dimensions = {'early': {}, 'late': {}}
-    dimensions_dprime = {'early': {}, 'late': {}}
+    # compute coding directions per dim_name, block, window
+    dimensions = {v: {'early': {}, 'late': {}} for v in MOTOR_DIM_FNS}
     for block in ['early', 'late']:
         for win in windows:
             wl = window_label(win)
@@ -820,53 +797,40 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
                 continue
             win_sess = sess_tavg_win[wl][block]
             bl_sess = sess_tavg_bl[block]
+            for dim_name, fn in MOTOR_DIM_FNS.items():
+                w = np.concatenate([fn(w_ev, b_ev)
+                                    for w_ev, b_ev in zip(win_sess, bl_sess)])
+                dimensions[dim_name][block][wl], _ = l2_normalise(w)
 
-            # raw: mean(prelick) - mean(baseline) per neuron
-            win_means = [np.nanmean(s, axis=0) for s in win_sess]
-            bl_means = [np.nanmean(s, axis=0) for s in bl_sess]
-            w_raw = np.concatenate(win_means) - np.concatenate(bl_means)
-            dimensions[block][wl], _ = l2_normalise(w_raw)
-
-            # dprime: per-session paired d' (same lick events in both windows)
-            d_parts = [_dprime_paired(w, b) for w, b in zip(win_sess, bl_sess)]
-            w_dp = np.concatenate(d_parts)
-            dimensions_dprime[block][wl], _ = l2_normalise(w_dp)
-
-    # cross-block projections
+    # cross-block projections, per dim_name
     pop_mean = {}
     for block in ['early', 'late']:
         pop_mean[block] = np.concatenate(sess_mean[block], axis=0)
     del sess_mean
 
-    cross_projections = {}
-    cross_projections_dprime = {}
-    for proj_block in ['early', 'late']:
-        cross_projections[proj_block] = {}
-        cross_projections_dprime[proj_block] = {}
-        for dim_block in ['early', 'late']:
-            cross_projections[proj_block][dim_block] = {}
-            cross_projections_dprime[proj_block][dim_block] = {}
-            for wl in dimensions[dim_block]:
-                w = dimensions[dim_block][wl]
-                w_dp = dimensions_dprime[dim_block][wl]
-                cross_projections[proj_block][dim_block][wl] = w @ pop_mean[proj_block]
-                cross_projections_dprime[proj_block][dim_block][wl] = w_dp @ pop_mean[proj_block]
+    cross_projections = {v: {} for v in MOTOR_DIM_FNS}
+    for dim_name in MOTOR_DIM_FNS:
+        for proj_block in ['early', 'late']:
+            cross_projections[dim_name][proj_block] = {}
+            for dim_block in ['early', 'late']:
+                cross_projections[dim_name][proj_block][dim_block] = {}
+                for wl, w in dimensions[dim_name][dim_block].items():
+                    cross_projections[dim_name][proj_block][dim_block][wl] = (
+                        w @ pop_mean[proj_block])
     del pop_mean
 
-    # between-block cosine similarity + null (raw + dprime)
-    between_block = {}
-    between_block_dprime = {}
-
+    # between-block cosine similarity + null
+    between_block = {v: {} for v in MOTOR_DIM_FNS}
     for win in windows:
         wl = window_label(win)
-        if wl not in dimensions['early'] or wl not in dimensions['late']:
+        if not all(wl in dimensions[v]['early'] and wl in dimensions[v]['late']
+                   for v in MOTOR_DIM_FNS):
             continue
-        real_cos = cosine_similarity(dimensions['early'][wl],
-                                     dimensions['late'][wl])
-        real_cos_dp = cosine_similarity(dimensions_dprime['early'][wl],
-                                        dimensions_dprime['late'][wl])
-        null_cos = np.full(n_perm, np.nan)
-        null_cos_dp = np.full(n_perm, np.nan)
+
+        real_cos = {v: cosine_similarity(dimensions[v]['early'][wl],
+                                          dimensions[v]['late'][wl])
+                    for v in MOTOR_DIM_FNS}
+        null_cos = {v: np.full(n_perm, np.nan) for v in MOTOR_DIM_FNS}
 
         sess_pooled_win = []
         sess_pooled_bl = []
@@ -882,36 +846,30 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
 
         rng = np.random.default_rng(0)
         for p in range(n_perm):
-            raw_a, raw_b = [], []
-            dp_a, dp_b = [], []
+            win_a, win_b, bl_a, bl_b = [], [], [], []
             for pw, pb, n_e in zip(sess_pooled_win, sess_pooled_bl, n_early):
                 idx = rng.permutation(pw.shape[0])
                 w_shuf = pw[idx]
                 b_shuf = pb[idx]
-                wa_half, wb_half = w_shuf[:n_e], w_shuf[n_e:]
-                ba_half, bb_half = b_shuf[:n_e], b_shuf[n_e:]
+                win_a.append(w_shuf[:n_e])
+                win_b.append(w_shuf[n_e:])
+                bl_a.append(b_shuf[:n_e])
+                bl_b.append(b_shuf[n_e:])
 
-                raw_a.append(np.nanmean(wa_half, axis=0) - np.nanmean(ba_half, axis=0))
-                raw_b.append(np.nanmean(wb_half, axis=0) - np.nanmean(bb_half, axis=0))
-                dp_a.append(_dprime_paired(wa_half, ba_half))
-                dp_b.append(_dprime_paired(wb_half, bb_half))
+            for dim_name, fn in MOTOR_DIM_FNS.items():
+                w_a = np.concatenate([fn(w, b) for w, b in zip(win_a, bl_a)])
+                w_b = np.concatenate([fn(w, b) for w, b in zip(win_b, bl_b)])
+                null_cos[dim_name][p] = cosine_similarity(w_a, w_b)
 
-            null_cos[p] = cosine_similarity(np.concatenate(raw_a),
-                                            np.concatenate(raw_b))
-            null_cos_dp[p] = cosine_similarity(np.concatenate(dp_a),
-                                               np.concatenate(dp_b))
-
-        between_block[wl] = {'real': real_cos, 'null': null_cos}
-        between_block_dprime[wl] = {'real': real_cos_dp, 'null': null_cos_dp}
+        for dim_name in MOTOR_DIM_FNS:
+            between_block[dim_name][wl] = {'real': real_cos[dim_name],
+                                           'null': null_cos[dim_name]}
 
     result = {
         'lick_t_ax': lick_t_ax,
         'dimensions': dimensions,
-        'dimensions_dprime': dimensions_dprime,
         'between_block_cosine': between_block,
-        'between_block_cosine_dprime': between_block_dprime,
         'cross_projections': cross_projections,
-        'cross_projections_dprime': cross_projections_dprime,
         'included_sessions': included_sessions,
         'n_neurons_per_session': n_neurons_per_session,
         'unit_ids': unit_ids,
