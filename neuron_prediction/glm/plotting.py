@@ -211,6 +211,7 @@ def plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
     fig, axes = plt.subplots(1, len(group_names),
                              figsize=(4 * len(group_names), 6), sharey=True)
 
+    row_order = None
     for ai, (ax, g) in enumerate(zip(axes, group_names)):
         sig_col = f'{g}_sig'
         if sig_col not in all_units.columns:
@@ -230,8 +231,13 @@ def plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
 
         summary['class_order'] = summary['area_class'].map(
             {c: i for i, c in enumerate(class_names)})
-        summary = summary.sort_values(['class_order', 'frac'],
-                                      ascending=[True, True])
+
+        if row_order is None:
+            summary = summary.sort_values(['class_order', 'frac'],
+                                          ascending=[True, True])
+            row_order = summary.index.tolist()
+        else:
+            summary = summary.reindex(row_order).dropna(subset=['n_total'])
 
         colours = [class_colours[c] for c in summary['area_class']]
         ax.barh(range(len(summary)), summary['frac'], color=colours)

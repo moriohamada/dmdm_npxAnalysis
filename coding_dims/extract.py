@@ -74,11 +74,15 @@ def _lda_paired(a, b):
     except np.linalg.LinAlgError:
         return np.zeros_like(mu)
 
+#%% Define dimensions to extract
 
-TF_DIM_FNS    = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired, 'lda': _lda_unpaired}
-MOTOR_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_paired,   'lda': _lda_paired}
-BLOCK_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired, 'lda': _lda_unpaired}
+# TF_DIM_FNS    = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired, 'lda': _lda_unpaired}
+# MOTOR_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_paired,   'lda': _lda_paired}
+# BLOCK_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired, 'lda': _lda_unpaired}
 
+TF_DIM_FNS    = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired}
+MOTOR_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_paired}
+BLOCK_DIM_FNS = {'cd': _mean_diff, 'dprime_cd': _dprime_unpaired}
 
 #%% data loading
 
@@ -133,15 +137,42 @@ def _load_lick_resps_by_block(sess_dir, lick_type='fa'):
     return results, t_ax
 
 
-def _session_valid_for_tf(tf_data):
+def _session_valid_for_tf(tf_data, cd_ops):
     """both blocks need sufficient fast and slow TF trials"""
-    return all(tf_data[b]['fast'].shape[0] > 500 and tf_data[b]['slow'].shape[0] > 500
+    min_n = cd_ops['min_tf_events_per_block']
+    return all(tf_data[b]['fast'].shape[0] >= min_n and tf_data[b]['slow'].shape[0] >= min_n
                for b in ['early', 'late'])
 
 
-def _session_valid_for_motor(lick_data, min_trials=2):
-    return all(lick_data[b] is not None and lick_data[b].shape[0] >= min_trials
+def _session_valid_for_motor(lick_data, cd_ops):
+    min_n = cd_ops['min_lick_events_per_block']
+    return all(lick_data[b] is not None and lick_data[b].shape[0] >= min_n
                for b in ['early', 'late'])
+
+
+def _subsample_paired(data, rng):
+    # data: {'early': (nEv, ...), 'late': (nEv, ...)}
+    # match event count between blocks per session
+    n_sub = min(data['early'].shape[0], data['late'].shape[0])
+    for block in ['early', 'late']:
+        n_full = data[block].shape[0]
+        if n_full > n_sub:
+            idx = rng.choice(n_full, n_sub, replace=False)
+            data[block] = data[block][idx]
+    return data
+
+
+def _subsample_tf(data, rng):
+    # data: {block: {'fast': (nEv, ...), 'slow': (nEv, ...)}}
+    # match fast and slow event counts independently between blocks
+    for cat in ['fast', 'slow']:
+        n_sub = min(data['early'][cat].shape[0], data['late'][cat].shape[0])
+        for block in ['early', 'late']:
+            n_full = data[block][cat].shape[0]
+            if n_full > n_sub:
+                idx = rng.choice(n_full, n_sub, replace=False)
+                data[block][cat] = data[block][cat][idx]
+    return data
 
 
 #%% block coding dimensions — data loading
@@ -261,10 +292,11 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, cd_ops=CODING_DIM_OPS):
     return results, trial_list, all_block_labels
 
 
-def _session_valid_for_block(block_data, min_trials=10):
+def _session_valid_for_block(block_data, cd_ops):
     """keep only blocks with sufficient trials in at least one window"""
     if block_data is None:
         return False
+    min_trials = cd_ops['min_block_trials_per_block']
     for wl in block_data['early']:
         early_ok = block_data['early'][wl] is not None and block_data['early'][wl].shape[0] >= min_trials
         late_ok = block_data['late'][wl] is not None and block_data['late'][wl].shape[0] >= min_trials
@@ -352,7 +384,6 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
     windows = cd_ops['block_coding_windows']
     n_perm = cd_ops['n_permutations']
     min_n = cd_ops.get('min_neurons', 5)
-    min_trials = 10
     test_frac = 0.2
     suffix = file_suffix(area, unit_filter)
 
@@ -369,7 +400,7 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
             continue
         data, trial_list, all_labels = loaded
 
-        if not _session_valid_for_block(data, min_trials):
+        if not _session_valid_for_block(data, cd_ops):
             continue
 
         neuron_mask = get_neuron_mask(sess_dir, area, unit_filter)
@@ -386,7 +417,7 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
                 else:
                     masked_data[block][wl] = None
 
-        if not _session_valid_for_block(masked_data, min_trials):
+        if not _session_valid_for_block(masked_data, cd_ops):
             continue
 
         # apply neuron mask to per-trial data
@@ -533,9 +564,11 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
     n_neurons_per_session = []
     unit_ids = []  # (session_name, cluster_id) per neuron in order
 
+    rng_subsample = np.random.default_rng(0)
+
     for sess_dir in sess_dirs:
         data, t_ax = _load_tf_resps_by_block(sess_dir, ops, cd_ops) # data: (events, nN, nT)
-        if not _session_valid_for_tf(data):
+        if not _session_valid_for_tf(data, cd_ops):
             continue
 
         neuron_mask = get_neuron_mask(sess_dir, area, unit_filter)
@@ -543,6 +576,9 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
             del data
             gc.collect()
             continue
+
+        # match fast/slow event counts between blocks per session
+        data = _subsample_tf(data, rng_subsample)
 
         # record unit identities
         session = Session.load(str(sess_dir / 'session.pkl'))
@@ -743,9 +779,11 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
     n_neurons_per_session = []
     unit_ids = []
 
+    rng_subsample = np.random.default_rng(0)
+
     for sess_dir in sess_dirs:
         data, lick_t_ax = _load_lick_resps_by_block(sess_dir, lick_type)
-        if not _session_valid_for_motor(data):
+        if not _session_valid_for_motor(data, cd_ops):
             continue
 
         neuron_mask = get_neuron_mask(sess_dir, area, unit_filter)
@@ -753,6 +791,9 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
             del data
             gc.collect()
             continue
+
+        # match lick event counts between blocks per session
+        data = _subsample_paired(data, rng_subsample)
 
         session = Session.load(str(sess_dir / 'session.pkl'))
         cluster_ids = session.unit_info['cluster_id'].values[neuron_mask]

@@ -222,7 +222,7 @@ def pooled_pseudopop_cosine_test(results, dim_type, n_perm=500):
 
 def analyse_coding_dimensions(dim_type: str,
                               npx_dir=PATHS['npx_dir_local'],
-                              bm_ops: dict = CODING_DIM_OPS,
+                              cd_ops: dict = CODING_DIM_OPS,
                               area: str | None = None,
                               unit_filter: list[str] | None = None,
                               method: str = 'cd',
@@ -232,9 +232,9 @@ def analyse_coding_dimensions(dim_type: str,
     results = load_dimension_results(dim_type, npx_dir, area, unit_filter, method=method)
 
     per_animal = per_animal_significance(results)
-    pooled = pooled_null_test(results, n_perm=bm_ops['n_perm_across'])
+    pooled = pooled_null_test(results, n_perm=cd_ops['n_perm_across'])
     pooled_pseudopop = pooled_pseudopop_cosine_test(
-        results, dim_type, n_perm=bm_ops['n_perm_pooled'])
+        results, dim_type, n_perm=cd_ops['n_perm_pooled'])
 
     for dim_name in per_animal:
         for wl in sorted(per_animal[dim_name].keys()):
@@ -262,7 +262,7 @@ def analyse_coding_dimensions(dim_type: str,
 
 # separate fn - testing significance of projected data rather than cosine sim for block dims
 def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
-                             bm_ops: dict = CODING_DIM_OPS,
+                             cd_ops: dict = CODING_DIM_OPS,
                              area: str | None = None,
                              unit_filter: list[str] | None = None,
                              method: str = 'cd') -> dict:
@@ -276,7 +276,7 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
     suffix = file_suffix(area, unit_filter)
     results = load_dimension_results('block', npx_dir, area, unit_filter, method=method)
 
-    windows = bm_ops['block_coding_windows']
+    windows = cd_ops['block_coding_windows']
     wls = [window_label(w) for w in windows]
     dim_names = list(BLOCK_DIM_FNS)
 
@@ -303,7 +303,7 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
                 )
 
     # across-animals test: mean AUC, null from sampling per-animal nulls
-    n_perm_across = bm_ops['n_perm_across']
+    n_perm_across = cd_ops['n_perm_across']
     across_animals = {v: {} for v in dim_names}
     for dim_name in dim_names:
         rng = np.random.default_rng(0)
@@ -330,7 +330,7 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
             )
 
     # pooled pseudo-population test: concatenate sessions, held-out AUC
-    n_perm_pooled = bm_ops['n_perm_pooled']
+    n_perm_pooled = cd_ops['n_perm_pooled']
     all_trial_lists = []
     all_labels = []
     all_fit_idx = []
@@ -414,7 +414,7 @@ def analyse_block_dimensions(npx_dir=PATHS['npx_dir_local'],
 
 #%% tf-motor alignment
 
-def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, bm_ops):
+def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, cd_ops):
     """load neuron-masked and session-concatenated mean responses to tf/licks"""
     from utils.selection import get_window_bins
     from utils.selection import get_neuron_mask
@@ -423,7 +423,7 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
     from utils.smoothing import causal_boxcar
 
     # PSTH means are at sp_bin_width
-    window_bins = get_window_bins(bm_ops, ANALYSIS_OPTIONS['sp_bin_width'])
+    window_bins = get_window_bins(cd_ops, ANALYSIS_OPTIONS['sp_bin_width'])
 
     tf_conditions = [
         'earlyBlock_early_pos', 'earlyBlock_early_neg',
@@ -486,7 +486,7 @@ def _load_mean_responses(animal, included_sessions, npx_dir, area, unit_filter, 
 
 
 def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
-                                 bm_ops=CODING_DIM_OPS,
+                                 cd_ops=CODING_DIM_OPS,
                                  area: str | None = None,
                                  unit_filter: list[str] | None = None,
                                  method: str = 'cd'):
@@ -518,7 +518,7 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
         motor_id_set = set(motor_ids)
         shared = tf_id_set & motor_id_set
 
-        if len(shared) < bm_ops.get('min_neurons', 5):
+        if len(shared) < cd_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(shared)} shared neurons - skipping')
             continue
 
@@ -555,7 +555,7 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
         shared_sessions = sorted(set(tf_r['included_sessions']) &
                                   set(motor_r['included_sessions']))
         mean_resps, t_axes, resp_ids = _load_mean_responses(
-            animal, shared_sessions, npx_dir, area, unit_filter, bm_ops)
+            animal, shared_sessions, npx_dir, area, unit_filter, cd_ops)
 
         # reorder resp rows to match motor_idx neuron order
         resp_id_to_idx = {uid: i for i, uid in enumerate(resp_ids)}
@@ -595,7 +595,7 @@ def calculate_tf_motor_alignment(npx_dir=PATHS['npx_dir_local'],
 #%% cross-dimension analysis
 
 def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
-                            bm_ops=CODING_DIM_OPS,
+                            cd_ops=CODING_DIM_OPS,
                             area: str | None = None,
                             unit_filter: list[str] | None = None,
                             method: str = 'cd',
@@ -631,7 +631,7 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
             continue
 
         shared = set(block_ids) & set(tf_ids) & set(motor_ids)
-        if len(shared) < bm_ops.get('min_neurons', 5):
+        if len(shared) < cd_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(shared)} shared neurons - skipping')
             continue
 
@@ -709,7 +709,7 @@ def cross_dimension_cosines(npx_dir=PATHS['npx_dir_local'],
 
 
 def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
-                                bm_ops=CODING_DIM_OPS,
+                                cd_ops=CODING_DIM_OPS,
                                 area: str | None = None,
                                 unit_filter: list[str] | None = None,
                                 method: str = 'cd'):
@@ -743,7 +743,7 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
             continue
 
         shared = set(block_ids) & set(tf_ids) & set(motor_ids)
-        if len(shared) < bm_ops.get('min_neurons', 5):
+        if len(shared) < cd_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(shared)} shared neurons - skipping')
             continue
 
@@ -772,12 +772,12 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
 
         # load mean responses and match to shared neurons
         mean_resps, t_axes, resp_ids = _load_mean_responses(
-            animal, shared_sessions, npx_dir, area, unit_filter, bm_ops)
+            animal, shared_sessions, npx_dir, area, unit_filter, cd_ops)
 
         resp_id_to_idx = {uid: i for i, uid in enumerate(resp_ids)}
         keep = [uid for uid in shared_order if uid in resp_id_to_idx]
 
-        if len(keep) < bm_ops.get('min_neurons', 5):
+        if len(keep) < cd_ops.get('min_neurons', 5):
             print(f'  {animal}: only {len(keep)} neurons in responses - skipping')
             continue
 
@@ -829,7 +829,7 @@ def cross_dimension_projections(npx_dir=PATHS['npx_dir_local'],
 #%% run all combos
 
 def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
-                                bm_ops=CODING_DIM_OPS,
+                                cd_ops=CODING_DIM_OPS,
                                 method: str = 'cd',
                                 save_dir=None):
     """
@@ -863,15 +863,15 @@ def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
 
         for dim_type, extract_fn in [('tf', extract_tf_dimensions),
                                       ('motor', extract_motor_dimensions)]:
-            extract_fn(npx_dir=npx_dir, bm_ops=bm_ops, method=method,
+            extract_fn(npx_dir=npx_dir, cd_ops=cd_ops, method=method,
                        n_jobs=6, **combo)
 
-        calculate_tf_motor_alignment(npx_dir=npx_dir, bm_ops=bm_ops,
+        calculate_tf_motor_alignment(npx_dir=npx_dir, cd_ops=cd_ops,
                                      method=method, **combo)
 
         for dim_type in ['tf', 'motor']:
             stats = analyse_coding_dimensions(
-                dim_type, npx_dir=npx_dir, bm_ops=bm_ops, method=method,
+                dim_type, npx_dir=npx_dir, cd_ops=cd_ops, method=method,
                 save_dir=str(combo_save) if combo_save else None, **combo)
             all_stats[(suffix, dim_type)] = stats
 
