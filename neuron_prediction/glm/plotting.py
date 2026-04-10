@@ -233,6 +233,7 @@ def plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
             {c: i for i, c in enumerate(class_names)})
 
         if row_order is None:
+            # sort by first feature only
             summary = summary.sort_values(['class_order', 'frac'],
                                           ascending=[True, True])
             row_order = summary.index.tolist()
