@@ -202,6 +202,15 @@ for area in areas:
         plot_cross_class_alignment(area=area, unit_filter=uf, method='cd')
         plot_alignment(area=area, unit_filter=uf, method='cd')
 
+#%%
+"""
+TODO:
+Think about how to analyse total distance pushed by TF pulses, and how this breaks down 
+into motor vs non-motor directions - e.g. total deviation may be unchanged by exp, 
+but relative movement along dimensions are.
+"""
+#%% null space
+
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS

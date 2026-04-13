@@ -686,6 +686,16 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
     if not animals:
         return
 
+    # flatten per_dim_name nesting into top-level projections / dim_names
+    for animal in animals:
+        r = proj_results[animal]
+        all_proj, all_dn = {}, []
+        for vdata in r['per_dim_name'].values():
+            all_proj.update(vdata['projections'])
+            all_dn.extend(vdata['dim_names'])
+        r['projections'] = all_proj
+        r['dim_names'] = sorted(set(all_dn))
+
     sample = proj_results[animals[0]]
     t_axes = sample['t_axes']
 
@@ -818,6 +828,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
         plt.tight_layout()
         fig.savefig(save_dir / f'projections_{dim_class}_{suffix}.png',
                     dpi=300, bbox_inches='tight')
+        plt.close(fig)
         figs.append(fig)
 
     return figs
