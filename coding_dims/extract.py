@@ -725,7 +725,6 @@ def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
                           cd_ops=CODING_DIM_OPS,
                           area: str | None = None,
                           unit_filter: list[str] | None = None,
-                          method: str = 'cd',
                           n_jobs: int | None = None):
     """
     extract TF coding directions (fast vs slow) at defined time windows,
@@ -747,10 +746,10 @@ def extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'],
 
     all_results = {animal: res for animal, res in results if res is not None}
 
-    out_path = save_dir / f'tf_dimensions_{method}_{suffix}.pkl'
+    out_path = save_dir / f'tf_dimensions_cd_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
-    print(f'Saved TF dimensions ({method}) to {out_path}')
+    print(f'Saved TF dimensions to {out_path}')
 
     return all_results
 
@@ -931,7 +930,6 @@ def extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
                              lick_type='fa',
                              area: str | None = None,
                              unit_filter: list[str] | None = None,
-                             method: str = 'cd',
                              n_jobs=None):
     """
     extract premotor coding directions (pre-lick window vs baseline) at
@@ -954,10 +952,10 @@ def extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'],
 
     all_results = {animal: res for animal, res in results if res is not None}
 
-    out_path = save_dir / f'motor_dimensions_{method}_{suffix}.pkl'
+    out_path = save_dir / f'motor_dimensions_cd_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
-    print(f'Saved motor dimensions ({method}) to {out_path}')
+    print(f'Saved motor dimensions to {out_path}')
 
     return all_results
 
@@ -969,7 +967,6 @@ def extract_block_dimensions(npx_dir=PATHS['npx_dir_local'],
                              cd_ops=CODING_DIM_OPS,
                              area: str | None = None,
                              unit_filter: list[str] | None = None,
-                             method: str = 'cd',
                              n_jobs: int | None = None):
     """
     extract block coding directions (early vs late block) at defined time
@@ -992,9 +989,9 @@ def extract_block_dimensions(npx_dir=PATHS['npx_dir_local'],
 
     all_results = {animal: res for animal, res in results if res is not None}
 
-    out_path = save_dir / f'block_dimensions_{method}_{suffix}.pkl'
+    out_path = save_dir / f'block_dimensions_cd_{suffix}.pkl'
     with open(out_path, 'wb') as f:
         pickle.dump(all_results, f)
-    print(f'Saved block dimensions ({method}) to {out_path}')
+    print(f'Saved block dimensions to {out_path}')
 
     return all_results

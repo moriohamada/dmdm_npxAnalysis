@@ -25,9 +25,19 @@ LICK_BL_WINDOW = ANALYSIS_OPTIONS['lick_bl']
 BLON_BL_WINDOW = (-1.0, 0.0)
 
 
-def _load_results(npx_dir, dim_type, area, unit_filter, method='cd'):
+def _select_dim_name(results, dim_name='cd'):
+    """cross_dimension_cosines and cross_dimension_projections nest their outputs
+    under per_dim_name[dim_name]. this picks one dim_name and copies its keys
+    (dim_names, cosine_matrix, projections) to the animal-level dict"""
+    for animal in results:
+        pdm = results[animal].get('per_dim_name', {})
+        entry = pdm.get(dim_name) or next(iter(pdm.values()), {})
+        results[animal].update(entry)
+
+
+def _load_results(npx_dir, dim_type, area, unit_filter):
     suffix = file_suffix(area, unit_filter)
-    path = Path(npx_dir) / 'coding_dims' / f'{dim_type}_dimensions_{method}_{suffix}.pkl'
+    path = Path(npx_dir) / 'coding_dims' / f'{dim_type}_dimensions_cd_{suffix}.pkl'
     with open(path, 'rb') as f:
         return pickle.load(f), suffix
 
@@ -95,7 +105,7 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None, dim_na
     window_labels = sorted(sample['between_block_cosine'][dim_name].keys())
     n_wins = len(window_labels)
 
-    pooled = pooled_null_test(results, n_perm=10000)
+    pooled = pooled_null_test(results, n_perm=1000)
 
     fig, axes = plt.subplots(1, max(n_wins, 1),
                              figsize=(6 * max(n_wins, 1), 4),
@@ -117,7 +127,11 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None, dim_na
             bc = results[animal]['between_block_cosine'][dim_name].get(wl)
             if bc is not None:
                 real_vals.append(bc['real'])
-                ax.axvline(bc['real'], color='black', linewidth=0.8, alpha=0.4)
+
+        if real_vals:
+            colours = plt.cm.tab10(np.linspace(0, 1, max(len(real_vals), 1)))
+            ax.scatter(real_vals, np.zeros(len(real_vals)),
+                       c=colours[:len(real_vals)], s=30, zorder=5, clip_on=False)
 
         grand_mean = np.nanmean(real_vals)
         ax.axvline(grand_mean, color='red', linewidth=2.5,
@@ -142,12 +156,12 @@ def _plot_between_block_summary(results, dim_type, suffix, save_dir=None, dim_na
 #%% TF and motor dimension plots
 
 def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                       area=None, unit_filter=None, method='cd', dim_name='cd'):
+                       area=None, unit_filter=None, dim_name='cd'):
     """
     between-block consistency of TF coding directions + projected tf resps
     """
-    results, suffix = _load_results(npx_dir, 'tf', area, unit_filter, method=method)
-    save_dir = Path(save_dir) / 'coding_dims' / method
+    results, suffix = _load_results(npx_dir, 'tf', area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims' / dim_name
     save_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_between_block_per_animal(results, 'tf', suffix, save_dir, dim_name=dim_name)
@@ -163,8 +177,8 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
     n_wins = len(window_labels)
     tf_t_ax = sample['tf_t_ax']
 
-    fig, axes = plt.subplots(3, max(n_wins, 1),
-                             figsize=(6 * max(n_wins, 1), 11),
+    fig, axes = plt.subplots(4, max(n_wins, 1),
+                             figsize=(6 * max(n_wins, 1), 13),
                              squeeze=False)
 
     for wi, wl in enumerate(window_labels):
@@ -198,8 +212,28 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
         ax.set_title(f'TF onto TF dim {wl} (same-block)')
         ax.legend(fontsize=7)
 
-        # baseline-subtracted
+        # (fast-slow) early - (fast-slow) late, raw
         ax = axes[1, wi]
+        diffs = []
+        for animal in animals:
+            e = animal_traces[animal].get('early', {})
+            l = animal_traces[animal].get('late', {})
+            if all(k in e for k in ('fast', 'slow')) and \
+               all(k in l for k in ('fast', 'slow')):
+                diff = (e['fast'] - e['slow']) - (l['fast'] - l['slow'])
+                ax.plot(tf_t_ax, diff, color='grey', alpha=0.3, linewidth=0.7)
+                diffs.append(diff)
+        if diffs:
+            ax.plot(tf_t_ax, np.nanmean(diffs, axis=0), color='black',
+                    linewidth=2, label=f'Mean (n={len(diffs)})')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Δ projection')
+        ax.set_title('(fast−slow)early − (fast−slow)late (raw)')
+        ax.legend(fontsize=7)
+
+        # baseline-subtracted
+        ax = axes[2, wi]
         for block, block_col in [('early', EARLY_COL), ('late', LATE_COL)]:
             for polarity, ls in [('fast', '-'), ('slow', '--')]:
                 traces = []
@@ -219,8 +253,8 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
         ax.set_title('Baseline-subtracted')
         ax.legend(fontsize=7)
 
-        # (fast-slow)_early - (fast-slow)_late, baseline-subtracted
-        ax = axes[2, wi]
+        # (fast-slow) early - (fast-slow) late, baseline-subtracted
+        ax = axes[3, wi]
         diffs = []
         for animal in animals:
             e = animal_traces[animal].get('early', {})
@@ -252,10 +286,10 @@ def plot_tf_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir
 
 
 def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                          area=None, unit_filter=None, method='cd', dim_name='cd'):
+                          area=None, unit_filter=None, dim_name='cd'):
     """between-block consistency of motor coding directions + projected lick resps"""
-    results, suffix = _load_results(npx_dir, 'motor', area, unit_filter, method=method)
-    save_dir = Path(save_dir) / 'coding_dims' / method
+    results, suffix = _load_results(npx_dir, 'motor', area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims' / dim_name
     save_dir.mkdir(parents=True, exist_ok=True)
 
     _plot_between_block_per_animal(results, 'motor', suffix, save_dir, dim_name=dim_name)
@@ -271,8 +305,8 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
     n_wins = len(window_labels)
     lick_t_ax = sample['lick_t_ax']
 
-    fig, axes = plt.subplots(3, max(n_wins, 1),
-                             figsize=(6 * max(n_wins, 1), 11),
+    fig, axes = plt.subplots(4, max(n_wins, 1),
+                             figsize=(6 * max(n_wins, 1), 14),
                              squeeze=False)
 
     for wi, wl in enumerate(window_labels):
@@ -303,8 +337,27 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
         ax.set_title(f'Lick onto motor dim {wl} (same-block)')
         ax.legend(fontsize=7)
 
-        # baseline-subtracted
+        # early - late, raw
         ax = axes[1, wi]
+        diffs = []
+        for animal in animals:
+            e = animal_traces[animal].get('early')
+            l = animal_traces[animal].get('late')
+            if e is not None and l is not None:
+                diff = e - l
+                ax.plot(lick_t_ax, diff, color='grey', alpha=0.3, linewidth=0.7)
+                diffs.append(diff)
+        if diffs:
+            ax.plot(lick_t_ax, np.nanmean(diffs, axis=0), color='black',
+                    linewidth=2, label=f'Mean (n={len(diffs)})')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Δ projection')
+        ax.set_title('Early − late (raw)')
+        ax.legend(fontsize=7)
+
+        # baseline-subtracted
+        ax = axes[2, wi]
         for block, colour in [('early', EARLY_COL), ('late', LATE_COL)]:
             traces = []
             for animal in animals:
@@ -322,8 +375,8 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
         ax.set_title('Baseline-subtracted')
         ax.legend(fontsize=7)
 
-        # early - late per animal
-        ax = axes[2, wi]
+        # early - late per animal, baseline-subtracted
+        ax = axes[3, wi]
         diffs = []
         for animal in animals:
             e = animal_traces[animal].get('early')
@@ -354,13 +407,13 @@ def plot_motor_dimensions(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_
 #%% alignment plots
 
 def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                   area=None, unit_filter=None, method='cd', dim_name='cd'):
+                   area=None, unit_filter=None, dim_name='cd'):
     """early vs late alignment scatter + TF onto motor dim projections"""
     suffix = file_suffix(area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims' / method
+    save_dir = Path(save_dir) / 'coding_dims' / dim_name
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    path = Path(npx_dir) / 'coding_dims' / f'alignment_{method}_{suffix}.pkl'
+    path = Path(npx_dir) / 'coding_dims' / f'alignment_cd_{suffix}.pkl'
     with open(path, 'rb') as f:
         results = pickle.load(f)
 
@@ -369,8 +422,8 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
         return
 
     # dimensions needed for null cloud (shuffle neuron identity)
-    tf_results = _load_results(npx_dir, 'tf', area, unit_filter, method=method)[0]
-    motor_results = _load_results(npx_dir, 'motor', area, unit_filter, method=method)[0]
+    tf_results = _load_results(npx_dir, 'tf', area, unit_filter)[0]
+    motor_results = _load_results(npx_dir, 'motor', area, unit_filter)[0]
 
     # one figure per TF x motor window combo
     sample = results[animals[0]]
@@ -430,10 +483,12 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                     shuf = tf_sub[rng.permutation(len(tf_sub))]
                     null_list.append(cosine_similarity(shuf, motor_sub))
 
-        fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+        fig, axes = plt.subplots(4, 3, figsize=(18, 18))
         axes[1, 0].set_visible(False)
+        axes[1, 2].set_visible(False)
         axes[2, 0].set_visible(False)
-        axes[2, 2].set_visible(False)
+        axes[3, 0].set_visible(False)
+        axes[3, 2].set_visible(False)
 
         # early vs late alignment scatter
         ax = axes[0, 0]
@@ -490,8 +545,7 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                         block_animal_traces[animal][block][polarity] = trace
 
         # raw projections
-        for pi, (block, block_col) in enumerate([('early', EARLY_COL),
-                                                   ('late', LATE_COL)]):
+        for pi, block in enumerate(['early', 'late']):
             ax = axes[0, 1 + pi]
             for polarity, colour, ls in [('fast', FAST_COL, '-'),
                                           ('slow', SLOW_COL, '--')]:
@@ -511,10 +565,29 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
             ax.set_title(f'{block.capitalize()} block TF onto {block} motor dim {motor_wl}')
             ax.legend(fontsize=7)
 
+        # (fast−slow)_early − (fast−slow)_late, raw
+        ax = axes[1, 1]
+        gain_diffs = []
+        for animal in animals:
+            e = block_animal_traces[animal].get('early', {})
+            l = block_animal_traces[animal].get('late', {})
+            if all(k in e for k in ('fast', 'slow')) and \
+               all(k in l for k in ('fast', 'slow')) and tf_t_ax is not None:
+                gain_diffs.append((e['fast'] - e['slow']) - (l['fast'] - l['slow']))
+        for d in gain_diffs:
+            ax.plot(tf_t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+        if gain_diffs:
+            ax.plot(tf_t_ax, np.nanmean(gain_diffs, axis=0), color='black',
+                    linewidth=2, label=f'Mean (n={len(gain_diffs)})')
+        ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+        ax.set_ylabel('Δ projection')
+        ax.set_title('(fast−slow)early − (fast−slow)late (raw)')
+        ax.legend(fontsize=7)
+
         # baseline-subtracted projections
-        for pi, (block, block_col) in enumerate([('early', EARLY_COL),
-                                                   ('late', LATE_COL)]):
-            ax = axes[1, 1 + pi]
+        for pi, block in enumerate(['early', 'late']):
+            ax = axes[2, 1 + pi]
             for polarity, colour, ls in [('fast', FAST_COL, '-'),
                                           ('slow', SLOW_COL, '--')]:
                 traces = []
@@ -534,8 +607,8 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
             ax.set_title(f'{block.capitalize()} block (bl-sub)')
             ax.legend(fontsize=7)
 
-        # (fast−slow)_early − (fast−slow)_late
-        ax = axes[2, 1]
+        # (fast−slow)_early − (fast−slow)_late, baseline-subtracted
+        ax = axes[3, 1]
         gain_diffs = []
         for animal in animals:
             e = block_animal_traces[animal].get('early', {})
@@ -564,7 +637,7 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
 
         fig.savefig(save_dir / f'alignment_{dim_name}_tf{tf_wl}_motor{motor_wl}_{suffix}.png',
                     dpi=300, bbox_inches='tight')
-
+        plt.close(fig)
         figs.append(fig)
 
     return figs
@@ -573,10 +646,10 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
 #%% block dimension significance plots
 
 def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                            area=None, unit_filter=None, method='cd', dim_name='cd'):
+                            area=None, unit_filter=None, dim_name='cd'):
     """per-animal AUC null distributions + summary for block coding dimensions"""
-    results, suffix = _load_results(npx_dir, 'block', area, unit_filter, method=method)
-    save_dir = Path(save_dir) / 'coding_dims' / method
+    results, suffix = _load_results(npx_dir, 'block', area, unit_filter)
+    save_dir = Path(save_dir) / 'coding_dims' / dim_name
     save_dir.mkdir(parents=True, exist_ok=True)
 
     animals = sorted(results.keys())
@@ -641,8 +714,10 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
 
         pa = block_stats['per_animal'][dim_name].get(wl, {})
         animal_aucs = pa.get('aucs', [])
-        for auc_val in animal_aucs:
-            ax.axvline(auc_val, color='black', linewidth=0.8, alpha=0.4)
+        if len(animal_aucs) > 0:
+            colours = plt.cm.tab10(np.linspace(0, 1, max(len(animal_aucs), 1)))
+            ax.scatter(animal_aucs, np.zeros(len(animal_aucs)),
+                       c=colours[:len(animal_aucs)], s=30, zorder=5, clip_on=False)
 
         grand_mean = aa['observed_mean']
         ax.axvline(grand_mean, color='red', linewidth=2.5,
@@ -668,17 +743,17 @@ def plot_block_significance(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plot
 #%% projections of all event types onto all dimensions
 
 def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
-                           area=None, unit_filter=None, method='cd'):
+                           area=None, unit_filter=None, dim_name='cd'):
     """
     project baseline, TF, and lick responses onto every coding dimension.
     one figure per dimension class (block, tf, motor), columns = windows,
     rows = event types. individual animals as thin lines, mean as thick
     """
     suffix = file_suffix(area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims' / method
+    save_dir = Path(save_dir) / 'coding_dims' / dim_name
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{method}_{suffix}.pkl'
+    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_cd_{suffix}.pkl'
     with open(proj_path, 'rb') as f:
         proj_results = pickle.load(f)
 
@@ -686,16 +761,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
     if not animals:
         return
 
-    # flatten per_dim_name nesting into top-level projections / dim_names
-    for animal in animals:
-        r = proj_results[animal]
-        all_proj, all_dn = {}, []
-        for vdata in r['per_dim_name'].values():
-            all_proj.update(vdata['projections'])
-            all_dn.extend(vdata['dim_names'])
-        r['projections'] = all_proj
-        r['dim_names'] = sorted(set(all_dn))
-
+    _select_dim_name(proj_results, dim_name=dim_name)
     sample = proj_results[animals[0]]
     t_axes = sample['t_axes']
 
@@ -733,18 +799,18 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
             continue
 
         n_cols = len(dim_names)
-        n_rows = len(event_rows) * 3
+        n_rows = len(event_rows) * 4
         fig, axes = plt.subplots(n_rows, n_cols,
                                  figsize=(5 * n_cols, 3 * n_rows),
                                  squeeze=False)
 
         for ci, dn in enumerate(sorted(dim_names)):
             for ri, (row_label, event_type, bl_window, conditions) in enumerate(event_rows):
-                base_row = ri * 3
+                base_row = ri * 4
                 t_ax = t_axes.get(event_type)
 
                 if t_ax is None:
-                    for offset in range(3):
+                    for offset in range(4):
                         axes[base_row + offset, ci].set_visible(False)
                     continue
 
@@ -774,8 +840,35 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
                     ax.set_title(dn, fontsize=9)
                 ax.legend(fontsize=6, loc='upper right')
 
-                # baseline-subtracted
+                # early−late difference (raw)
                 ax = axes[base_row + 1, ci]
+                diffs = []
+                if event_type == 'tf':
+                    keys = [rk for _, rk, _, _ in conditions]
+                    for a in animals:
+                        at = animal_traces[a]
+                        if len(at) == 4:
+                            diffs.append((at[keys[0]] - at[keys[1]]) - (at[keys[2]] - at[keys[3]]))
+                else:
+                    keys = [rk for _, rk, _, _ in conditions]
+                    for a in animals:
+                        at = animal_traces[a]
+                        if len(at) == 2:
+                            diffs.append(at[keys[0]] - at[keys[1]])
+                for d in diffs:
+                    ax.plot(t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+                if diffs:
+                    ax.plot(t_ax, np.nanmean(diffs, axis=0), color='black',
+                            linewidth=2, label=f'Mean (n={len(diffs)})')
+                ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+                ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+                if ci == 0:
+                    diff_label = 'Δ(fast−slow)' if event_type == 'tf' else 'early−late'
+                    ax.set_ylabel(f'{row_label}\n{diff_label} (raw)')
+                ax.legend(fontsize=6, loc='upper right')
+
+                # baseline-subtracted
+                ax = axes[base_row + 2, ci]
                 for label, rk, colour, ls in conditions:
                     traces = [baseline_subtract(animal_traces[a][rk], t_ax, bl_window)
                               for a in animals if rk in animal_traces[a]]
@@ -791,8 +884,8 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
                     ax.set_ylabel(f'{row_label}\nbl-sub')
                 ax.legend(fontsize=6, loc='upper right')
 
-                # early−late difference
-                ax = axes[base_row + 2, ci]
+                # early−late difference (baseline-subtracted)
+                ax = axes[base_row + 3, ci]
                 diffs = []
                 if event_type == 'tf':
                     # (fast−slow)_early − (fast−slow)_late
@@ -838,7 +931,7 @@ def plot_cross_projections(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots
 
 def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                                bm_ops=CODING_DIM_OPS,
-                               area=None, unit_filter=None, method='cd'):
+                               area=None, unit_filter=None, dim_name='cd'):
     """
     scatter plots of cross-class dimension alignment: early-block cosine vs
     late-block cosine for each pair of dimensions from different classes.
@@ -847,26 +940,29 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
     from utils.stats import cosine_similarity
 
     suffix = file_suffix(area, unit_filter)
-    save_dir = Path(save_dir) / 'coding_dims' / method / 'alignment'
+    save_dir = Path(save_dir) / 'coding_dims' / dim_name / 'alignment'
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    cos_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_cosines_{method}_{suffix}.pkl'
+    cos_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_cosines_cd_{suffix}.pkl'
     with open(cos_path, 'rb') as f:
         cos_results = pickle.load(f)
 
     # load cross-dimension projections for projection panels
-    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_{method}_{suffix}.pkl'
+    proj_path = Path(npx_dir) / 'coding_dims' / f'cross_dimension_projections_cd_{suffix}.pkl'
     with open(proj_path, 'rb') as f:
         proj_results = pickle.load(f)
 
     # load raw dimensions for null cloud
-    block_results = _load_results(npx_dir, 'block', area, unit_filter, method=method)[0]
-    tf_results = _load_results(npx_dir, 'tf', area, unit_filter, method=method)[0]
-    motor_results = _load_results(npx_dir, 'motor', area, unit_filter, method=method)[0]
+    block_results = _load_results(npx_dir, 'block', area, unit_filter)[0]
+    tf_results = _load_results(npx_dir, 'tf', area, unit_filter)[0]
+    motor_results = _load_results(npx_dir, 'motor', area, unit_filter)[0]
 
     animals = sorted(cos_results.keys())
     if not animals:
         return
+
+    _select_dim_name(cos_results, dim_name=dim_name)
+    _select_dim_name(proj_results, dim_name=dim_name)
 
     sample = cos_results[animals[0]]
     dim_names = sample['dim_names']
@@ -910,9 +1006,11 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
 
                 tf_r = tf_results.get(animal, {})
                 block_r = block_results.get(animal, {})
-                tf_e_vec = tf_r.get('dimensions', {}).get('early', {}).get(tf_wl)
-                tf_l_vec = tf_r.get('dimensions', {}).get('late', {}).get(tf_wl)
-                block_vec = block_r.get('dimensions', {}).get(b_wl)
+                tf_dims = tf_r.get('dimensions', {}).get(dim_name, {})
+                block_dims = block_r.get('dimensions', {}).get(dim_name, {})
+                tf_e_vec = tf_dims.get('early', {}).get(tf_wl)
+                tf_l_vec = tf_dims.get('late', {}).get(tf_wl)
+                block_vec = block_dims.get(b_wl)
                 if tf_e_vec is not None and tf_l_vec is not None and block_vec is not None:
                     n = min(len(tf_e_vec), len(block_vec))
                     for _ in range(n_null):
@@ -923,10 +1021,12 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             if len(early_vals) < 2:
                 continue
 
-            fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+            fig, axes = plt.subplots(4, 3, figsize=(18, 18))
             axes[1, 0].set_visible(False)
+            axes[1, 2].set_visible(False)
             axes[2, 0].set_visible(False)
-            axes[2, 2].set_visible(False)
+            axes[3, 0].set_visible(False)
+            axes[3, 2].set_visible(False)
 
             _alignment_scatter_ax(axes[0, 0],
                 np.array(early_vals), np.array(late_vals),
@@ -951,52 +1051,72 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                             block_animal_traces[animal][block][pol_name] = trace
 
             # raw projections
-            for pi, (block, block_col) in enumerate([('early', EARLY_COL),
-                                                      ('late', LATE_COL)]):
+            for pi, block in enumerate(['early', 'late']):
                 ax = axes[0, 1 + pi]
-                for polarity, ls, label in [('fast', '-', 'fast'), ('slow', '--', 'slow')]:
+                for polarity, colour, ls in [('fast', FAST_COL, '-'),
+                                              ('slow', SLOW_COL, '--')]:
                     traces = []
                     for animal in proj_animals:
                         trace = block_animal_traces[animal].get(
                             block, {}).get(polarity)
                         if trace is not None and tf_t_ax is not None:
-                            ax.plot(tf_t_ax, trace, color=block_col, alpha=0.15,
+                            ax.plot(tf_t_ax, trace, color=colour, alpha=0.15,
                                     linewidth=0.5, linestyle=ls)
                             traces.append(trace)
                     if traces and tf_t_ax is not None:
-                        ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
-                                linewidth=2, linestyle=ls, label=label)
+                        ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=colour,
+                                linewidth=2, linestyle=ls, label=polarity)
                 ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.set_ylabel('Projection onto block dim (a.u.)')
                 ax.set_title(f'{block} block TF onto block {b_wl}')
                 ax.legend(fontsize=7)
 
+            # (fast−slow)_early − (fast−slow)_late, raw
+            ax = axes[1, 1]
+            gain_diffs = []
+            for animal in proj_animals:
+                e = block_animal_traces[animal].get('early', {})
+                l = block_animal_traces[animal].get('late', {})
+                if all(k in e for k in ('fast', 'slow')) and \
+                   all(k in l for k in ('fast', 'slow')) and tf_t_ax is not None:
+                    gain_diffs.append((e['fast'] - e['slow']) - (l['fast'] - l['slow']))
+            for d in gain_diffs:
+                ax.plot(tf_t_ax, d, color='grey', alpha=0.3, linewidth=0.7)
+            if gain_diffs:
+                ax.plot(tf_t_ax, np.nanmean(gain_diffs, axis=0), color='black',
+                        linewidth=2, label=f'Mean (n={len(gain_diffs)})')
+            ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.set_ylabel('Δ projection')
+            ax.set_title('(fast−slow)early − (fast−slow)late (raw)')
+            ax.legend(fontsize=7)
+
             # baseline-subtracted
-            for pi, (block, block_col) in enumerate([('early', EARLY_COL),
-                                                      ('late', LATE_COL)]):
-                ax = axes[1, 1 + pi]
-                for polarity, ls, label in [('fast', '-', 'fast'), ('slow', '--', 'slow')]:
+            for pi, block in enumerate(['early', 'late']):
+                ax = axes[2, 1 + pi]
+                for polarity, colour, ls in [('fast', FAST_COL, '-'),
+                                              ('slow', SLOW_COL, '--')]:
                     traces = []
                     for animal in proj_animals:
                         trace = block_animal_traces[animal].get(
                             block, {}).get(polarity)
                         if trace is not None and tf_t_ax is not None:
                             sub = baseline_subtract(trace, tf_t_ax, TF_BL_WINDOW)
-                            ax.plot(tf_t_ax, sub, color=block_col, alpha=0.15,
+                            ax.plot(tf_t_ax, sub, color=colour, alpha=0.15,
                                     linewidth=0.5, linestyle=ls)
                             traces.append(sub)
                     if traces and tf_t_ax is not None:
-                        ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=block_col,
-                                linewidth=2, linestyle=ls, label=label)
+                        ax.plot(tf_t_ax, np.nanmean(traces, axis=0), color=colour,
+                                linewidth=2, linestyle=ls, label=polarity)
                 ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
                 ax.set_ylabel('Projection (bl-sub)')
                 ax.set_title(f'{block} block (bl-sub)')
                 ax.legend(fontsize=7)
 
-            # (fast−slow)_early − (fast−slow)_late
-            ax = axes[2, 1]
+            # (fast−slow)_early − (fast−slow)_late, baseline-subtracted
+            ax = axes[3, 1]
             gain_diffs = []
             for animal in proj_animals:
                 e = block_animal_traces[animal].get('early', {})
@@ -1024,6 +1144,7 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             plt.tight_layout()
             fig.savefig(save_dir / f'align_tf{tf_wl}_block{b_wl}_{suffix}.png',
                         dpi=300, bbox_inches='tight')
+            plt.close(fig)
             figs.append(fig)
 
     # motor x block: scatter + lick projections onto block dimension
@@ -1049,9 +1170,11 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
 
                 motor_r = motor_results.get(animal, {})
                 block_r = block_results.get(animal, {})
-                m_e_vec = motor_r.get('dimensions', {}).get('early', {}).get(m_wl)
-                m_l_vec = motor_r.get('dimensions', {}).get('late', {}).get(m_wl)
-                block_vec = block_r.get('dimensions', {}).get(b_wl)
+                motor_dims = motor_r.get('dimensions', {}).get(dim_name, {})
+                block_dims = block_r.get('dimensions', {}).get(dim_name, {})
+                m_e_vec = motor_dims.get('early', {}).get(m_wl)
+                m_l_vec = motor_dims.get('late', {}).get(m_wl)
+                block_vec = block_dims.get(b_wl)
                 if m_e_vec is not None and m_l_vec is not None and block_vec is not None:
                     n = min(len(m_e_vec), len(block_vec))
                     for _ in range(n_null):
@@ -1062,10 +1185,12 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             if len(early_vals) < 2:
                 continue
 
-            fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+            fig, axes = plt.subplots(4, 3, figsize=(18, 18))
             axes[1, 0].set_visible(False)
+            axes[1, 2].set_visible(False)
             axes[2, 0].set_visible(False)
-            axes[2, 2].set_visible(False)
+            axes[3, 0].set_visible(False)
+            axes[3, 2].set_visible(False)
 
             _alignment_scatter_ax(axes[0, 0],
                 np.array(early_vals), np.array(late_vals),
@@ -1106,10 +1231,29 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                 ax.set_title(f'{block} block FA licks onto block {b_wl}')
                 ax.legend(fontsize=7)
 
+            # early − late, raw
+            ax = axes[1, 1]
+            diffs = []
+            for animal in proj_animals:
+                e = block_traces[animal].get('early')
+                l = block_traces[animal].get('late')
+                if e is not None and l is not None and lick_t_ax is not None:
+                    diff = e - l
+                    ax.plot(lick_t_ax, diff, color='grey', alpha=0.3, linewidth=0.7)
+                    diffs.append(diff)
+            if diffs:
+                ax.plot(lick_t_ax, np.nanmean(diffs, axis=0), color='black',
+                        linewidth=2, label=f'Mean (n={len(diffs)})')
+            ax.axvline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+            ax.set_ylabel('Δ projection')
+            ax.set_title('Early − late (raw)')
+            ax.legend(fontsize=7)
+
             # baseline-subtracted
             for pi, (block, block_col) in enumerate([('early', EARLY_COL),
                                                       ('late', LATE_COL)]):
-                ax = axes[1, 1 + pi]
+                ax = axes[2, 1 + pi]
                 traces = []
                 for animal in proj_animals:
                     trace = block_traces[animal].get(block)
@@ -1127,8 +1271,8 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                 ax.set_title(f'{block} block (bl-sub)')
                 ax.legend(fontsize=7)
 
-            # early − late
-            ax = axes[2, 1]
+            # early − late, baseline-subtracted
+            ax = axes[3, 1]
             diffs = []
             for animal in proj_animals:
                 e = block_traces[animal].get('early')
@@ -1153,6 +1297,7 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             plt.tight_layout()
             fig.savefig(save_dir / f'align_motor{m_wl}_block{b_wl}_{suffix}.png',
                         dpi=300, bbox_inches='tight')
+            plt.close(fig)
             figs.append(fig)
 
     # tf x motor: both have early/late block versions
@@ -1173,9 +1318,11 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
 
                 tf_r = tf_results.get(animal, {})
                 motor_r = motor_results.get(animal, {})
+                tf_dims = tf_r.get('dimensions', {}).get(dim_name, {})
+                motor_dims = motor_r.get('dimensions', {}).get(dim_name, {})
                 for block, null_list in [('early', null_early), ('late', null_late)]:
-                    tf_vec = tf_r.get('dimensions', {}).get(block, {}).get(tf_wl)
-                    m_vec = motor_r.get('dimensions', {}).get(block, {}).get(m_wl)
+                    tf_vec = tf_dims.get(block, {}).get(tf_wl)
+                    m_vec = motor_dims.get(block, {}).get(m_wl)
                     if tf_vec is not None and m_vec is not None:
                         n = min(len(tf_vec), len(m_vec))
                         for _ in range(n_null):
@@ -1195,6 +1342,7 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
             plt.tight_layout()
             fig.savefig(save_dir / f'align_tf{tf_wl}_motor{m_wl}_{suffix}.png',
                         dpi=300, bbox_inches='tight')
+            plt.close(fig)
             figs.append(fig)
 
     return figs

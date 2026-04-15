@@ -145,7 +145,8 @@ from coding_dims.plotting import (plot_alignment, plot_block_significance,
                                  plot_cross_projections, plot_cross_class_alignment)
 from utils.rois import AREA_GROUPS
 
-areas = [None] + list(AREA_GROUPS.keys())
+# areas = [None] + list(AREA_GROUPS.keys())
+areas = list(AREA_GROUPS.keys())
 unit_filters = [None, ['tf'], ['tf', 'lick_prep']]
 
 for area in areas:
@@ -153,54 +154,50 @@ for area in areas:
         print(f'\n=== extraction: area: {area}, filter: {uf} ===')
         extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
                               cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                              method='cd', n_jobs=5)
+                              n_jobs=5)
         extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
                                  cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 method='cd', n_jobs=5)
+                                 n_jobs=5)
         extract_block_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
                                  cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 method='cd', n_jobs=5)
+                                 n_jobs=5)
 
 #%% coding dimension stats (tf/motor include plots via analyse_coding_dimensions)
 for area in areas:
     for uf in unit_filters:
         print(f'\n=== stats: area: {area}, filter: {uf} ===')
         analyse_coding_dimensions('tf', cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                  method='cd')
+                                  dim_name='dprime_cd')
         analyse_coding_dimensions('motor', cd_ops=CODING_DIM_OPS, area=area,
                                   unit_filter=uf,
-                                  method='cd')
-        analyse_block_dimensions(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 method='cd')
+                                  dim_name='dprime_cd')
+        analyse_block_dimensions(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
 
 #%% coding dimensions alignment
 for area in areas:
     for uf in unit_filters:
         print(f'\n=== comparisons: area: {area}, filter: {uf} ===')
-        calculate_tf_motor_alignment(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                     method='cd')
-        cross_dimension_cosines(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                method='cd')
-        cross_dimension_projections(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                    method='cd')
+        calculate_tf_motor_alignment(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        cross_dimension_cosines(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+        cross_dimension_projections(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
 
 #%% coding dim plots
 
 # block significance plots
 for area in areas:
     for uf in unit_filters:
-        plot_block_significance(area=area, unit_filter=uf, method='cd')
+        plot_block_significance(area=area, unit_filter=uf, dim_name='dprime_cd')
 
 # projections onto all dimensions
 for area in areas:
     for uf in unit_filters:
-        plot_cross_projections(area=area, unit_filter=uf, method='cd')
+        plot_cross_projections(area=area, unit_filter=uf, dim_name='dprime_cd')
 
 # cross-class alignment scatters
 for area in areas:
     for uf in unit_filters:
-        plot_cross_class_alignment(area=area, unit_filter=uf, method='cd')
-        plot_alignment(area=area, unit_filter=uf, method='cd')
+        plot_cross_class_alignment(area=area, unit_filter=uf, dim_name='dprime_cd')
+        plot_alignment(area=area, unit_filter=uf, dim_name='dprime_cd')
 
 #%%
 """
@@ -209,8 +206,6 @@ Think about how to analyse total distance pushed by TF pulses, and how this brea
 into motor vs non-motor directions - e.g. total deviation may be unchanged by exp, 
 but relative movement along dimensions are.
 """
-#%% null space
-
 
 #%% Demixing - train and save per session
 from config import DEMIXING_OPTIONS
