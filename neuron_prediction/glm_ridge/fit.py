@@ -542,7 +542,7 @@ def _fit_poisson_glm(X, y, lambda_l2=0.0, max_iter=500, tol=1e-6):
             w_new = w - step * grad_w
             b_new = b - step * grad_b
             new_loss = _loss(w_new, b_new)
-            if new_loss <= loss - 0.5 * step * (
+            if new_loss <= loss - 0.5 * (
                     np.dot(grad_w, w - w_new) + grad_b * (b - b_new)):
                 break
             step *= 0.5
@@ -554,7 +554,7 @@ def _fit_poisson_glm(X, y, lambda_l2=0.0, max_iter=500, tol=1e-6):
         if abs(loss - new_loss) < tol:
             break
         loss = new_loss
-        step = min(step * 1.5, 1.0)  # cautiously grow step
+        step = min(step * 1.5, 1.0)  #
 
     return w, b
 
