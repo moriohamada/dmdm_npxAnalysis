@@ -412,12 +412,12 @@ def calculate_el_hazard(dfs, config=ANALYSIS_OPTIONS):
             licks_arr = early_licks if is_early else late_licks
             at_risk_arr = early_at_risk if is_early else late_at_risk
 
-            for b, bc in enumerate(bin_centres):
-                bin_start = bc - half_bin
+            for b, bin_centre in enumerate(bin_centres):
+                bin_start = bin_centre - half_bin
                 if bin_start >= cens_time:
                     break
                 at_risk_arr[b] += 1
-                if bin_start <= lick_time < bc + half_bin:
+                if bin_start <= lick_time < bin_centre + half_bin:
                     licks_arr[b] += 1
 
         results[subj] = {
@@ -527,9 +527,9 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
             lick_prob_ci = np.full((n_bins, 2), np.nan)
             n_stim = np.zeros(n_bins, dtype=int)
 
-            for b, bc in enumerate(bin_centres):
-                in_bin = ((cond_df['tf_dev'] >= bc - half_width) &
-                          (cond_df['tf_dev'] < bc + half_width))
+            for b, bin_centre in enumerate(bin_centres):
+                in_bin = ((cond_df['tf_dev'] >= bin_centre - half_width) &
+                          (cond_df['tf_dev'] < bin_centre + half_width))
                 n = in_bin.sum()
                 k = cond_df.loc[in_bin, 'licked'].sum()
                 n_stim[b] = n

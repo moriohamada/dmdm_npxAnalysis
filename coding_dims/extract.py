@@ -254,7 +254,7 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, cd_ops=CODING_DIM_OPS):
         trial_means = {}
         any_valid = False
         for win in windows:
-            wl = window_label(win)
+            win_label = window_label(win)
             t_start = bl_onset + win[0]
             t_end = bl_onset + win[1]
 
@@ -265,8 +265,8 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, cd_ops=CODING_DIM_OPS):
                 continue
 
             trial_mean = np.nanmean(fr_vals[:, bin_mask], axis=1)  # (nN,)
-            results[block][wl].append(trial_mean)
-            trial_means[wl] = trial_mean
+            results[block][win_label].append(trial_mean)
+            trial_means[win_label] = trial_mean
             any_valid = True
 
         if any_valid:
@@ -280,12 +280,12 @@ def _load_block_resps(sess_dir, ops=ANALYSIS_OPTIONS, cd_ops=CODING_DIM_OPS):
 
     # stack into arrays
     for block in ['early', 'late']:
-        for wl in list(results[block].keys()):
-            trials_list = results[block][wl]
+        for win_label in list(results[block].keys()):
+            trials_list = results[block][win_label]
             if len(trials_list) == 0:
-                results[block][wl] = None
+                results[block][win_label] = None
             else:
-                results[block][wl] = np.stack(trials_list, axis=0)  # (nTrials, nN)
+                results[block][win_label] = np.stack(trials_list, axis=0)  # (nTrials, nN)
 
     del fr_vals
     gc.collect()
@@ -297,15 +297,15 @@ def _session_valid_for_block(block_data, cd_ops):
     if block_data is None:
         return False
     min_trials = cd_ops['min_block_trials_per_block']
-    for wl in block_data['early']:
-        early_ok = block_data['early'][wl] is not None and block_data['early'][wl].shape[0] >= min_trials
-        late_ok = block_data['late'][wl] is not None and block_data['late'][wl].shape[0] >= min_trials
+    for win_label in block_data['early']:
+        early_ok = block_data['early'][win_label] is not None and block_data['early'][win_label].shape[0] >= min_trials
+        late_ok = block_data['late'][win_label] is not None and block_data['late'][win_label].shape[0] >= min_trials
         if early_ok and late_ok:
             return True
     return False
 
 
-def _compute_block_directions(sess_trial_lists, sess_fit_idx, fit_labels, wl):
+def _compute_block_directions(sess_trial_lists, sess_fit_idx, fit_labels, win_label):
     # returns {dim_name: (w_normed, norm)} per dim_name in BLOCK_DIM_FNS.
     # entry can be (None, 0.0) if not enough data
     sess_early = []  # list of (n_early_trials, nN) per session
@@ -315,9 +315,9 @@ def _compute_block_directions(sess_trial_lists, sess_fit_idx, fit_labels, wl):
         early_vecs = []
         late_vecs = []
         for j, i in enumerate(sess_fit_idx[s]):
-            if wl not in trial_list[i]['window_means']:
+            if win_label not in trial_list[i]['window_means']:
                 continue
-            v = trial_list[i]['window_means'][wl]
+            v = trial_list[i]['window_means'][win_label]
             if fit_labels[s][j] == 'early':
                 early_vecs.append(v)
             elif fit_labels[s][j] == 'late':
@@ -338,7 +338,7 @@ def _compute_block_directions(sess_trial_lists, sess_fit_idx, fit_labels, wl):
     return out
 
 
-def _project_test_auc(sess_trial_lists, sess_test_idx, w, neuron_offsets, wl):
+def _project_test_auc(sess_trial_lists, sess_test_idx, w, neuron_offsets, win_label):
     """
     project test trials onto direction w and compute AUC-ROC.
     test trials always use their real block labels
@@ -349,9 +349,9 @@ def _project_test_auc(sess_trial_lists, sess_test_idx, w, neuron_offsets, wl):
         trial_list = sess_trial_lists[s]
         w_slice = w[neuron_offsets[s]:neuron_offsets[s + 1]]
         for i in sess_test_idx[s]:
-            if wl not in trial_list[i]['window_means']:
+            if win_label not in trial_list[i]['window_means']:
                 continue
-            projections.append(np.dot(trial_list[i]['window_means'][wl], w_slice))
+            projections.append(np.dot(trial_list[i]['window_means'][win_label], w_slice))
             labels.append(trial_list[i]['block'] == 'early')
 
     if len(projections) < 4:
@@ -411,11 +411,11 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
         masked_data = {}
         for block in ['early', 'late']:
             masked_data[block] = {}
-            for wl in [window_label(w) for w in windows]:
-                if data[block][wl] is not None:
-                    masked_data[block][wl] = data[block][wl][:, neuron_mask]
+            for win_label in [window_label(w) for w in windows]:
+                if data[block][win_label] is not None:
+                    masked_data[block][win_label] = data[block][win_label][:, neuron_mask]
                 else:
-                    masked_data[block][wl] = None
+                    masked_data[block][win_label] = None
 
         if not _session_valid_for_block(masked_data, cd_ops):
             continue
@@ -423,7 +423,7 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
         # apply neuron mask to per-trial data
         for trial in trial_list:
             trial['window_means'] = {
-                wl: v[neuron_mask] for wl, v in trial['window_means'].items()
+                win_label: v[neuron_mask] for win_label, v in trial['window_means'].items()
             }
 
         session = Session.load(str(sess_dir / 'session.pkl'))
@@ -473,16 +473,16 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
     p_values = {v: {} for v in BLOCK_DIM_FNS}
 
     for win in windows:
-        wl = window_label(win)
+        win_label = window_label(win)
         dirs = _compute_block_directions(
-            sess_trial_lists, sess_fit_idx, real_fit_labels, wl)
+            sess_trial_lists, sess_fit_idx, real_fit_labels, win_label)
         for dim_name, (w, norm) in dirs.items():
             if w is None:
                 continue
-            dimensions[dim_name][wl] = w
-            direction_norm[dim_name][wl] = norm
-            real_aucs[dim_name][wl] = _project_test_auc(
-                sess_trial_lists, sess_test_idx, w, neuron_offsets, wl)
+            dimensions[dim_name][win_label] = w
+            direction_norm[dim_name][win_label] = norm
+            real_aucs[dim_name][win_label] = _project_test_auc(
+                sess_trial_lists, sess_test_idx, w, neuron_offsets, win_label)
 
     # circular-shift null
     rng = np.random.default_rng(0)
@@ -492,20 +492,20 @@ def _process_block_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, sav
             sess_trial_lists, sess_fit_idx, sess_all_labels=shifted)
 
         for win in windows:
-            wl = window_label(win)
+            win_label = window_label(win)
             dirs = _compute_block_directions(
-                sess_trial_lists, sess_fit_idx, shifted_fit_labels, wl)
+                sess_trial_lists, sess_fit_idx, shifted_fit_labels, win_label)
             for dim_name, (w_null, _) in dirs.items():
-                if w_null is None or wl not in dimensions[dim_name]:
+                if w_null is None or win_label not in dimensions[dim_name]:
                     continue
-                null_aucs[dim_name][wl][p] = _project_test_auc(
-                    sess_trial_lists, sess_test_idx, w_null, neuron_offsets, wl)
+                null_aucs[dim_name][win_label][p] = _project_test_auc(
+                    sess_trial_lists, sess_test_idx, w_null, neuron_offsets, win_label)
 
     for dim_name in BLOCK_DIM_FNS:
-        for wl, real_auc in real_aucs[dim_name].items():
-            null = null_aucs[dim_name][wl]
+        for win_label, real_auc in real_aucs[dim_name].items():
+            null = null_aucs[dim_name][win_label]
             valid = null[~np.isnan(null)]
-            p_values[dim_name][wl] = np.mean(valid >= real_auc) if len(valid) > 0 else np.nan
+            p_values[dim_name][win_label] = np.mean(valid >= real_auc) if len(valid) > 0 else np.nan
 
     # save per-session intermediate data for pooled aggregation
     sess_intermediate = []
@@ -598,11 +598,11 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
 
             # time-avg responses across specified windows
             for win in windows:
-                wl = window_label(win)
+                win_label = window_label(win)
                 t_mask = time_mask(t_ax, win)
-                sess_tavg[wl][block]['fast'].append(
+                sess_tavg[win_label][block]['fast'].append(
                     np.nanmean(fast[:, :, t_mask], axis=2))
-                sess_tavg[wl][block]['slow'].append(
+                sess_tavg[win_label][block]['slow'].append(
                     np.nanmean(slow[:, :, t_mask], axis=2))
 
         included_sessions.append(session.name)
@@ -622,12 +622,12 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
     dimensions = {v: {'early': {}, 'late': {}} for v in TF_DIM_FNS}
     for block in ['early', 'late']:
         for win in windows:
-            wl = window_label(win)
-            fast_sess = sess_tavg[wl][block]['fast']
-            slow_sess = sess_tavg[wl][block]['slow']
+            win_label = window_label(win)
+            fast_sess = sess_tavg[win_label][block]['fast']
+            slow_sess = sess_tavg[win_label][block]['slow']
             for dim_name, fn in TF_DIM_FNS.items():
                 w = np.concatenate([fn(f, s) for f, s in zip(fast_sess, slow_sess)])
-                dimensions[dim_name][block][wl], _ = l2_normalise(w)
+                dimensions[dim_name][block][win_label], _ = l2_normalise(w)
 
     # cross-block projections with separate fast and slow, per dim_name
     pop_mean = {}
@@ -644,8 +644,8 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
             cross_projections[dim_name][proj_block] = {}
             for dim_block in ['early', 'late']:
                 cross_projections[dim_name][proj_block][dim_block] = {}
-                for wl, w in dimensions[dim_name][dim_block].items():
-                    cross_projections[dim_name][proj_block][dim_block][wl] = {
+                for win_label, w in dimensions[dim_name][dim_block].items():
+                    cross_projections[dim_name][proj_block][dim_block][win_label] = {
                         'fast': w @ pop_mean[proj_block]['fast'],
                         'slow': w @ pop_mean[proj_block]['slow'],
                     }
@@ -654,13 +654,13 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
     # between-block cosine similarity + null
     between_block = {v: {} for v in TF_DIM_FNS}
     for win in windows:
-        wl = window_label(win)
-        if not all(wl in dimensions[v]['early'] and wl in dimensions[v]['late']
+        win_label = window_label(win)
+        if not all(win_label in dimensions[v]['early'] and win_label in dimensions[v]['late']
                    for v in TF_DIM_FNS):
             continue
 
-        real_cos = {v: cosine_similarity(dimensions[v]['early'][wl],
-                                          dimensions[v]['late'][wl])
+        real_cos = {v: cosine_similarity(dimensions[v]['early'][win_label],
+                                          dimensions[v]['late'][win_label])
                     for v in TF_DIM_FNS}
         null_cos = {v: np.full(n_perm, np.nan) for v in TF_DIM_FNS}
 
@@ -670,11 +670,11 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
         n_early_slow = []
         for s in range(n_sessions):
             sess_pooled_fast.append(np.concatenate(
-                [sess_tavg[wl]['early']['fast'][s],
-                 sess_tavg[wl]['late']['fast'][s]], axis=0))
+                [sess_tavg[win_label]['early']['fast'][s],
+                 sess_tavg[win_label]['late']['fast'][s]], axis=0))
             sess_pooled_slow.append(np.concatenate(
-                [sess_tavg[wl]['early']['slow'][s],
-                 sess_tavg[wl]['late']['slow'][s]], axis=0))
+                [sess_tavg[win_label]['early']['slow'][s],
+                 sess_tavg[win_label]['late']['slow'][s]], axis=0))
             n_early_fast.append(sess_n['early']['fast'][s])
             n_early_slow.append(sess_n['early']['slow'][s])
 
@@ -699,7 +699,7 @@ def _process_tf_animal(animal, sess_dirs, ops, cd_ops, area, unit_filter, save_d
                 null_cos[dim_name][p] = cosine_similarity(w_a, w_b)
 
         for dim_name in TF_DIM_FNS:
-            between_block[dim_name][wl] = {'real': real_cos[dim_name],
+            between_block[dim_name][win_label] = {'real': real_cos[dim_name],
                                            'null': null_cos[dim_name]}
 
     result = {
@@ -809,9 +809,9 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
             sess_tavg_bl[block].append(np.nanmean(resp[:, :, bl_mask], axis=2))
 
             for win in windows:
-                wl = window_label(win)
+                win_label = window_label(win)
                 t_mask = time_mask(lick_t_ax, win)
-                sess_tavg_win[wl][block].append(
+                sess_tavg_win[win_label][block].append(
                     np.nanmean(resp[:, :, t_mask], axis=2))
 
         included_sessions.append(sess_dir.name)
@@ -832,15 +832,15 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
     dimensions = {v: {'early': {}, 'late': {}} for v in MOTOR_DIM_FNS}
     for block in ['early', 'late']:
         for win in windows:
-            wl = window_label(win)
-            if not sess_tavg_win[wl][block]:
+            win_label = window_label(win)
+            if not sess_tavg_win[win_label][block]:
                 continue
-            win_sess = sess_tavg_win[wl][block]
+            win_sess = sess_tavg_win[win_label][block]
             bl_sess = sess_tavg_bl[block]
             for dim_name, fn in MOTOR_DIM_FNS.items():
                 w = np.concatenate([fn(w_ev, b_ev)
                                     for w_ev, b_ev in zip(win_sess, bl_sess)])
-                dimensions[dim_name][block][wl], _ = l2_normalise(w)
+                dimensions[dim_name][block][win_label], _ = l2_normalise(w)
 
     # cross-block projections, per dim_name
     pop_mean = {}
@@ -854,21 +854,21 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
             cross_projections[dim_name][proj_block] = {}
             for dim_block in ['early', 'late']:
                 cross_projections[dim_name][proj_block][dim_block] = {}
-                for wl, w in dimensions[dim_name][dim_block].items():
-                    cross_projections[dim_name][proj_block][dim_block][wl] = (
+                for win_label, w in dimensions[dim_name][dim_block].items():
+                    cross_projections[dim_name][proj_block][dim_block][win_label] = (
                         w @ pop_mean[proj_block])
     del pop_mean
 
     # between-block cosine similarity + null
     between_block = {v: {} for v in MOTOR_DIM_FNS}
     for win in windows:
-        wl = window_label(win)
-        if not all(wl in dimensions[v]['early'] and wl in dimensions[v]['late']
+        win_label = window_label(win)
+        if not all(win_label in dimensions[v]['early'] and win_label in dimensions[v]['late']
                    for v in MOTOR_DIM_FNS):
             continue
 
-        real_cos = {v: cosine_similarity(dimensions[v]['early'][wl],
-                                          dimensions[v]['late'][wl])
+        real_cos = {v: cosine_similarity(dimensions[v]['early'][win_label],
+                                          dimensions[v]['late'][win_label])
                     for v in MOTOR_DIM_FNS}
         null_cos = {v: np.full(n_perm, np.nan) for v in MOTOR_DIM_FNS}
 
@@ -877,8 +877,8 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
         n_early = []
         for s in range(n_sessions):
             sess_pooled_win.append(np.concatenate(
-                [sess_tavg_win[wl]['early'][s],
-                 sess_tavg_win[wl]['late'][s]], axis=0))
+                [sess_tavg_win[win_label]['early'][s],
+                 sess_tavg_win[win_label]['late'][s]], axis=0))
             sess_pooled_bl.append(np.concatenate(
                 [sess_tavg_bl['early'][s],
                  sess_tavg_bl['late'][s]], axis=0))
@@ -902,7 +902,7 @@ def _process_motor_animal(animal, sess_dirs, ops, cd_ops, lick_type,
                 null_cos[dim_name][p] = cosine_similarity(w_a, w_b)
 
         for dim_name in MOTOR_DIM_FNS:
-            between_block[dim_name][wl] = {'real': real_cos[dim_name],
+            between_block[dim_name][win_label] = {'real': real_cos[dim_name],
                                            'null': null_cos[dim_name]}
 
     result = {

@@ -72,8 +72,8 @@ def visualise_all_preferences(npx_dir: str = PATHS['npx_dir_local'],
     plot_dir = Path(save_dir) / 'preferences'
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    for name, pp in plot_pairs.items():
-        fig = scatter_preference_indexes(prefs, plot_pair = pp, sig_flag=sig_flag,
+    for name, plot_pair in plot_pairs.items():
+        fig = scatter_preference_indexes(prefs, plot_pair=plot_pair, sig_flag=sig_flag,
                                          alpha=alpha)
         fig.savefig(plot_dir / f'{name}.png')
         plt.close(fig)
