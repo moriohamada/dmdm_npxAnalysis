@@ -33,7 +33,7 @@ visualise_all_preferences(npx_dir=PATHS['npx_dir_local'],
 
 # Prepare design matrices
 from neuron_prediction.glm.fit import prepare_all_sessions
-prepare_all_sessions(overwrite=False)
+prepare_all_sessions(overwrite=True)
 
 from neuron_prediction.glm.fit import build_job_map
 df = build_job_map()

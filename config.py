@@ -101,13 +101,13 @@ GLM_OPTIONS = dict(
 
     # predictor kernel windows (start, end) in seconds
     # positive lags = predictor precedes response, negative = follows
-    kern_tf          = (0, 1.5),
+    kern_tf          = (0, 1.0),
     kern_trial_start = (0, 2.0),
     kern_change      = (0, 2.0),
     kern_lick_prep   = (-1.25, 0),
     kern_lick_exec   = (0, 0.5),
-    kern_air_puff    = (0, 0.25),
-    kern_reward      = (0, 0.4),
+    kern_air_puff    = (-0.5, 0.25),
+    kern_reward      = (-0.5, 0.4),
     kern_abort       = (-1.25, 0.25),
     kern_face_me     = (-0.05, 0.8),
     kern_running     = (-0.05, 0.8),
@@ -128,8 +128,9 @@ GLM_OPTIONS = dict(
         'block':         ['block'],
     },
 
-    # group lasso regularisation
+    # regularisation
     group_lasso_lambdas = [0, 1e-4, 1e-3, 1e-2],
+    ridge_lambdas = [0, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1, 10],
 
     # cross-validation
     n_folds = 10,
@@ -137,6 +138,7 @@ GLM_OPTIONS = dict(
     # fitting
     max_iter = 10000,
     tol = 1e-6,
+    
     cv_max_iter = 1000,  # coarser convergence for lambda selection
     cv_tol = 1e-4,
 )

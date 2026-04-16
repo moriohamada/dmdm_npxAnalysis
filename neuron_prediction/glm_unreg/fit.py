@@ -1,5 +1,5 @@
 """
-poisson glm with lasso regression
+unregularised poisson glm - no group lasso, plain MLE
 """
 import numpy as np
 import pandas as pd
@@ -513,49 +513,24 @@ def build_event_masks(session, t_ax):
 
 #%% GLM fitting
 
-def _fit_poisson_glm(X, y, col_map, lambda_gl=0.0,
-                     max_iter=500, tol=1e-6):
-    """fit poisson GLM with proximal gradient descent and group lasso
+def _fit_poisson_glm(X, y, max_iter=500, tol=1e-6):
+    """fit poisson GLM via gradient descent (no regularisation)
 
     log(rate) = X @ w + b, loss = mean(exp(X @ w + b) - y * (X @ w + b))
-    group lasso applied via proximal operator after each gradient step.
     step size chosen by backtracking line search.
-
-    returns (weights, bias) as numpy arrays
     """
     n, p = X.shape
     w = np.zeros(p, dtype=np.float64)
     b = np.float64(np.log(max(y.mean(), 1e-8)))
 
-    # precompute group info for proximal operator
-    groups = []
-    for name, (col_slice, _) in col_map.items():
-        idx = np.arange(col_slice.start, col_slice.stop)
-        groups.append((idx, np.sqrt(len(idx))))
-
     def _loss(w, b):
         log_rate = np.clip(X @ w + b, -20, 20)
         return (np.exp(log_rate) - y * log_rate).mean()
-
-    def _prox(w, step):
-        if lambda_gl <= 0:
-            return w
-        w = w.copy()
-        for idx, sqrt_df in groups:
-            w_g = w[idx]
-            norm_g = np.linalg.norm(w_g)
-            threshold = step * lambda_gl * sqrt_df
-            if norm_g <= threshold:
-                w[idx] = 0.0
-            else:
-                w[idx] = w_g * (1 - threshold / norm_g)
-        return w
 
     step = 1.0
     loss = _loss(w, b)
 
     for it in range(max_iter):
-        # gradient
         log_rate = np.clip(X @ w + b, -20, 20)
         rate = np.exp(log_rate)
         residual = rate - y
@@ -564,7 +539,7 @@ def _fit_poisson_glm(X, y, col_map, lambda_gl=0.0,
 
         # backtracking line search
         for _ in range(20):
-            w_new = _prox(w - step * grad_w, step)
+            w_new = w - step * grad_w
             b_new = b - step * grad_b
             new_loss = _loss(w_new, b_new)
             if new_loss <= loss - 0.5 * step * (
@@ -591,28 +566,20 @@ def _predict_glm(X, w, b):
 
 
 def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
-    """fit poisson GLM with group lasso for one neuron
+    """fit unregularised poisson GLM for one neuron
 
-    1. grid search over lambda
-    2. lesion analysis: reuse best-lambda fold models, zero out each
-       predictor group, evaluate on bins where that group is non-zero
-    3. refit on all data with best lambda for kernel extraction
+    1. fit per fold for cross-validated evaluation
+    2. lesion analysis: zero out each predictor group, evaluate on
+       bins where that group is non-zero
+    3. refit on all data for kernel extraction
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
-
-    returns dict with weights, bias, best_lambda, fold_ids, full_r,
-    and lesioned r per group. returns None if no valid data to fit.
     """
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
     n_folds = ops['n_folds']
-    lambdas = ops['group_lasso_lambdas']
-
-    # coarse fit for lambda selection, fine fit for final models
     fit_kw = {k: ops[k] for k in ('max_iter', 'tol') if k in ops}
-    coarse_kw = {**fit_kw, 'max_iter': ops.get('cv_max_iter', 200),
-                 'tol': ops.get('cv_tol', 1e-4)}
 
     # mask to valid bins only
     valid = fold_ids >= 0
@@ -630,62 +597,32 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
                 mask |= np.any(X_v[:, col_slice] != 0, axis=1)
         group_masks[gname] = mask
 
-    #%% lambda selection
-    lambda_scores = {}
-    lambda_params = {}  # stores (w, b) per fold per lambda
-
-    for lam in lambdas:
-        fold_r = np.full(n_folds, np.nan)
-        fold_wb = {}
-
-        for k in range(n_folds):
-            test_mask = folds_v == k
-            train_mask = ~test_mask
-            if test_mask.sum() == 0 or train_mask.sum() == 0:
-                continue
-
-            X_train, X_test, _, _ = normalise_design_matrix(
-                X_v[train_mask], X_v[test_mask], col_map)
-            y_train, y_test = y_v[train_mask], y_v[test_mask]
-
-            if y_train.sum() == 0 or y_test.sum() == 0:
-                continue
-
-            w, b = _fit_poisson_glm(X_train, y_train, col_map,
-                                    lambda_gl=lam, **coarse_kw)
-            y_pred = _predict_glm(X_test, w, b)
-            fold_r[k] = pearson_r(y_test, y_pred)
-            fold_wb[k] = (w, b)
-
-        mean_r = np.nanmean(fold_r)
-        lambda_scores[lam] = mean_r
-        lambda_params[lam] = fold_wb
-        print(f'  lambda={lam:.0e}: mean r={mean_r:.4f}')
-
-    # in case all-NaN
-    if all(np.isnan(v) for v in lambda_scores.values()):
-        return None
-
-    best_lambda = max(lambda_scores, key=lambda_scores.get)
-    best_wb = lambda_params[best_lambda]
-    print(f'  best lambda: {best_lambda:.0e}')
-
-    #%% evaluate best-lambda models: full + reduced (refit without each group)
+    #%% fit per fold
     full_r = np.full(n_folds, np.nan)
     full_r_group = {g: np.full(n_folds, np.nan) for g in group_names}
     lesioned_r = {g: np.full(n_folds, np.nan) for g in group_names}
+    fold_wb = {}
 
-    for k, (w, b) in best_wb.items():
+    for k in range(n_folds):
         test_mask = folds_v == k
         train_mask = ~test_mask
-        X_train_raw, X_test_raw = X_v[train_mask], X_v[test_mask]
-        _, X_test, _, _ = normalise_design_matrix(
-            X_train_raw, X_test_raw, col_map)
+        if test_mask.sum() == 0 or train_mask.sum() == 0:
+            continue
+
+        X_train, X_test, _, _ = normalise_design_matrix(
+            X_v[train_mask], X_v[test_mask], col_map)
         y_train, y_test = y_v[train_mask], y_v[test_mask]
+
+        if y_train.sum() == 0 or y_test.sum() == 0:
+            continue
+
+        w, b = _fit_poisson_glm(X_train, y_train, **fit_kw)
+        fold_wb[k] = (w, b)
 
         y_pred = _predict_glm(X_test, w, b)
         full_r[k] = pearson_r(y_test, y_pred)
 
+        # per-group: refit without each predictor group
         for gname, pred_list in lesion_groups.items():
             win = group_masks[gname][test_mask]
             if win.sum() < 5:
@@ -693,29 +630,29 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
 
             full_r_group[gname][k] = pearson_r(y_test[win], y_pred[win])
 
-            # refit without this predictor group
             X_train_red, col_map_red = reduce_design_matrix(
-                X_train_raw, pred_list, col_map)
+                X_v[train_mask], pred_list, col_map)
             X_test_red, _ = reduce_design_matrix(
-                X_test_raw, pred_list, col_map)
+                X_v[test_mask], pred_list, col_map)
             X_tr_n, X_te_n, _, _ = normalise_design_matrix(
                 X_train_red, X_test_red, col_map_red)
-            w_red, b_red = _fit_poisson_glm(
-                X_tr_n, y_train, col_map_red,
-                lambda_gl=best_lambda, **coarse_kw)
+            w_red, b_red = _fit_poisson_glm(X_tr_n, y_train, **fit_kw)
             y_les = _predict_glm(X_te_n, w_red, b_red)
             lesioned_r[gname][k] = pearson_r(y_test[win], y_les[win])
 
+    if not fold_wb:
+        return None
+
+    print(f'  mean r={np.nanmean(full_r):.4f}')
+
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
-    w_final, b_final = _fit_poisson_glm(X_all, y_v, col_map,
-                                         lambda_gl=best_lambda, **fit_kw)
+    w_final, b_final = _fit_poisson_glm(X_all, y_v, **fit_kw)
 
     #%% assemble results
     result = {
         'weights': w_final,
         'bias': np.array([b_final]),
-        'best_lambda': np.array(best_lambda),
         'fold_ids': fold_ids,
         'full_r': full_r,
     }
@@ -727,7 +664,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
 
 
 def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
-    """load prepped data, fit one neuron, save results to glm_results/"""
+    """load prepped data, fit one neuron, save results to glm_unreg_results/"""
     sess_dir = Path(sess_dir)
     counts, X, col_map, t_ax, valid_mask = load_glm_inputs(str(sess_dir))
 
@@ -748,7 +685,7 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
         print(f'  skipped (no valid predictions)')
         return
 
-    results_dir = sess_dir / 'glm_results'
+    results_dir = sess_dir / 'glm_unreg_results'
     results_dir.mkdir(exist_ok=True)
     np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
 
@@ -764,11 +701,11 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
 #%% classification
 
 def classify_units(sess_dir, ops=GLM_OPTIONS):
-    """load per-neuron GLM results and classify by lesion significance"""
+    """load per-neuron unregularised GLM results and classify by lesion significance"""
     import warnings
     from scipy.stats import ttest_rel, ttest_1samp
     warnings.filterwarnings('ignore', 'Mean of empty slice', RuntimeWarning)
-    results_dir = Path(sess_dir) / 'glm_results'
+    results_dir = Path(sess_dir) / 'glm_unreg_results'
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
     n_neurons = len(sess.fr_stats)
     group_names = list(ops['lesion_groups'].keys())
@@ -827,7 +764,7 @@ def classify_units(sess_dir, ops=GLM_OPTIONS):
         classifications.append(row)
 
     df = pd.DataFrame(classifications)
-    df.to_csv(Path(sess_dir) / 'glm_classifications.csv', index=False)
+    df.to_csv(Path(sess_dir) / 'glm_unreg_classifications.csv', index=False)
     return df
 
 

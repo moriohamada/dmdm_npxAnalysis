@@ -20,6 +20,23 @@ def lesion_design_matrix(X, predictor_names, col_map):
     return X_les
 
 
+def reduce_design_matrix(X, predictor_names, col_map):
+    """remove columns belonging to a list of predictors, return reduced X and col_map"""
+    col_map_red = {}
+    offset = 0
+    keep_slices = []
+    for name, (col_slice, lags) in col_map.items():
+        n_cols = col_slice.stop - col_slice.start
+        if name in predictor_names:
+            continue
+        keep_slices.append(col_slice)
+        col_map_red[name] = (slice(offset, offset + n_cols), lags)
+        offset += n_cols
+
+    X_red = np.concatenate([X[:, s] for s in keep_slices], axis=1)
+    return X_red, col_map_red
+
+
 def permute_design_matrix(X, predictor_names, col_map, rng=None):
     """shuffle rows of a predictor group's columns
 
