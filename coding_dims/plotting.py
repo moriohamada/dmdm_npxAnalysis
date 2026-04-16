@@ -952,10 +952,39 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
     with open(proj_path, 'rb') as f:
         proj_results = pickle.load(f)
 
-    # load raw dimensions for null cloud
+    # load raw dimensions and build shared-neuron-subset vectors for null clouds
+    # (matches the 3-way intersection used by cross_dimension_cosines)
     block_results = _load_results(npx_dir, 'block', area, unit_filter)[0]
     tf_results = _load_results(npx_dir, 'tf', area, unit_filter)[0]
     motor_results = _load_results(npx_dir, 'motor', area, unit_filter)[0]
+
+    animal_shared_vecs = {}
+    for animal in sorted(set(block_results) & set(tf_results) & set(motor_results)):
+        block_ids = block_results[animal].get('unit_ids', [])
+        tf_ids = tf_results[animal].get('unit_ids', [])
+        motor_ids = motor_results[animal].get('unit_ids', [])
+        if not block_ids or not tf_ids or not motor_ids:
+            continue
+        shared = set(block_ids) & set(tf_ids) & set(motor_ids)
+        if len(shared) < 5:
+            continue
+        shared_order = sorted(shared)
+        block_idx = np.array([{uid: i for i, uid in enumerate(block_ids)}[uid]
+                              for uid in shared_order])
+        tf_idx = np.array([{uid: i for i, uid in enumerate(tf_ids)}[uid]
+                           for uid in shared_order])
+        motor_idx = np.array([{uid: i for i, uid in enumerate(motor_ids)}[uid]
+                              for uid in shared_order])
+
+        vecs = {}
+        for win_label, w in block_results[animal].get('dimensions', {}).get(dim_name, {}).items():
+            vecs[f'block_{win_label}'] = w[block_idx]
+        for block in ['early', 'late']:
+            for win_label, w in tf_results[animal].get('dimensions', {}).get(dim_name, {}).get(block, {}).items():
+                vecs[f'tf_{block}_{win_label}'] = w[tf_idx]
+            for win_label, w in motor_results[animal].get('dimensions', {}).get(dim_name, {}).get(block, {}).items():
+                vecs[f'motor_{block}_{win_label}'] = w[motor_idx]
+        animal_shared_vecs[animal] = vecs
 
     animals = sorted(cos_results.keys())
     if not animals:
@@ -1004,19 +1033,16 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                 early_vals.append(cos_matrix[i_tf_e, i_block])
                 late_vals.append(cos_matrix[i_tf_l, i_block])
 
-                tf_r = tf_results.get(animal, {})
-                block_r = block_results.get(animal, {})
-                tf_dims = tf_r.get('dimensions', {}).get(dim_name, {})
-                block_dims = block_r.get('dimensions', {}).get(dim_name, {})
-                tf_e_vec = tf_dims.get('early', {}).get(tf_wl)
-                tf_l_vec = tf_dims.get('late', {}).get(tf_wl)
-                block_vec = block_dims.get(b_wl)
-                if tf_e_vec is not None and tf_l_vec is not None and block_vec is not None:
-                    n = min(len(tf_e_vec), len(block_vec))
-                    for _ in range(n_null):
-                        shuf = rng.permutation(n)
-                        null_early.append(cosine_similarity(tf_e_vec[:n][shuf], block_vec[:n]))
-                        null_late.append(cosine_similarity(tf_l_vec[:n][shuf], block_vec[:n]))
+                vecs = animal_shared_vecs.get(animal)
+                if vecs is not None:
+                    tf_e_vec = vecs.get(tf_early_dim)
+                    tf_l_vec = vecs.get(tf_late_dim)
+                    block_vec = vecs.get(block_dim)
+                    if tf_e_vec is not None and tf_l_vec is not None and block_vec is not None:
+                        for _ in range(n_null):
+                            shuf = rng.permutation(len(tf_e_vec))
+                            null_early.append(cosine_similarity(tf_e_vec[shuf], block_vec))
+                            null_late.append(cosine_similarity(tf_l_vec[shuf], block_vec))
 
             if len(early_vals) < 2:
                 continue
@@ -1168,19 +1194,16 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                 early_vals.append(cos_matrix[i_motor_e, i_block])
                 late_vals.append(cos_matrix[i_motor_l, i_block])
 
-                motor_r = motor_results.get(animal, {})
-                block_r = block_results.get(animal, {})
-                motor_dims = motor_r.get('dimensions', {}).get(dim_name, {})
-                block_dims = block_r.get('dimensions', {}).get(dim_name, {})
-                m_e_vec = motor_dims.get('early', {}).get(m_wl)
-                m_l_vec = motor_dims.get('late', {}).get(m_wl)
-                block_vec = block_dims.get(b_wl)
-                if m_e_vec is not None and m_l_vec is not None and block_vec is not None:
-                    n = min(len(m_e_vec), len(block_vec))
-                    for _ in range(n_null):
-                        shuf = rng.permutation(n)
-                        null_early.append(cosine_similarity(m_e_vec[:n][shuf], block_vec[:n]))
-                        null_late.append(cosine_similarity(m_l_vec[:n][shuf], block_vec[:n]))
+                vecs = animal_shared_vecs.get(animal)
+                if vecs is not None:
+                    m_e_vec = vecs.get(motor_early_dim)
+                    m_l_vec = vecs.get(motor_late_dim)
+                    block_vec = vecs.get(block_dim)
+                    if m_e_vec is not None and m_l_vec is not None and block_vec is not None:
+                        for _ in range(n_null):
+                            shuf = rng.permutation(len(m_e_vec))
+                            null_early.append(cosine_similarity(m_e_vec[shuf], block_vec))
+                            null_late.append(cosine_similarity(m_l_vec[shuf], block_vec))
 
             if len(early_vals) < 2:
                 continue
@@ -1316,18 +1339,15 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
                         continue
                     vals_list.append(cos_matrix[dim_list.index(tf_dim), dim_list.index(motor_dim)])
 
-                tf_r = tf_results.get(animal, {})
-                motor_r = motor_results.get(animal, {})
-                tf_dims = tf_r.get('dimensions', {}).get(dim_name, {})
-                motor_dims = motor_r.get('dimensions', {}).get(dim_name, {})
-                for block, null_list in [('early', null_early), ('late', null_late)]:
-                    tf_vec = tf_dims.get(block, {}).get(tf_wl)
-                    m_vec = motor_dims.get(block, {}).get(m_wl)
-                    if tf_vec is not None and m_vec is not None:
-                        n = min(len(tf_vec), len(m_vec))
-                        for _ in range(n_null):
-                            shuf = rng.permutation(n)
-                            null_list.append(cosine_similarity(tf_vec[:n][shuf], m_vec[:n]))
+                vecs = animal_shared_vecs.get(animal)
+                if vecs is not None:
+                    for block, null_list in [('early', null_early), ('late', null_late)]:
+                        tf_vec = vecs.get(f'tf_{block}_{tf_wl}')
+                        m_vec = vecs.get(f'motor_{block}_{m_wl}')
+                        if tf_vec is not None and m_vec is not None:
+                            for _ in range(n_null):
+                                shuf = rng.permutation(len(tf_vec))
+                                null_list.append(cosine_similarity(tf_vec[shuf], m_vec))
 
             if len(early_vals) < 2:
                 continue

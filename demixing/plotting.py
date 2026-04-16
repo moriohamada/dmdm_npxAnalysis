@@ -12,24 +12,24 @@ from demixing.analysis import (
 
 def plot_latent_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS):
     """quick overview: trial onset, TF outliers, change onset, lick onset"""
-    ign = ops['ignore_first_trials_in_block']
+    ignore_n = ops['ignore_first_trials_in_block']
     rmv_move = ops['rmv_time_around_move']
     rmv_bl = ops['rmv_time_around_bl']
 
     onset, t_onset = align_to_baseline_onset(z_all, dataset, session,
                                               pre_s=1.0, post_s=2.0,
-                                              tr_in_block_min=ign)
+                                              tr_in_block_min=ignore_n)
     tf_dict, t_tf = align_to_tf_outliers(z_all, dataset, session,
                                           pre_s=0.5, post_s=1.5,
-                                          tr_in_block_min=ign,
+                                          tr_in_block_min=ignore_n,
                                           rmv_near_response=rmv_move,
                                           tr_time_range=(rmv_bl, 8))
     change, t_ch = align_to_change_onset(z_all, dataset, session,
                                           pre_s=0.5, post_s=1.5,
-                                          tr_in_block_min=ign)
+                                          tr_in_block_min=ignore_n)
     lick, t_lick = align_to_lick_onset(z_all, dataset, session,
                                         pre_s=1.5, post_s=0.5,
-                                        tr_in_block_min=ign)
+                                        tr_in_block_min=ignore_n)
 
     n_latent = z_all[0].shape[1]
     fig, axes = plt.subplots(n_latent, 4, figsize=(14, 1.8 * n_latent),
@@ -72,14 +72,14 @@ def plot_latent_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS):
 def plot_baseline_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                         pre_s=1.0, post_s=2.0):
     """baseline onset PSTHs, early vs late block"""
-    ign = ops['ignore_first_trials_in_block']
+    ignore_n = ops['ignore_first_trials_in_block']
 
     early, t = align_to_baseline_onset(z_all, dataset, session,
                                         pre_s=pre_s, post_s=post_s,
-                                        block='early', tr_in_block_min=ign)
+                                        block='early', tr_in_block_min=ignore_n)
     late, _ = align_to_baseline_onset(z_all, dataset, session,
                                        pre_s=pre_s, post_s=post_s,
-                                       block='late', tr_in_block_min=ign)
+                                       block='late', tr_in_block_min=ignore_n)
 
     n_latent = z_all[0].shape[1]
     fig, axes = plt.subplots(n_latent, 1, figsize=(5, 1.8 * n_latent),
@@ -104,7 +104,7 @@ def plot_baseline_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
 def plot_tf_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                   pre_s=0.5, post_s=1.5):
     """TF outlier PSTHs: 3 columns (earlyBlock_early, lateBlock_early, lateBlock_late)"""
-    ign = ops['ignore_first_trials_in_block']
+    ignore_n = ops['ignore_first_trials_in_block']
     rmv_move = ops['rmv_time_around_move']
     rmv_bl = ops['rmv_time_around_bl']
     split = ops['tr_split_time']
@@ -125,7 +125,7 @@ def plot_tf_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
         tf_dict, t = align_to_tf_outliers(
             z_all, dataset, session,
             pre_s=pre_s, post_s=post_s,
-            tr_in_block_min=ign, rmv_near_response=rmv_move, **kw)
+            tr_in_block_min=ignore_n, rmv_near_response=rmv_move, **kw)
 
         for lat in range(n_latent):
             ax = axes[lat, col]
@@ -148,7 +148,7 @@ def plot_tf_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
 def plot_change_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                       pre_s=0.5, post_s=1.5):
     """change onset PSTHs: columns = block, hit vs miss overlay"""
-    ign = ops['ignore_first_trials_in_block']
+    ignore_n = ops['ignore_first_trials_in_block']
 
     n_latent = z_all[0].shape[1]
     fig, axes = plt.subplots(n_latent, 2, figsize=(8, 1.8 * n_latent),
@@ -157,11 +157,11 @@ def plot_change_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
     for col, block in enumerate(['early', 'late']):
         hit, t = align_to_change_onset(z_all, dataset, session,
                                         pre_s=pre_s, post_s=post_s,
-                                        block=block, tr_in_block_min=ign,
+                                        block=block, tr_in_block_min=ignore_n,
                                         is_hit=1)
         miss, _ = align_to_change_onset(z_all, dataset, session,
                                          pre_s=pre_s, post_s=post_s,
-                                         block=block, tr_in_block_min=ign,
+                                         block=block, tr_in_block_min=ignore_n,
                                          is_hit=0)
         for lat in range(n_latent):
             ax = axes[lat, col]
@@ -184,7 +184,7 @@ def plot_change_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
 def plot_change_psths_by_tf(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                             pre_s=0.5, post_s=1.5):
     """change onset PSTHs split by change TF, hits only"""
-    ign = ops['ignore_first_trials_in_block']
+    ignore_n = ops['ignore_first_trials_in_block']
     ch_tfs = np.sort(session.ch_onsets['ch_tf'].unique())
 
     n_latent = z_all[0].shape[1]
@@ -198,7 +198,7 @@ def plot_change_psths_by_tf(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
             data, t = align_to_change_onset(
                 z_all, dataset, session,
                 pre_s=pre_s, post_s=post_s,
-                block=block, tr_in_block_min=ign,
+                block=block, tr_in_block_min=ignore_n,
                 is_hit=1, ch_tf=ch_tf)
             for lat in range(n_latent):
                 ax = axes[lat, col]
@@ -222,7 +222,7 @@ def plot_change_psths_by_tf(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
 def plot_lick_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
                     pre_s=1.5, post_s=0.5):
     """lick onset PSTHs: 3 columns, hit vs FA overlay"""
-    ign = ops['ignore_first_trials_in_block']
+    ignore_n = ops['ignore_first_trials_in_block']
     rmv_bl = ops['rmv_time_around_bl']
     split = ops['tr_split_time']
 
@@ -241,10 +241,10 @@ def plot_lick_psths(z_all, dataset, session, ops=ANALYSIS_OPTIONS,
     for col, (title, kw) in enumerate(conditions.items()):
         hit, t = align_to_lick_onset(z_all, dataset, session,
                                       pre_s=pre_s, post_s=post_s,
-                                      tr_in_block_min=ign, is_hit=1, **kw)
+                                      tr_in_block_min=ignore_n, is_hit=1, **kw)
         fa, _ = align_to_lick_onset(z_all, dataset, session,
                                      pre_s=pre_s, post_s=post_s,
-                                     tr_in_block_min=ign, is_FA=1, **kw)
+                                     tr_in_block_min=ignore_n, is_FA=1, **kw)
         for lat in range(n_latent):
             ax = axes[lat, col]
             ax.axvline(0, color='grey', ls='--', lw=0.8)

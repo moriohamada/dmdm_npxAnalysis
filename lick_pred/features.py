@@ -25,10 +25,10 @@ def _get_trial_stimulus(row):
 
 def _compute_motion_lick_delay(trials):
     """median delay between motion_onset and first_lick for trials where both exist"""
-    mo = trials['motion_onset']
-    fl = trials['first_lick']
-    both = mo.notna() & fl.notna() & (trials['IsHit'] | trials['IsFA'])
-    delays = fl[both] - mo[both]
+    motion_onset = trials['motion_onset']
+    first_lick = trials['first_lick']
+    both = motion_onset.notna() & first_lick.notna() & (trials['IsHit'] | trials['IsFA'])
+    delays = first_lick[both] - motion_onset[both]
     if len(delays) == 0:
         return 0.0
     return delays.median()
