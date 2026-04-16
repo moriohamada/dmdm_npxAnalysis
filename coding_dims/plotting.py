@@ -461,7 +461,7 @@ def plot_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['plots_dir'],
                 continue
 
             shared = set(tf_ids) & set(motor_ids)
-            if len(shared) < 5:
+            if len(shared) < CODING_DIM_OPS['min_neurons']:
                 continue
 
             tf_idx = np.array([i for i, uid in enumerate(tf_ids) if uid in shared])
@@ -966,7 +966,7 @@ def plot_cross_class_alignment(npx_dir=PATHS['npx_dir_local'], save_dir=PATHS['p
         if not block_ids or not tf_ids or not motor_ids:
             continue
         shared = set(block_ids) & set(tf_ids) & set(motor_ids)
-        if len(shared) < 5:
+        if len(shared) < CODING_DIM_OPS['min_neurons']:
             continue
         shared_order = sorted(shared)
         block_idx = np.array([{uid: i for i, uid in enumerate(block_ids)}[uid]
