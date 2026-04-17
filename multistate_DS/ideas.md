@@ -19,3 +19,10 @@ obvious caveat - probably WAY too slow practically, and not sure if there's some
 
 maybe can actually just start with literally k means on tf-aligned psths? but included pulses near licks?
 
+#### scratch
+
+so - get tf outliers -> kmeans - on pre-pulse state? pulse state? 
+just visualize occpancy map in pc space? i.e. trial trajectories -> heatmap?
+
+maybe just start with plotting single trial trajectories. smooth ramp predicting lickiness or fluctuation between 
+states? how to extract dimension corresponding to lick propensity...? just window for now?

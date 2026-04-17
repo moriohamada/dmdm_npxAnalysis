@@ -366,7 +366,7 @@ def _save_lds_results(results, save_path):
                 cond.create_dataset('delta_cross', data=res['delta_cross'])
 
 
-def _load_session_fr(sess_dir, ops):
+def _load_session_fr(sess_dir):
     """load downsampled FR matrix and return with session data."""
     import pandas as pd
     sess_dir = Path(sess_dir)

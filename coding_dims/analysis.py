@@ -12,7 +12,7 @@ from utils.time import window_label
 
 #%% between-block rotation analysis
 
-def load_dimension_results(dim_type, npx_dir=PATHS['npx_dir_local'],
+def load_dimension_results(dim_type: str, npx_dir=PATHS['npx_dir_local'],
                            area: str | None = None,
                            unit_filter: list[str] | None = None):
     """load extracted dimension results from pickle"""
@@ -846,7 +846,7 @@ def run_all_coding_dim_analyses(npx_dir=PATHS['npx_dir_local'],
         dict(area='cerebellum', unit_filter=None),
         dict(area='early_visual', unit_filter=None),
         dict(area='higher_visual', unit_filter=None),
-        dict(area='hippocampus', unit_filter=None),
+        dict(area='hippocampus', unit_filter=None),3
     ]
 
     all_stats = {}
