@@ -46,27 +46,29 @@ convert_job_map_to_hpc(os.path.join(PATHS['npx_dir'], 'glm_job_map.csv'))
 #%% Classify units from GLM fits
 from pathlib import Path
 from utils.filing import get_response_files
-from neuron_prediction.glm.fit import classify_units
+from neuron_prediction.results.collect import classify_units
 
 for psth_path in get_response_files(PATHS['npx_dir_local']):
     sess_dir = Path(psth_path).parent
 
     if (sess_dir / 'glm_results').is_dir():
-        classify_units(str(sess_dir))
+        classify_units(str(sess_dir), fit_type='glm_ridge')
 
 # Plot GLM kernels per session
-from neuron_prediction.glm.plotting import plot_all_glm_kernels
+from neuron_prediction.results.plotting import plot_all_glm_kernels
 
 for psth_path in get_response_files(PATHS['npx_dir_local']):
     sess_dir = Path(psth_path).parent
     if (sess_dir / 'glm_results').is_dir():
         plot_all_glm_kernels(str(sess_dir),
+                             fit_type='glm_ridge',
                              plots_dir=PATHS['plots_dir'],
                              n_workers=6)
 
 #%% fraction significant by region
-from neuron_prediction.glm.plotting import plot_fraction_significant
-plot_fraction_significant(npx_dir=PATHS['npx_dir_local'],
+from neuron_prediction.results.plotting import plot_fraction_significant
+plot_fraction_significant(fit_type='glm_ridge',
+                          npx_dir=PATHS['npx_dir_local'],
                           save_dir=PATHS['plots_dir'])
 
 #%% Visualise mean psths of tf-responsive units

@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from config import PLOT_OPTIONS
-from neuron_prediction.glm.fit import extract_kernels
+from neuron_prediction.results.classify import extract_kernels
 
 
 def plot_network_routes(w_ih, w_ho, col_map, neuron_idx=0, region=None,

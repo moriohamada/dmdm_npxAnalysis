@@ -136,7 +136,7 @@ def _plot_one_neuron(args):
                      save_dir=str(save_dir))
 
 
-def plot_all_glm_kernels(sess_dir, fit_type, plots_dir=None, n_workers=1):
+def plot_all_glm_kernels(sess_dir, fit_type='glm_ridge', plots_dir=None, n_workers=1):
     """plot GLM kernels for all neurons in one session"""
     sess_dir = Path(sess_dir)
     sess = Session.load(str(sess_dir / 'session.pkl'))
@@ -201,8 +201,8 @@ def load_all_classifications(fit_type, npx_dir=None):
     return all_units
 
 
-def plot_fraction_significant(fit_type, npx_dir=None,
-                              min_units=20, save_dir=None):
+def plot_fraction_significant(fit_type='glm_ridge', npx_dir=None,
+                              min_units=10, save_dir=None):
     """fraction of significant units per lesion group, by brain region"""
     if npx_dir is None:
         npx_dir = PATHS['npx_dir_local']
