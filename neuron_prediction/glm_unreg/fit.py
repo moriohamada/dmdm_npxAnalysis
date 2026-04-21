@@ -16,6 +16,7 @@ from neuron_prediction.data import (
     normalise_design_matrix,
 )
 from neuron_prediction.evaluate import pearson_r, reduce_design_matrix
+from neuron_prediction.results.peth import build_event_spec, fold_peths
 
 
 #%% spike counts
@@ -565,7 +566,8 @@ def _predict_glm(X, w, b):
     return np.exp(log_rate)
 
 
-def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
+def fit_neuron(counts_1d, X, col_map, fold_ids,
+               event_spec=None, ops=GLM_OPTIONS):
     """fit unregularised poisson GLM for one neuron
 
     1. fit per fold for cross-validated evaluation
@@ -575,6 +577,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
+    event_spec: dict {kind: (bin_idx, signs, pre, post)} from
+        build_event_spec. if given, per-fold PETHs are computed.
     """
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
@@ -603,6 +607,12 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
     lesioned_r = {g: np.full(n_folds, np.nan) for g in group_names}
     fold_wb = {}
 
+    # full-length CV predictions for PETH computation
+    T = len(counts_1d)
+    y_full_cv = np.full(T, np.nan)
+    y_red_cv = {g: np.full(T, np.nan) for g in group_names}
+    valid_T_idx = np.where(valid)[0]
+
     for k in range(n_folds):
         test_mask = folds_v == k
         train_mask = ~test_mask
@@ -622,6 +632,9 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
         y_pred = _predict_glm(X_test, w, b)
         full_r[k] = pearson_r(y_test, y_pred)
 
+        test_T_idx = valid_T_idx[test_mask]
+        y_full_cv[test_T_idx] = y_pred
+
         # per-group: refit without each predictor group
         for gname, pred_list in lesion_groups.items():
             win = group_masks[gname][test_mask]
@@ -639,11 +652,41 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
             w_red, b_red = _fit_poisson_glm(X_tr_n, y_train, **fit_kw)
             y_les = _predict_glm(X_te_n, w_red, b_red)
             lesioned_r[gname][k] = pearson_r(y_test[win], y_les[win])
+            y_red_cv[gname][test_T_idx] = y_les
 
     if not fold_wb:
         return None
 
     print(f'  mean r={np.nanmean(full_r):.4f}')
+
+    #%% per-fold PETHs for paper-style classification
+    peth_data = {}
+    if event_spec is not None:
+        counts_f = counts_1d.astype(np.float64)
+        for kind, (bin_idx, signs, pre, post) in event_spec.items():
+            if kind not in y_red_cv:
+                continue
+            n_bins = pre + post
+            pa_fast = np.full((n_folds, n_bins), np.nan)
+            pa_slow = np.full((n_folds, n_bins), np.nan)
+            pf_fast = np.full((n_folds, n_bins), np.nan)
+            pf_slow = np.full((n_folds, n_bins), np.nan)
+            pr_fast = np.full((n_folds, n_bins), np.nan)
+            pr_slow = np.full((n_folds, n_bins), np.nan)
+
+            for k in range(n_folds):
+                (pa_fast[k], pa_slow[k],
+                 pf_fast[k], pf_slow[k],
+                 pr_fast[k], pr_slow[k]) = fold_peths(
+                    counts_f, y_full_cv, y_red_cv[kind],
+                    bin_idx, signs, fold_ids, k, pre, post)
+
+            peth_data[f'peth_{kind}_actual_fast'] = pa_fast
+            peth_data[f'peth_{kind}_actual_slow'] = pa_slow
+            peth_data[f'peth_{kind}_full_fast'] = pf_fast
+            peth_data[f'peth_{kind}_full_slow'] = pf_slow
+            peth_data[f'peth_{kind}_reduced_fast'] = pr_fast
+            peth_data[f'peth_{kind}_reduced_slow'] = pr_slow
 
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
@@ -659,6 +702,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
     for gname in group_names:
         result[f'full_r_group_{gname}'] = full_r_group[gname]
         result[f'lesioned_r_{gname}'] = lesioned_r[gname]
+    result.update(peth_data)
 
     return result
 
@@ -679,7 +723,15 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
           f'({(fold_ids >= 0).sum()} valid bins, '
           f'{len(set(fold_ids[fold_ids >= 0]))} folds)')
 
-    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids, ops)
+    event_spec = build_event_spec(
+        sess,
+        kinds=['tf', 'lick_prep', 'lick_exec'],
+        t_ax=t_ax,
+        bin_width=ops['bin_width'],
+        tf_sd_threshold=ops['tf_sd_threshold'])
+
+    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids,
+                        event_spec=event_spec, ops=ops)
 
     if result is None:
         print(f'  skipped (no valid predictions)')

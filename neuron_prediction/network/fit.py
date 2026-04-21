@@ -16,6 +16,8 @@ from neuron_prediction.evaluate import (
 from neuron_prediction.network.model import (
     PoissonLinear, PoissonNet, proximal_group_lasso,
 )
+from neuron_prediction.results.peth import build_event_spec, fold_peths
+from config import GLM_OPTIONS
 
 
 def _to_tensors(X, y, device):
@@ -306,19 +308,31 @@ def _run_one_fold(k, X_v, y_v, folds_v, col_map, group_masks,
             best_model, X_test, y_test, gm_test, lesion_groups, col_map,
             combos, device, n_perm=ops['n_perm_importance'], seed=k)
 
+        # full + per-group permuted predictions for PETH (single shuffle
+        # per group, seeded on k for reproducibility)
+        y_pred_full = _predict_numpy(best_model, X_test, device)
+        rng_peth = np.random.RandomState(k * 10_007 + nh)
+        y_pred_red = {}
+        for gname, pred_list in lesion_groups.items():
+            X_perm = permute_design_matrix(X_test, pred_list, col_map,
+                                           rng_peth)
+            y_pred_red[gname] = _predict_numpy(best_model, X_perm, device)
+
         fold_out[nh] = {
             'best_lambda': best_lambda,
             'full_r': r,
             'r_group': r_g,
             'r_permuted': r_l,
             'r_interaction': r_int,
+            'y_pred_full': y_pred_full,
+            'y_pred_red': y_pred_red,
         }
 
     return fold_out
 
 
 def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
-               ops=NETWORK_OPTIONS):
+               event_spec=None, ops=NETWORK_OPTIONS):
     """fit poisson models across all hidden sizes for one neuron
 
     parallelises across outer folds. for each fold, trains all lambdas
@@ -328,6 +342,9 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
+    event_spec: optional dict {kind: (bin_idx, signs, pre, post)} for
+        paper-style PETH classification. network uses a single random
+        permutation (not refit) as the reduced model.
     """
     from collections import Counter
     from joblib import Parallel, delayed
@@ -345,6 +362,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     X_v = X[valid]
     y_v = counts_1d[valid].astype(np.float64)
     folds_v = fold_ids[valid]
+    T = len(counts_1d)
+    valid_T_idx = np.where(valid)[0]
 
     # derive evaluation masks from design matrix
     group_masks = {}
@@ -373,9 +392,16 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         'interaction_r': {ck: np.full(n_folds, np.nan) for ck in combo_keys},
     } for nh in hidden_sizes}
 
+    # full-length CV predictions per hidden size, for PETHs
+    y_full_cv = {nh: np.full(T, np.nan) for nh in hidden_sizes}
+    y_red_cv = {nh: {g: np.full(T, np.nan) for g in group_names}
+                for nh in hidden_sizes}
+
     for k, fold_out in enumerate(fold_results):
         if fold_out is None:
             continue
+        test_mask = folds_v == k
+        test_T_idx = valid_T_idx[test_mask]
         for nh in hidden_sizes:
             res_nh = fold_out[nh]
             all_params[nh].append(res_nh['best_lambda'])
@@ -388,6 +414,11 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
             for ck in combo_keys:
                 if ck in res_nh['r_interaction']:
                     all_res[nh]['interaction_r'][ck][k] = res_nh['r_interaction'][ck]
+            # scatter fold predictions for PETH
+            if 'y_pred_full' in res_nh:
+                y_full_cv[nh][test_T_idx] = res_nh['y_pred_full']
+                for g, y_red in res_nh['y_pred_red'].items():
+                    y_red_cv[nh][g][test_T_idx] = y_red
 
     # final refit per hidden size on all valid data
     X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
@@ -422,6 +453,34 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         for ck in combo_keys:
             result[f'{p}interaction_r_{ck}'] = all_res[nh]['interaction_r'][ck]
 
+        # per-fold PETHs for paper-style classification (prefix by hidden)
+        if event_spec is not None:
+            counts_f = counts_1d.astype(np.float64)
+            for kind, (bin_idx, signs, pre, post) in event_spec.items():
+                if kind not in y_red_cv[nh]:
+                    continue
+                n_bins = pre + post
+                pa_fast = np.full((n_folds, n_bins), np.nan)
+                pa_slow = np.full((n_folds, n_bins), np.nan)
+                pf_fast = np.full((n_folds, n_bins), np.nan)
+                pf_slow = np.full((n_folds, n_bins), np.nan)
+                pr_fast = np.full((n_folds, n_bins), np.nan)
+                pr_slow = np.full((n_folds, n_bins), np.nan)
+
+                for k in range(n_folds):
+                    (pa_fast[k], pa_slow[k],
+                     pf_fast[k], pf_slow[k],
+                     pr_fast[k], pr_slow[k]) = fold_peths(
+                        counts_f, y_full_cv[nh], y_red_cv[nh][kind],
+                        bin_idx, signs, fold_ids, k, pre, post)
+
+                result[f'{p}peth_{kind}_actual_fast'] = pa_fast
+                result[f'{p}peth_{kind}_actual_slow'] = pa_slow
+                result[f'{p}peth_{kind}_full_fast'] = pf_fast
+                result[f'{p}peth_{kind}_full_slow'] = pf_slow
+                result[f'{p}peth_{kind}_reduced_fast'] = pr_fast
+                result[f'{p}peth_{kind}_reduced_slow'] = pr_slow
+
     return result
 
 
@@ -439,7 +498,15 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS,
         seed=neuron_seed(sess_dir, neuron_idx),
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
-    result = fit_neuron(y, X, col_map, fold_ids, sess.trials, t_ax, ops)
+    event_spec = build_event_spec(
+        sess,
+        kinds=['tf', 'lick_prep', 'lick_exec'],
+        t_ax=t_ax,
+        bin_width=GLM_OPTIONS['bin_width'],
+        tf_sd_threshold=GLM_OPTIONS['tf_sd_threshold'])
+
+    result = fit_neuron(y, X, col_map, fold_ids, sess.trials, t_ax,
+                        event_spec=event_spec, ops=ops)
 
     results_dir = Path(sess_dir) / 'network_results'
     results_dir.mkdir(exist_ok=True)

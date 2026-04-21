@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-from config import HYBRID_OPTIONS, ANALYSIS_OPTIONS
+from config import HYBRID_OPTIONS, ANALYSIS_OPTIONS, GLM_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
     load_glm_inputs, get_trial_fold_indices,
@@ -14,6 +14,7 @@ from neuron_prediction.evaluate import pearson_r
 from neuron_prediction.hybrid.model import (
     HybridModel, proximal_group_lasso_hybrid,
 )
+from neuron_prediction.results.peth import build_event_spec, fold_peths
 
 
 #%%
@@ -186,8 +187,13 @@ def _cv_select_lambda(X_train, y_train, col_map, fold_ids_train, ops):
 
 #%%
 def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
-               ops=HYBRID_OPTIONS):
-    """fit hybrid model for one neuron via outer CV with lambda selection"""
+               event_spec=None, ops=HYBRID_OPTIONS):
+    """fit hybrid model for one neuron via outer CV with lambda selection
+
+    event_spec: optional dict {kind: (bin_idx, signs, pre, post)} from
+        build_event_spec, for paper-style PETH classification. lesion in
+        the hybrid is skip-path zeroing (forward_lesion_skip), not refit.
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     n_folds = ops['n_outer_folds']
     lesion_groups = ops['lesion_groups']
@@ -199,6 +205,12 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
     X_v = X[valid]
     y_v = counts_1d[valid].astype(np.float64)
     folds_v = fold_ids[valid]
+    T = len(counts_1d)
+    valid_T_idx = np.where(valid)[0]
+
+    # full-length CV predictions for PETHs
+    y_full_cv = np.full(T, np.nan)
+    y_red_cv = {g: np.full(T, np.nan) for g in group_names}
 
     # evaluation masks: bins where each group's predictors are non-zero
     group_masks = {}
@@ -262,6 +274,47 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
             if ik in r_les: r_lesion[ik][k] = r_les[ik]
         print(f'  r={r:.3f} (skip={r_sk:.3f})')
 
+        # scatter predictions into full-length CV arrays for PETHs
+        if event_spec is not None:
+            test_T_idx = valid_T_idx[test_mask]
+            with torch.no_grad():
+                X_t = torch.tensor(X_test, dtype=torch.float32, device=device)
+                y_full_cv[test_T_idx] = torch.exp(
+                    model(X_t)).cpu().numpy().ravel()
+                for gname in group_names:
+                    y_red_cv[gname][test_T_idx] = torch.exp(
+                        model.forward_lesion_skip(
+                            X_t, col_map, [gname])).cpu().numpy().ravel()
+
+    # per-fold PETHs for paper-style classification
+    peth_data = {}
+    if event_spec is not None:
+        counts_f = counts_1d.astype(np.float64)
+        for kind, (bin_idx, signs, pre, post) in event_spec.items():
+            if kind not in y_red_cv:
+                continue
+            n_bins = pre + post
+            pa_fast = np.full((n_folds, n_bins), np.nan)
+            pa_slow = np.full((n_folds, n_bins), np.nan)
+            pf_fast = np.full((n_folds, n_bins), np.nan)
+            pf_slow = np.full((n_folds, n_bins), np.nan)
+            pr_fast = np.full((n_folds, n_bins), np.nan)
+            pr_slow = np.full((n_folds, n_bins), np.nan)
+
+            for k in range(n_folds):
+                (pa_fast[k], pa_slow[k],
+                 pf_fast[k], pf_slow[k],
+                 pr_fast[k], pr_slow[k]) = fold_peths(
+                    counts_f, y_full_cv, y_red_cv[kind],
+                    bin_idx, signs, fold_ids, k, pre, post)
+
+            peth_data[f'peth_{kind}_actual_fast'] = pa_fast
+            peth_data[f'peth_{kind}_actual_slow'] = pa_slow
+            peth_data[f'peth_{kind}_full_fast'] = pf_fast
+            peth_data[f'peth_{kind}_full_slow'] = pf_slow
+            peth_data[f'peth_{kind}_reduced_fast'] = pr_fast
+            peth_data[f'peth_{kind}_reduced_slow'] = pr_slow
+
     # final refit on all data
     from collections import Counter
     X_v_norm, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
@@ -288,6 +341,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
         result[f'{ik}_hidden_bias'] = subnet.hidden.bias.detach().cpu().numpy()
         result[f'{ik}_output_weights'] = subnet.output.weight.detach().cpu().numpy().ravel()
         result[f'{ik}_output_bias'] = subnet.output.bias.detach().cpu().numpy().ravel()
+    result.update(peth_data)
 
     return result
 
@@ -306,7 +360,15 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=HYBRID_OPTIONS):
         seed=neuron_seed(sess_dir, neuron_idx),
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
-    result = fit_neuron(y, X, col_map, fold_ids, sess.trials, t_ax, ops)
+    event_spec = build_event_spec(
+        sess,
+        kinds=['tf', 'lick_prep', 'lick_exec'],
+        t_ax=t_ax,
+        bin_width=GLM_OPTIONS['bin_width'],
+        tf_sd_threshold=GLM_OPTIONS['tf_sd_threshold'])
+
+    result = fit_neuron(y, X, col_map, fold_ids, sess.trials, t_ax,
+                        event_spec=event_spec, ops=ops)
 
     results_dir = Path(sess_dir) / 'hybrid_results'
     results_dir.mkdir(exist_ok=True)

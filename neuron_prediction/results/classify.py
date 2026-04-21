@@ -105,7 +105,7 @@ def classify_units(sess_dir, fit_type, ops=GLM_OPTIONS):
     return df
 
 
-def _peth_criteria(res, kind, ops):
+def _peth_criteria(res, kind, ops, key_prefix=''):
     """apply paper's two PETH criteria from per-fold arrays
 
     criterion 1: mean over folds of pearson_r(actual, full) > peth_r_thresh
@@ -115,9 +115,11 @@ def _peth_criteria(res, kind, ops):
     for tf the signal is (fast PETH - slow PETH); for lick_prep / lick_exec
     it's the fast PETH directly (signs are all +1 so no slow events exist)
 
+    key_prefix: prefix for npz keys (e.g. 'h0_' for network hidden size 0)
+
     returns (r_full_mean, r_resid_mean, p_resid, sig)
     """
-    key_base = f'peth_{kind}'
+    key_base = f'{key_prefix}peth_{kind}'
     need = f'{key_base}_actual_fast'
     if need not in res.files:
         return np.nan, np.nan, 1.0, False
@@ -169,6 +171,116 @@ def _peth_criteria(res, kind, ops):
     r_resid_mean = np.nanmean(r_resid)
     sig = bool(crit1 and crit2)
     return r_full_mean, r_resid_mean, p, sig
+
+
+def classify_units_perblock(sess_dir, fit_type='glm_perblock',
+                             ops=GLM_OPTIONS):
+    """classify_units for perblock fit (neuron_{i}_{block}.npz)
+
+    writes one csv per block: {fit_type}_classifications_{block}.csv
+    """
+    warnings.filterwarnings('ignore', 'Mean of empty slice', RuntimeWarning)
+    sess_dir = Path(sess_dir)
+    results_dir = sess_dir / f'{fit_type}_results'
+    sess = Session.load(str(sess_dir / 'session.pkl'))
+    n_neurons = len(sess.fr_stats)
+
+    for block in ('early', 'late'):
+        classifications = _classify_from_files(
+            results_dir,
+            file_pattern=lambda i, block=block: f'neuron_{i}_{block}.npz',
+            n_neurons=n_neurons,
+            sess=sess,
+            ops=ops,
+            key_prefix='',
+        )
+        df = pd.DataFrame(classifications)
+        df.to_csv(sess_dir / f'{fit_type}_classifications_{block}.csv',
+                  index=False)
+
+
+def classify_units_network(sess_dir, hidden_size, fit_type='network',
+                            ops=GLM_OPTIONS):
+    """classify_units for network fit, picking one hidden size
+
+    network stores per-hidden-size results under 'h{nh}_' prefix
+    """
+    warnings.filterwarnings('ignore', 'Mean of empty slice', RuntimeWarning)
+    sess_dir = Path(sess_dir)
+    results_dir = sess_dir / f'{fit_type}_results'
+    sess = Session.load(str(sess_dir / 'session.pkl'))
+    n_neurons = len(sess.fr_stats)
+
+    classifications = _classify_from_files(
+        results_dir,
+        file_pattern=lambda i: f'neuron_{i}.npz',
+        n_neurons=n_neurons,
+        sess=sess,
+        ops=ops,
+        key_prefix=f'h{hidden_size}_',
+    )
+    df = pd.DataFrame(classifications)
+    df.to_csv(sess_dir / f'{fit_type}_classifications_h{hidden_size}.csv',
+              index=False)
+    return df
+
+
+def _classify_from_files(results_dir, file_pattern, n_neurons, sess, ops,
+                          key_prefix=''):
+    """shared per-neuron classification loop, parametrised by file and key
+
+    file_pattern: callable(i) -> filename. used to locate the neuron's npz
+    key_prefix: prefix for all npz keys (e.g. 'h0_' for network)
+    """
+    group_names = list(ops['lesion_groups'].keys())
+    full_r_key = f'{key_prefix}full_r'
+
+    out = []
+    for i in range(n_neurons):
+        res_path = results_dir / file_pattern(i)
+        if not res_path.exists():
+            out.append({
+                'neuron_idx': i,
+                'cluster_id': sess.fr_stats.index[i],
+            })
+            continue
+
+        res = np.load(res_path, allow_pickle=True)
+        if full_r_key not in res.files:
+            out.append({
+                'neuron_idx': i,
+                'cluster_id': sess.fr_stats.index[i],
+            })
+            continue
+        full_r = res[full_r_key]
+
+        ok_r = full_r[~np.isnan(full_r)]
+        if len(ok_r) >= 3:
+            _, p_full = ttest_1samp(ok_r, 0)
+            sig_full = p_full < ops['lesion_alpha'] and np.mean(ok_r) > 0
+        else:
+            p_full = 1.0
+            sig_full = False
+
+        row = {
+            'neuron_idx': i,
+            'cluster_id': sess.fr_stats.index[i],
+            'mean_r': np.nanmean(full_r),
+            'is_predictable_p': p_full,
+            'is_predictable': sig_full,
+        }
+
+        for gname in group_names:
+            if gname in PETH_KINDS:
+                r_full_mean, r_resid_mean, p_resid, sig = _peth_criteria(
+                    res, gname, ops, key_prefix=key_prefix)
+                row[f'{gname}_peth_r'] = r_full_mean
+                row[f'{gname}_peth_resid_r'] = r_resid_mean
+                row[f'{gname}_peth_p'] = p_resid
+                row[f'{gname}_sig'] = sig
+
+        out.append(row)
+    return out
 
 
 def extract_kernels(weights, col_map, bin_width=GLM_OPTIONS['bin_width']):

@@ -9,6 +9,7 @@ from neuron_prediction.data import (
     load_glm_inputs, get_trial_fold_indices, neuron_seed,
 )
 from neuron_prediction.glm_ridge.fit import fit_neuron
+from neuron_prediction.results.peth import build_event_spec
 
 
 BLOCKS = ('early', 'late')
@@ -69,6 +70,15 @@ def fit_neuron_perblock_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
         with open(col_map_path, 'wb') as f:
             pickle.dump(col_map, f)
 
+    # event spec is session-wide; block restriction happens via fold_ids
+    # (events outside this block get fold_ids == -1 and are skipped)
+    event_spec = build_event_spec(
+        sess,
+        kinds=['tf', 'lick_prep', 'lick_exec'],
+        t_ax=t_ax,
+        bin_width=ops['bin_width'],
+        tf_sd_threshold=ops['tf_sd_threshold'])
+
     for block in BLOCKS:
         fold_ids = get_block_fold_indices(
             sess.trials, t_ax, ops['n_folds'], block, seed, ignore_n)
@@ -76,7 +86,8 @@ def fit_neuron_perblock_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
         n_folds_actual = len(set(fold_ids[fold_ids >= 0]))
         print(f'  {block}: {n_valid} valid bins, {n_folds_actual} folds')
 
-        result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids, ops)
+        result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids,
+                            event_spec=event_spec, ops=ops)
         if result is None:
             print(f'  {block}: skipped (no valid data)')
             continue
