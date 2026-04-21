@@ -4,3 +4,5 @@ doesnt allow array indices over 9999.
 rsync results from ceph to local:
 rsync -av --include='*/' --include='glm_results/***' --exclude='*' /mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/ /media/morio/Data_Fast/dmdm_temporalExpectation/npx/
 
+
+rsync -av --include='*/' --include='glm_ridge_results/***' --exclude='*' /mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/  /media/morio/Data_Fast/dmdm_temporalExpectation/npx/

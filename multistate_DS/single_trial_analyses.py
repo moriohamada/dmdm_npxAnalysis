@@ -82,9 +82,21 @@ def _load_dims(npx_dir: str = PATHS['npx_dir_local'],
     return dims
 
 
-def _project_activity():
-    # project psth/activity or FR onto dimension
-    pass
+def _project_activity(X: np.ndarray, ws: dict) -> dict:
+    # project FR onto dimensions in 'ws'. actual weight vectors maybe be values of ws
+    # (block), or nested further (where each value of ws is another dict; tf/motor,
+    # since these have per-block dimensions).
+    projs = dict()
+    for k, v in ws.items():
+        if isinstance(v, dict):
+            for subk, subv in v.items():
+                projs[k][subk] = subv@X
+        else:
+            projs[k] = v@X
+
+
+    return projs
+
 
 def visualize_single_trial_activity():
     """
@@ -149,5 +161,11 @@ for animal, sess_dirs in animal_sessions.items():
         if fr_sub.shape[0] != n_dim:
             print(f'  shape mismatch: fr={fr_sub.shape[0]}, dim={n_dim}')
             continue
+
+        # project onto dims
+        proj = {}
+        for d in dims.keys():
+            proj[d] = _project_activity(fr_sub.to_numpy(), dims[d][animal][session]['ws'])
+
 
         print('    all looks ok!')
