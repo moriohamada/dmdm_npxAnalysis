@@ -207,6 +207,12 @@ def plot_fraction_significant(fit_type='glm_ridge', npx_dir=None,
     if npx_dir is None:
         npx_dir = PATHS['npx_dir_local']
     all_units = load_all_classifications(fit_type, npx_dir)
+
+    # restrict to units predicted significantly by the full model
+    n_before = len(all_units)
+    all_units = all_units[all_units['is_predictable'] == True]
+    print(f'kept {len(all_units)}/{n_before} predictable units')
+
     group_names = list(GLM_OPTIONS['lesion_groups'].keys())
 
     region_to_class = {}
@@ -275,6 +281,6 @@ def plot_fraction_significant(fit_type='glm_ridge', npx_dir=None,
         save_dir = Path(save_dir) / fit_type
         save_dir.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_dir / f'{fit_type}_fraction_significant.png',
-                    dpi=300, bbox_inches='tight')
+                    dpi=500, bbox_inches='tight')
 
     return fig

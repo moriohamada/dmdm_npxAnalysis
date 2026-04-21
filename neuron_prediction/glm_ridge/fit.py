@@ -16,6 +16,7 @@ from neuron_prediction.data import (
     normalise_design_matrix,
 )
 from neuron_prediction.evaluate import pearson_r, reduce_design_matrix
+from neuron_prediction.results.peth import build_event_spec, fold_peths
 
 
 #%% spike counts
@@ -565,7 +566,8 @@ def _predict_glm(X, w, b):
     return np.exp(log_rate)
 
 
-def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
+def fit_neuron(counts_1d, X, col_map, fold_ids,
+               event_spec=None, ops=GLM_OPTIONS):
     """fit ridge-regularised poisson GLM for one neuron
 
     1. grid search over lambda_l2
@@ -574,6 +576,9 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
 
     fold_ids: (T,) int array from get_trial_fold_indices. bins with
         fold_id == -1 are excluded from all fitting and evaluation.
+    event_spec: dict {kind: (bin_idx, signs, pre, post)} from
+        build_event_spec. if given, per-fold PETHs are computed for each
+        kind and saved alongside the per-bin pearson stats.
     """
     lesion_groups = ops['lesion_groups']
     group_names = list(lesion_groups.keys())
@@ -644,6 +649,13 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
     full_r_group = {g: np.full(n_folds, np.nan) for g in group_names}
     lesioned_r = {g: np.full(n_folds, np.nan) for g in group_names}
 
+    # full-length CV predictions; each bin's value comes from the fold in
+    # which that bin was in the test set. NaN elsewhere (invalid bins).
+    T = len(counts_1d)
+    y_full_cv = np.full(T, np.nan)
+    y_red_cv = {g: np.full(T, np.nan) for g in group_names}
+    valid_T_idx = np.where(valid)[0]
+
     for k, (w, b) in best_wb.items():
         test_mask = folds_v == k
         train_mask = ~test_mask
@@ -654,6 +666,10 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
 
         y_pred = _predict_glm(X_test, w, b)
         full_r[k] = pearson_r(y_test, y_pred)
+
+        # scatter fold-k test predictions back into full-T array
+        test_T_idx = valid_T_idx[test_mask]
+        y_full_cv[test_T_idx] = y_pred
 
         for gname, pred_list in lesion_groups.items():
             win = group_masks[gname][test_mask]
@@ -673,12 +689,42 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
                 X_tr_n, y_train, lambda_l2=best_lambda, **coarse_kw)
             y_les = _predict_glm(X_te_n, w_red, b_red)
             lesioned_r[gname][k] = pearson_r(y_test[win], y_les[win])
+            y_red_cv[gname][test_T_idx] = y_les
 
     print(f'  full r={np.nanmean(full_r):.4f}')
     for gname in group_names:
         dr = np.nanmean(full_r_group[gname]) - np.nanmean(lesioned_r[gname])
         print(f'  {gname}: full={np.nanmean(full_r_group[gname]):.4f} '
               f'reduced={np.nanmean(lesioned_r[gname]):.4f} delta={dr:.4f}')
+
+    #%% per-fold PETHs for paper-style classification
+    peth_data = {}
+    if event_spec is not None:
+        counts_f = counts_1d.astype(np.float64)
+        for kind, (bin_idx, signs, pre, post) in event_spec.items():
+            if kind not in y_red_cv:
+                continue  # no reduced model for this kind
+            n_bins = pre + post
+            pa_fast = np.full((n_folds, n_bins), np.nan)
+            pa_slow = np.full((n_folds, n_bins), np.nan)
+            pf_fast = np.full((n_folds, n_bins), np.nan)
+            pf_slow = np.full((n_folds, n_bins), np.nan)
+            pr_fast = np.full((n_folds, n_bins), np.nan)
+            pr_slow = np.full((n_folds, n_bins), np.nan)
+
+            for k in range(n_folds):
+                (pa_fast[k], pa_slow[k],
+                 pf_fast[k], pf_slow[k],
+                 pr_fast[k], pr_slow[k]) = fold_peths(
+                    counts_f, y_full_cv, y_red_cv[kind],
+                    bin_idx, signs, fold_ids, k, pre, post)
+
+            peth_data[f'peth_{kind}_actual_fast'] = pa_fast
+            peth_data[f'peth_{kind}_actual_slow'] = pa_slow
+            peth_data[f'peth_{kind}_full_fast'] = pf_fast
+            peth_data[f'peth_{kind}_full_slow'] = pf_slow
+            peth_data[f'peth_{kind}_reduced_fast'] = pr_fast
+            peth_data[f'peth_{kind}_reduced_slow'] = pr_slow
 
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
@@ -696,6 +742,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, ops=GLM_OPTIONS):
     for gname in group_names:
         result[f'full_r_group_{gname}'] = full_r_group[gname]
         result[f'lesioned_r_{gname}'] = lesioned_r[gname]
+    result.update(peth_data)
 
     return result
 
@@ -716,7 +763,15 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
           f'({(fold_ids >= 0).sum()} valid bins, '
           f'{len(set(fold_ids[fold_ids >= 0]))} folds)')
 
-    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids, ops)
+    event_spec = build_event_spec(
+        sess,
+        kinds=['tf', 'lick_prep', 'lick_exec'],
+        t_ax=t_ax,
+        bin_width=ops['bin_width'],
+        tf_sd_threshold=ops['tf_sd_threshold'])
+
+    result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids,
+                        event_spec=event_spec, ops=ops)
 
     if result is None:
         print(f'  skipped (no valid predictions)')
@@ -735,86 +790,4 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
     print(f'Saved to {results_dir / f"neuron_{neuron_idx}.npz"}')
 
 
-#%% classification
-
-def classify_units(sess_dir, ops=GLM_OPTIONS):
-    """load per-neuron ridge GLM results and classify by lesion significance"""
-    import warnings
-    from scipy.stats import ttest_rel, ttest_1samp
-    warnings.filterwarnings('ignore', 'Mean of empty slice', RuntimeWarning)
-    results_dir = Path(sess_dir) / 'glm_ridge_results'
-    sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
-    n_neurons = len(sess.fr_stats)
-    group_names = list(ops['lesion_groups'].keys())
-
-    classifications = []
-
-    for i in range(n_neurons):
-        res_path = results_dir / f'neuron_{i}.npz'
-        if not res_path.exists():
-            classifications.append({
-                'neuron_idx': i,
-                'cluster_id': sess.fr_stats.index[i],
-            })
-            continue
-
-        res = np.load(res_path, allow_pickle=True)
-        full_r = res['full_r']
-
-        ok_r = full_r[~np.isnan(full_r)]
-        if len(ok_r) >= 3:
-            _, p_full = ttest_1samp(ok_r, 0)
-            sig_full = p_full < ops['lesion_alpha'] and np.mean(ok_r) > 0
-        else:
-            p_full = 1.0
-            sig_full = False
-
-        row = {
-            'neuron_idx': i,
-            'cluster_id': sess.fr_stats.index[i],
-            'mean_r': np.nanmean(full_r),
-            'is_predictable_p': p_full,
-            'is_predictable': sig_full,
-        }
-
-        for gname in group_names:
-            full_r_g = res[f'full_r_group_{gname}']
-            les_r_g = res[f'lesioned_r_{gname}']
-            ok = ~(np.isnan(full_r_g) | np.isnan(les_r_g))
-
-            if ok.sum() >= 3:
-                _, p = ttest_rel(full_r_g[ok], les_r_g[ok])
-                delta_r = np.nanmean(full_r_g[ok]) - np.nanmean(les_r_g[ok])
-            else:
-                p = 1.0
-                delta_r = 0.0
-
-            is_sig = (sig_full and
-                      p < ops['lesion_alpha'] and
-                      delta_r > 0) if ok.sum() >= 3 else False
-
-            row[f'{gname}_mean_r'] = np.nanmean(full_r_g)
-            row[f'{gname}_p'] = p
-            row[f'{gname}_delta_r'] = delta_r
-            row[f'{gname}_sig'] = is_sig
-
-        classifications.append(row)
-
-    df = pd.DataFrame(classifications)
-    df.to_csv(Path(sess_dir) / 'glm_ridge_classifications.csv', index=False)
-    return df
-
-
-#%% kernel extraction
-
-def extract_kernels(weights, col_map, bin_width=GLM_OPTIONS['bin_width']):
-    """reshape flat weight vector into named kernels
-
-    returns dict: predictor_name -> (t_ax_kernel, kernel_values)
-    """
-    kernels = {}
-    for name, (col_slice, lags) in col_map.items():
-        t_ax_kernel = lags * bin_width
-        kernel_vals = weights[col_slice]
-        kernels[name] = (t_ax_kernel, kernel_vals)
-    return kernels
+# classification and kernel extraction moved to neuron_prediction.results

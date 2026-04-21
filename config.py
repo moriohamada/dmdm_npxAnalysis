@@ -119,6 +119,11 @@ GLM_OPTIONS = dict(
     min_r = 0,
     lesion_alpha = 0.05,
 
+    # PETH-based classification (paper's criteria)
+    tf_sd_threshold = 0.5,   # pulse threshold in s.d. of baseline log2(TF)
+    peth_r_thresh   = 0.2,   # criterion 1: mean across-fold pearson r
+    peth_alpha      = 0.01,  # criterion 2: residual-prediction t-test alpha
+
     # predictor groups to lesion together for unit classification
     lesion_groups = {
         'tf':            ['tf'],
