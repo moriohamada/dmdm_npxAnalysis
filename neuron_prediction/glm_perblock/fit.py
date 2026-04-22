@@ -66,9 +66,8 @@ def fit_neuron_perblock_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
     results_dir.mkdir(exist_ok=True)
 
     col_map_path = results_dir / 'col_map.pkl'
-    if not col_map_path.exists():
-        with open(col_map_path, 'wb') as f:
-            pickle.dump(col_map, f)
+    with open(col_map_path, 'wb') as f:
+        pickle.dump(col_map, f)
 
     # event spec is session-wide; block restriction happens via fold_ids
     # (events outside this block get fold_ids == -1 and are skipped)

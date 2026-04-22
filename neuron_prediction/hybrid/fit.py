@@ -375,6 +375,5 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=HYBRID_OPTIONS):
     np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
 
     col_map_path = results_dir / 'col_map.pkl'
-    if not col_map_path.exists():
-        with open(col_map_path, 'wb') as f:
-            pickle.dump(col_map, f)
+    with open(col_map_path, 'wb') as f:
+        pickle.dump(col_map, f)

@@ -521,8 +521,7 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=NETWORK_OPTIONS,
     np.savez(res_path, **result)
     print(f'Saved {res_path}')
 
-    # save col_map once per session
+    # always rewrite col_map to stay in sync with the weights
     col_map_path = results_dir / 'col_map.pkl'
-    if not col_map_path.exists():
-        with open(col_map_path, 'wb') as f:
-            pickle.dump(col_map, f)
+    with open(col_map_path, 'wb') as f:
+        pickle.dump(col_map, f)

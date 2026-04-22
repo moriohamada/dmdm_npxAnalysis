@@ -781,11 +781,10 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
     results_dir.mkdir(exist_ok=True)
     np.savez(results_dir / f'neuron_{neuron_idx}.npz', **result)
 
-    # save col_map once per session (same for all neurons)
+    # always rewrite col_map to stay in sync with the weights
     col_map_path = results_dir / 'col_map.pkl'
-    if not col_map_path.exists():
-        with open(col_map_path, 'wb') as f:
-            pickle.dump(col_map, f)
+    with open(col_map_path, 'wb') as f:
+        pickle.dump(col_map, f)
 
     print(f'Saved to {results_dir / f"neuron_{neuron_idx}.npz"}')
 
