@@ -13,7 +13,7 @@ from data.session import Session
 from utils.filing import load_fr_matrix
 from neuron_prediction.data import (
     load_glm_inputs, get_trial_fold_indices, neuron_seed,
-    normalise_design_matrix,
+    normalise_design_matrix, analysis_trials, lick_times,
 )
 from neuron_prediction.evaluate import pearson_r, reduce_design_matrix
 from neuron_prediction.results.peth import build_event_spec, fold_peths
@@ -75,12 +75,18 @@ def _time_shift(signal, kernel_win, bin_width=GLM_OPTIONS['bin_width']):
 
 #%% predictor builders
 
+# analysis_trials and lick_times live in neuron_prediction.data and are
+# imported at module top; aliases keep the existing call-sites short
+_analysis_trials = analysis_trials
+_lick_times = lick_times
+
+
 def _build_tf_predictor(session, t_ax):
     """log2(TF) at each 50ms bin during baseline period, 0 elsewhere"""
     T = len(t_ax)
     tf_signal = np.zeros(T, dtype=np.float32)
 
-    for _, row in session.trials.iterrows():
+    for _, row in _analysis_trials(session).iterrows():
         tf_raw = np.array(row['TF'])
         ft_raw = np.array(row['frame_time'])
 
@@ -125,55 +131,52 @@ def _build_event_predictor(event_times, t_ax):
 
 
 def _build_trial_start_predictor(session, t_ax):
-    return _build_event_predictor(session.trials['Baseline_ON_rise'].values, t_ax)
+    return _build_event_predictor(_analysis_trials(session)['Baseline_ON_rise'].values, t_ax)
 
 
 def _build_change_predictors(session, t_ax):
     """one impulse predictor per change magnitude, returns dict"""
-    change_tfs = sorted(session.trials['Stim2TF'].dropna().unique())
+    tr = _analysis_trials(session)
+    change_tfs = sorted(tr['Stim2TF'].dropna().unique())
     predictors = {}
     for ch_tf in change_tfs:
-        mask = session.trials['Stim2TF'] == ch_tf
-        times = session.trials.loc[mask, 'Change_ON_rise'].dropna().values
+        mask = tr['Stim2TF'] == ch_tf
+        times = tr.loc[mask, 'Change_ON_rise'].dropna().values
         predictors[f'change_tf{ch_tf}'] = _build_event_predictor(times, t_ax)
     return predictors
 
 
 def _build_lick_prep_predictor(session, t_ax):
-    """impulse at motion_onset for hits and FAs"""
-    times = session.trials.loc[
-        (session.trials['IsHit'] == 1) | (session.trials['IsFA'] == 1),
-        'motion_onset'
-    ].dropna().values
-    return _build_event_predictor(times, t_ax)
+    """impulse at unified lick time (see _lick_times), Hit+FA"""
+    return _build_event_predictor(_lick_times(session), t_ax)
 
 
 def _build_lick_exec_predictor(session, t_ax):
-    """impulse at first_lick"""
-    times = session.trials['first_lick'].dropna().values
-    return _build_event_predictor(times, t_ax)
+    """impulse at unified lick time (see _lick_times), Hit+FA"""
+    return _build_event_predictor(_lick_times(session), t_ax)
 
 
 def _build_air_puff_predictor(session, t_ax):
-    return _build_event_predictor(session.trials['Air_puff_rise'].dropna().values, t_ax)
+    return _build_event_predictor(_analysis_trials(session)['Air_puff_rise'].dropna().values, t_ax)
 
 
 def _build_reward_predictor(session, t_ax):
-    return _build_event_predictor(session.trials['Valve_L_rise'].dropna().values, t_ax)
+    return _build_event_predictor(_analysis_trials(session)['Valve_L_rise'].dropna().values, t_ax)
 
 
 def _build_abort_predictor(session, t_ax):
     """impulse at abort time (Baseline_ON_rise + rt_abort)"""
-    abort_mask = session.trials['rt_abort'].notna()
-    times = (session.trials.loc[abort_mask, 'Baseline_ON_rise']
-             + session.trials.loc[abort_mask, 'rt_abort']).values
+    tr = _analysis_trials(session)
+    abort_mask = tr['rt_abort'].notna()
+    times = (tr.loc[abort_mask, 'Baseline_ON_rise']
+             + tr.loc[abort_mask, 'rt_abort']).values
     return _build_event_predictor(times, t_ax)
 
 
 def _build_time_ramp_predictor(session, t_ax):
     """ramp from 0 at each baseline onset, 0 outside trials"""
     signal = np.zeros(len(t_ax), dtype=np.float32)
-    for _, row in session.trials.iterrows():
+    for _, row in _analysis_trials(session).iterrows():
         bl_on = row['Baseline_ON_rise']
         bl_off = row['Baseline_ON_fall']
         if np.isnan(bl_on) or np.isnan(bl_off):
@@ -187,7 +190,7 @@ def _build_time_ramp_predictor(session, t_ax):
 def _build_block_predictor(session, t_ax):
     """binary: 1 during late block trials, 0 during early block / outside trials"""
     signal = np.zeros(len(t_ax), dtype=np.float32)
-    for _, row in session.trials.iterrows():
+    for _, row in _analysis_trials(session).iterrows():
         if row['hazardblock'] != 'late':
             continue
         bl_on = row['Baseline_ON_rise']
@@ -210,7 +213,7 @@ def _build_phase_predictors(session, t_ax):
     phase_up = np.zeros((T, n_bins), dtype=np.float32)
     phase_down = np.zeros((T, n_bins), dtype=np.float32)
 
-    for _, row in session.trials.iterrows():
+    for _, row in _analysis_trials(session).iterrows():
         tf_raw = np.array(row['TF'])
         ft_raw = np.array(row['frame_time'])
 
@@ -280,7 +283,7 @@ def _build_valid_mask(session, t_ax):
     mask = np.zeros(len(t_ax), dtype=bool)
     n_ignore = ANALYSIS_OPTIONS['ignore_first_trials_in_block']
 
-    for _, row in session.trials.iterrows():
+    for _, row in _analysis_trials(session).iterrows():
         if row['tr_in_block'] <= n_ignore:
             continue
         bl_on = row['Baseline_ON_rise']
@@ -301,7 +304,7 @@ def build_predictor_spec(session, has_eye_cam=True):
     kernel_window is None for predictors that are already multi-column (phase, time ramp, block)
     """
     ops = GLM_OPTIONS
-    change_tfs = sorted(session.trials['Stim2TF'].dropna().unique())
+    change_tfs = sorted(_analysis_trials(session)['Stim2TF'].dropna().unique())
 
     spec = []
     spec.append(('tf', ops['kern_tf']))
@@ -489,23 +492,15 @@ def build_event_masks(session, t_ax):
             tf_mask |= (t_ax >= t - 0.1) & (t_ax <= t + 0.75)
     masks['tf'] = tf_mask
 
-    # lick_prep: -1.25 to 0s before motion_onset
+    # lick_prep: -1.25 to 0s before lick time
     lick_prep_mask = np.zeros(T, dtype=bool)
-    for _, row in session.trials.iterrows():
-        if row['IsHit'] != 1 and row['IsFA'] != 1:
-            continue
-        t = row.get('motion_onset', np.nan)
-        if np.isnan(t):
-            continue
+    for t in _lick_times(session):
         lick_prep_mask |= (t_ax >= t - 1.25) & (t_ax <= t)
     masks['lick_prep'] = lick_prep_mask
 
-    # lick_exec: 0 to 0.5s after first_lick
+    # lick_exec: 0 to 0.5s after lick time
     lick_exec_mask = np.zeros(T, dtype=bool)
-    for _, row in session.trials.iterrows():
-        t = row.get('first_lick', np.nan)
-        if np.isnan(t):
-            continue
+    for t in _lick_times(session):
         lick_exec_mask |= (t_ax >= t) & (t_ax <= t + 0.5)
     masks['lick_exec'] = lick_exec_mask
 

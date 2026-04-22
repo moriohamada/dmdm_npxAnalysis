@@ -37,14 +37,9 @@ def get_event_times(session, kind, tf_sd_threshold=0.5):
         signs = np.sign(tf_log2[keep]).astype(int)
         return times, signs
 
-    if kind == 'lick_prep':
-        trials = session.trials
-        mask = (trials['IsHit'] == 1) | (trials['IsFA'] == 1)
-        times = trials.loc[mask, 'motion_onset'].dropna().values
-        return times, np.ones(len(times), dtype=int)
-
-    if kind == 'lick_exec':
-        times = session.trials['first_lick'].dropna().values
+    if kind in ('lick_prep', 'lick_exec'):
+        from neuron_prediction.data import lick_times
+        times = lick_times(session)
         return times, np.ones(len(times), dtype=int)
 
     raise ValueError(f'unknown event kind: {kind}')

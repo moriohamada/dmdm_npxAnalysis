@@ -1,8 +1,47 @@
 """shared data loading and fold assignment for neuron prediction models"""
 import hashlib
 import numpy as np
+import pandas as pd
 import pickle
 from pathlib import Path
+
+
+def analysis_trials(session):
+    """trials participating in GLM analyses - excludes trialoutcome=='Ref'"""
+    tr = session.trials
+    if 'trialoutcome' in tr.columns:
+        return tr[tr['trialoutcome'] != 'Ref']
+    return tr
+
+
+def lick_times(session):
+    """unified lick time for Hit and FA trials
+
+    cascade: motion_onset -> first_lick - delta -> RT - delta
+    delta = per-session median(first_lick - motion_onset) where both exist
+    """
+    tr = analysis_trials(session)
+    sub = tr[(tr['IsHit'] == 1) | (tr['IsFA'] == 1)].copy()
+
+    both = sub['motion_onset'].notna() & sub['first_lick'].notna()
+    delta = (sub.loc[both, 'first_lick'] - sub.loc[both, 'motion_onset']).median()
+    if pd.isna(delta):
+        delta = 0.0
+
+    times = sub['motion_onset'].copy()
+
+    need = times.isna() & sub['first_lick'].notna()
+    times.loc[need] = sub.loc[need, 'first_lick'] - delta
+
+    if 'rt_FA' in sub.columns:
+        need = times.isna() & (sub['IsFA'] == 1) & sub['rt_FA'].notna()
+        times.loc[need] = sub.loc[need, 'Baseline_ON_rise'] + sub.loc[need, 'rt_FA'] - delta
+
+    if 'rt_RT' in sub.columns:
+        need = times.isna() & (sub['IsHit'] == 1) & sub['rt_RT'].notna()
+        times.loc[need] = sub.loc[need, 'Change_ON_rise'] + sub.loc[need, 'rt_RT'] - delta
+
+    return times.dropna().values
 
 
 def load_glm_inputs(sess_dir):
@@ -52,21 +91,26 @@ def get_fold_indices(n_samples, n_folds, seed):
 
 
 def get_trial_fold_indices(trials_df, t_ax, n_folds, seed,
-                           ignore_first_n=0):
+                           ignore_first_n=0,
+                           exclude_outcomes=('Ref',)):
     """assign CV folds at trial level, map back to time bins
 
     all bins within a trial share the same fold. bins outside valid
     trials get fold_id = -1. skips transition trials (tr_in_block
-    <= ignore_first_n).
+    <= ignore_first_n) and trials whose trialoutcome is in
+    exclude_outcomes (Ref by default).
 
     returns (T,) int array of fold IDs
     """
     rng = np.random.RandomState(seed)
+    excluded = set(exclude_outcomes or ())
 
     # collect valid trial boundaries
     trial_bounds = []
     for _, row in trials_df.iterrows():
         if ignore_first_n > 0 and row['tr_in_block'] <= ignore_first_n:
+            continue
+        if excluded and row.get('trialoutcome') in excluded:
             continue
         bl_on = row['Baseline_ON_rise']
         tr_end = np.nanmax([row['Baseline_ON_fall'],
