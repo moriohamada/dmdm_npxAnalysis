@@ -147,7 +147,7 @@ GLM_OPTIONS = dict(
     cv_max_iter = 1000,  # coarser convergence for lambda selection
     cv_tol = 1e-4,
 )
-
+#%%
 NETWORK_OPTIONS = dict(
     # architecture
     hidden_sizes = [0, 16, 64, 128],  # 0 = PoissonLinear (no hidden layer)
@@ -214,7 +214,7 @@ HYBRID_OPTIONS = dict(
     # lesion groups (for skip connection group lasso)
     lesion_groups = GLM_OPTIONS['lesion_groups'],
 )
-
+#%%
 LICK_PRED_OPS = dict(
     bin_width       = 50 / 1000,       # s; prediction bin width (matches pop_bin_width)
     tf_history_bins = 40,              # number of 50ms bins of TF history (2s)
@@ -241,7 +241,7 @@ LICK_PRED_OPS = dict(
     patience        = 50,             # early stopping patience (epochs)
     val_frac        = 0.1,             # fraction of training trials for early stopping
 )
-
+#%%
 DEMIXING_OPTIONS = dict(
     model_type = 'sae',               # 'sae' or 'lfads'
     latent_dim = 25,                  # number of latent dimensions
@@ -256,7 +256,7 @@ DEMIXING_OPTIONS = dict(
     batch_size  = 10,
     test_frac   = 0.2,
 )
-
+#%%
 TUNING_CURVE_OPS = dict(
     tf_resp_win       = (0.1, 0.4),     # s; response window for tuning curves
     n_tf_bins         = 15,             # quantile bins for tuning curves (equal pulses)
@@ -264,7 +264,7 @@ TUNING_CURVE_OPS = dict(
     plot_during_extraction = False,
     trial_split_time  = 5,
 )
-
+#%%
 CODING_DIM_OPS = dict(
     sliding_window_ms = 100,            # ms; causal boxcar width for FR smoothing
     n_permutations    = 500,            # shuffles for per-animal significance tests
@@ -288,7 +288,14 @@ CODING_DIM_OPS = dict(
     # negative = pre-baseline (ITI)
     block_coding_windows = [(-2.0, 0.0), (0.0, 2.0), (2.0, 5.0)],
 )
+#%%
+MOVEDIM_OPTIONS = dict(
+    full_lick_period = (-2, 2), # full period to extract activity around licks
+    lick_period = (-.5, 1),   # period to predict for movement potent
+    prelick_period = (-1, 0), # period to capture premotor activity (pca on this period)
 
+)
+#%%
 PLOT_OPTIONS = dict(
     colours = dict(
         block = {

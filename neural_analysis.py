@@ -156,13 +156,13 @@ for area in areas:
         print(f'\n=== extraction: area: {area}, filter: {uf} ===')
         extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
                               cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                              n_jobs=5)
+                              n_jobs=4)
         extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
                                  cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 n_jobs=5)
+                                 n_jobs=4)
         extract_block_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
                                  cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 n_jobs=5)
+                                 n_jobs=4)
 
 #%% coding dimension stats (tf/motor include plots via analyse_coding_dimensions)
 for area in areas:

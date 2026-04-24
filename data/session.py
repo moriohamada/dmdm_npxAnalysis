@@ -10,6 +10,7 @@ import os
 import pickle
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 
 @dataclass
@@ -49,6 +50,11 @@ class Session:
     def areas(self):
         return self.neural.brain_region_comb.unique()
 
+    def area_mask(self, areas: list[str]) -> np.ndarray:
+        """mask over unit_info rows for neurons in the given areas"""
+        regions = self.unit_info['brain_region_comb'].values
+        return np.isin(regions, areas)
+
     @property
     def t_ax(self) -> np.ndarray:
         return self.fr_matrix.columns.values if self.fr_matrix is not None else None
@@ -64,9 +70,12 @@ class Session:
         )
 
     @classmethod
-    def from_folder(cls, sess_folder: str) -> Session:
+    def from_folder(cls, sess_folder: str | Path) -> Session:
 
         # parse animal and session names
+        if isinstance(sess_folder, Path):
+            sess_folder = str(sess_folder)
+
         file_parts = sess_folder.split('/')
         animal = file_parts[-2]
         session_name = file_parts[-1]
