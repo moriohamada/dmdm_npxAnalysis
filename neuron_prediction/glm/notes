@@ -1,8 +1,10 @@
 submit.bash and submit_pt2.bash are the same thing - just on different neuron indices, since the swc slurm scheduler
 doesnt allow array indices over 9999.
 
+rsync DMs from local to ceph:
+rsync -avm --include='*/' --include='glm_design.npy' --include='glm_counts.npy' --include='glm_t_ax.npy' --include='glm_valid.npy' --include='glm_spec.pkl' --exclude='*' /media/morio/Data_Fast/dmdm_temporalExpectation/npx/ /mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/
+
 rsync results from ceph to local:
 rsync -av --include='*/' --include='glm_results/***' --exclude='*' /mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/ /media/morio/Data_Fast/dmdm_temporalExpectation/npx/
-
 
 rsync -av --include='*/' --include='glm_ridge_results/***' --exclude='*' /mnt/ceph/public/projects/MoHa_20260212_dmdmTemporalExpectation/data/npx/  /media/morio/Data_Fast/dmdm_temporalExpectation/npx/

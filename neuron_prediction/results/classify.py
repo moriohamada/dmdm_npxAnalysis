@@ -64,7 +64,7 @@ def classify_units(sess_dir, fit_type, ops=GLM_OPTIONS):
             'is_predictable': sig_full,
         }
 
-        # per-bin pearson diagnostics per lesion group (always)
+        # per-bin pearson per lesion group
         per_bin_sig = {}
         for gname in group_names:
             full_r_g = res[f'full_r_group_{gname}']
@@ -106,16 +106,14 @@ def classify_units(sess_dir, fit_type, ops=GLM_OPTIONS):
 
 
 def _peth_criteria(res, kind, ops, key_prefix=''):
-    """apply paper's two PETH criteria from per-fold arrays
+    """apply paper's two PETH criteria
 
-    criterion 1: mean over folds of pearson_r(actual, full) > peth_r_thresh
-    criterion 2: one-sample t-test of pearson_r(actual-reduced, full-reduced)
-                 across folds, p < peth_alpha and mean > 0
+    1: mean over folds of pearson_r(actual, full) > peth_r_thresh
+    2: one-sample t-test of pearson_r(actual-reduced, full-reduced) across folds,
+    p < peth_alpha and mean > 0
 
-    for tf the signal is (fast PETH - slow PETH); for lick_prep / lick_exec
-    it's the fast PETH directly (signs are all +1 so no slow events exist)
-
-    key_prefix: prefix for npz keys (e.g. 'h0_' for network hidden size 0)
+    for tf the signal is (fast PETH - slow PETH). for licks - 'fast' events are just
+    licks, no slow events.
 
     returns (r_full_mean, r_resid_mean, p_resid, sig)
     """

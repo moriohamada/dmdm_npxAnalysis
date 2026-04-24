@@ -137,7 +137,7 @@ def get_neuron_mask(sess_dir, area=None, unit_filter=None):
         mask = np.array([r == area for r in regions])
 
     if unit_filter is not None:
-        glm_path = sess_dir / 'glm_classifications.csv'
+        glm_path = sess_dir / 'glm_ridge_classifications.csv'
         if not glm_path.exists():
             return np.zeros(n, dtype=bool)
         glm = pd.read_csv(glm_path)
