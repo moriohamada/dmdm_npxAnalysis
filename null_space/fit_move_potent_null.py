@@ -9,12 +9,15 @@ AREA_NAMES = list(AREA_GROUPS.keys())
 from utils.filing import get_session_dirs_by_animal, load_fr_matrix
 from data.session import Session
 from data.responses import compute_psth
+from utils.time import time_mask
 
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import pickle
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
+from scipy.linalg import null_space
 
 def get_lick_activity_by_area(session: Session,
                               areas: list[str],
@@ -74,7 +77,7 @@ def get_lick_aligned_motion(session: Session,
             X=aligned[None, :],
             t_ax=t_ax,
             event_times=lick_times,
-            resp_win=move_ops['lick_period'],
+            resp_win=move_ops['full_lick_period'],
         )
         lick_aligned_mv[name] = {'E': E[:, 0, :], 't': ev_t}
 
@@ -102,57 +105,81 @@ def _centre_neural(lick_aligned_sp,
 
         lick_aligned_sp[area]['X_centred'] = (
             lick_aligned_sp[area]['X_mean'] -
-            np.nanmean(lick_aligned_sp[area]['X_mean'][:, in_bl], axis=1)
+            np.nanmean(lick_aligned_sp[area]['X_mean'][:, in_bl], axis=1, keepdims=True)
         )
 
     return lick_aligned_sp
 
-def calculate_movement_potent_dim_by_area(lick_aligned_sp: dict,
-                                          lick_aligned_mv: dict,
-                                          move_ops: dict = MOVEDIM_OPTIONS):
+def _centre_signals(lick_aligned_mv, lick_aligned_sp):
+    # z-score motion energy
+    lick_aligned_mv = _centre_mov(lick_aligned_mv)
+    # baseline subtract neural
+    lick_aligned_sp = _centre_neural(lick_aligned_sp)
+    return lick_aligned_mv, lick_aligned_sp
+
+def calculate_movement_dims_by_area(lick_aligned_mv: dict,
+                                    lick_aligned_sp: dict,
+                                    move_ops: dict = MOVEDIM_OPTIONS):
     """
     regress motion energy versus neural activity by area (at different delays),
-    to identify movement-potent dimensions; save to disk
+    to identify movement-potent and -null dimensions.
+    Returns: move_dims, dict with k: v:
+        w_pot: n_pot_dims x nN
+        w_null: n_null_dims x nN
     """
 
     # PCA of motor
-    lick_aligned_mv = _centre_mov(lick_aligned_mv)
     mv_stack = np.stack([v['E_z'] for _, v in lick_aligned_mv.items()], axis=1)
     mv_pca = PCA(n_components=2) # basiaclly seemed two dimensional - face motE, wheel spd
     mv_pca.fit(mv_stack)
     y = mv_pca.components_ @ mv_stack.T # target for prediction
 
-    # PCA of neural
-    lick_aligned_sp = _centre_neural(lick_aligned_sp)
-
+    move_dims = dict()
     for area in lick_aligned_sp.keys():
-        X = lick_aligned_sp[area]['X_centred']
+
+        X_fulldim = lick_aligned_sp[area]['X_centred']
+        t = lick_aligned_sp[area]['t']
+        if X_fulldim.shape[0] < 10:
+            continue
+        move_dims[area] = dict()
+
+        sp_pca = PCA(n_components=6)
+        sp_pca.fit(X_fulldim.T)
+        X = sp_pca.transform(X_fulldim.T)
 
         # linear regression to get w_pot
         pot_mdl = LinearRegression(fit_intercept=True)
-        pot_mdl.fit(X, y)
+        pot_mdl.fit(X, y.T)
         # w_null
+        null_pc = null_space(pot_mdl.coef_)
 
-        # rotate w_null
+        # rotate w_null to capture pre-lick
+        rot_null_pc = PCA()
+        pre_lick_t = time_mask(t, move_ops['prelick_period'])
+        rot_null_pc.fit((null_pc.T @ X[pre_lick_t,:].T).T)
 
         # compute full weighting to go from neurons to movement_potent/-null spaces
+        move_dims[area]['pot'] = pot_mdl.coef_ @ sp_pca.components_
+        move_dims[area]['null']= rot_null_pc.components_ @ null_pc.T @ sp_pca.components_
 
-def fit_movement_potent_per_session(npx_dir: str = PATHS['npx_dir_local'],
-                                    ops: dict = ANALYSIS_OPTIONS,
-                                    move_ops: dict = MOVEDIM_OPTIONS,
-                                    areas: list[str] = AREA_NAMES,
-                                    ):
+    return move_dims
+
+def fit_movespace_per_session(npx_dir: str = PATHS['npx_dir_local'],
+                              ops: dict = ANALYSIS_OPTIONS,
+                              move_ops: dict = MOVEDIM_OPTIONS,
+                              areas: list[str] = AREA_NAMES,
+                              ):
     """
     Runner to loop through all sessions, extract lick-aligned neural activity and
     motion energy, calculate movement-potent dim.
     """
     animal_sessions = get_session_dirs_by_animal(npx_dir)
-    save_dir = Path(npx_dir) / 'movement_dims'
-    save_dir.mkdir(exist_ok=True)
 
     for animal in animal_sessions.keys():
+        print(f'Fitting movement space for {animal}')
         sessions = animal_sessions[animal]
         for session_dir in sessions:
+            print(f'    {session_dir}')
 
             session = Session.load(session_dir/'session.pkl')
             # load FR matrix
@@ -167,6 +194,13 @@ def fit_movement_potent_per_session(npx_dir: str = PATHS['npx_dir_local'],
             # create [area](fr) key for lick-aligned movement
             lick_aligned_sp  = get_lick_activity_by_area(session, areas, move_ops)
             lick_aligned_mv = get_lick_aligned_motion(session, eye_cam_times, move_ops)
- 
+            lick_aligned_mv, lick_aligned_sp = _centre_signals(lick_aligned_mv, lick_aligned_sp)
+            move_dims = calculate_movement_dims_by_area(lick_aligned_mv, lick_aligned_sp, move_ops)
+
+            # save
+            save_path = session_dir / 'move_dims.pkl'
+            with open(save_path, 'wb') as f:
+                pickle.dump(move_dims, f)
+
 if __name__ == '__main__':
-    fit_movement_potent_per_session()
+    fit_movespace_per_session()

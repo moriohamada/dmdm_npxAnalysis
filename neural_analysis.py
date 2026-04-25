@@ -1,3 +1,4 @@
+import null_space.fit_move_potent_null
 from config import PATHS, ANALYSIS_OPTIONS
 
 #%% get all event times and event-aligned neural responses
@@ -126,15 +127,18 @@ for psth_path in psth_paths:
 from config import PATHS, ANALYSIS_OPTIONS, TUNING_CURVE_OPS, CODING_DIM_OPS
 from pathlib import Path
 from tuning_curves.analysis import extract_all_tuning_curves
-extract_all_tuning_curves(npx_dir=PATHS['npx_dir_local'],
-                          ops=ANALYSIS_OPTIONS,
-                          cd_ops=TUNING_CURVE_OPS,
-                          overwrite=True)
+extract_all_tuning_curves(overwrite=True)
 
 from tuning_curves.plotting import plot_tuning_curves, plot_gain_offset_distributions
 tc_plot_dir = Path(PATHS['plots_dir']) / 'tuning_curves'
 plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
+
+#%% movement potent/null space extraction
+from null_space.fit_move_potent_null import fit_movespace_per_session
+fit_movespace_per_session()
+
+#%%
 
 #%% coding dimensions extraction
 from config import CODING_DIM_OPS
