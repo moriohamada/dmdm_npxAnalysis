@@ -116,6 +116,44 @@ def get_change_onset_times(session: Session) -> Session:
     session.ch_onsets = pd.DataFrame(ch_onsets)
     return session
 
+def build_stim_vector(session: Session, t_ax: np.ndarray) -> np.ndarray:
+    """
+    full-session log2(TF) trace mapped onto t_ax via zero-order hold. truncated at
+    change frame per trial. bins outside any trial's stim period get 0.
+    Returns U with shape (1, T)
+    """
+    T = len(t_ax)
+    U = np.zeros((1, T))
+
+    for _, row in session.trials.iterrows():
+        tf_raw = np.array(row['TF'])
+        ft_raw = np.array(row['frame_time'])
+
+        tf_seq = tf_raw[tf_raw.nonzero()]
+        ch_fr = round(row['stimT'] * 60)
+        tf_20hz = np.log2(tf_seq[:ch_fr:3])
+        ft_20hz = ft_raw[~np.isnan(ft_raw)][:ch_fr:3]
+
+        if len(tf_20hz) == 0 or len(ft_20hz) == 0:
+            continue
+        if len(tf_20hz) != len(ft_20hz):
+            n = min(len(tf_20hz), len(ft_20hz))
+            tf_20hz = tf_20hz[:n]
+            ft_20hz = ft_20hz[:n]
+
+        mask = (t_ax >= ft_20hz[0]) & (t_ax <= ft_20hz[-1])
+        bin_idx = np.where(mask)[0]
+        if len(bin_idx) == 0:
+            continue
+
+        # zero-order hold: each bin gets the last stimulus value <= bin time
+        insert_idx = np.searchsorted(ft_20hz, t_ax[bin_idx], side='right') - 1
+        insert_idx = np.clip(insert_idx, 0, len(tf_20hz) - 1)
+        U[0, bin_idx] = tf_20hz[insert_idx]
+
+    return U
+
+
 def get_lick_onset_times(session: Session) -> Session:
     lick_onsets = []
 
