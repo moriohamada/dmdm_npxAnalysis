@@ -72,10 +72,6 @@ plot_fraction_significant(fit_type='glm_ridge',
                           npx_dir=PATHS['npx_dir_local'],
                           save_dir=PATHS['plots_dir'])
 
-#%% Visualise mean psths of tf-responsive units
-
-
-
 #%% Downsample FR matrices for population analyses
 from utils.downsampling import save_downsampled_fr
 save_downsampled_fr(npx_dir=PATHS['npx_dir_local'],
@@ -239,7 +235,7 @@ for psth_path in psth_paths:
     save_dir = Path(PATHS['plots_dir']) / 'demixing' / sess_dir.parent.name / sess_dir.name
     save_dir.mkdir(parents=True, exist_ok=True)
     fig = plot_latent_psths(latent_data.z_all, latent_data, session, ops=ANALYSIS_OPTIONS)
-    fig.savefig(save_dir / 'latent_psths.png', dpi=150, bbox_inches='tight')
+    fig.savefig(save_dir / 'latent_psths.png', dpi=300, bbox_inches='tight')
 
 #%% Demixing - predict licking from latents
 from demixing.lick_prediction import run_latent_lick_prediction
