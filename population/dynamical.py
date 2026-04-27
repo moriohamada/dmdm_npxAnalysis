@@ -65,48 +65,6 @@ def fit_lds(Z, U, valid):
     return A, B, r2, len(valid_idx)
 
 
-def _build_stim_vector(session, t_ax):
-    """
-    Build full-session stimulus vector U (1, T) by mapping per-trial TF onto FR matrix
-    time bins. Bins outside any trial get 0
-    """
-    T = len(t_ax)
-    U = np.zeros((1, T))
-
-    for _, row in session.trials.iterrows():
-        tf_raw = np.array(row['TF'])
-        ft_raw = np.array(row['frame_time'])
-
-        # clean following stimulus.py: remove TF zeros, truncate to change frame,
-        # remove frame_time NaNs, subsample ::3 for 20Hz
-        tf_seq = tf_raw[tf_raw.nonzero()]
-        ch_fr = round(row['stimT'] * 60)
-        tf_20hz = np.log2(tf_seq[:ch_fr:3])
-        ft_20hz = ft_raw[~np.isnan(ft_raw)][:ch_fr:3]
-
-        if len(tf_20hz) == 0 or len(ft_20hz) == 0:
-            continue
-        if len(tf_20hz) != len(ft_20hz):
-            n = min(len(tf_20hz), len(ft_20hz))
-            tf_20hz = tf_20hz[:n]
-            ft_20hz = ft_20hz[:n]
-
-        # find which FR bins fall within this trial's stimulus period
-        mask = (t_ax >= ft_20hz[0]) & (t_ax <= ft_20hz[-1])
-        bin_idx = np.where(mask)[0]
-        if len(bin_idx) == 0:
-            continue
-
-        # zero-order hold: assign each bin the last stimulus value <= bin time
-        insert_idx = np.searchsorted(ft_20hz, t_ax[bin_idx], side='right') - 1
-        insert_idx = np.clip(insert_idx, 0, len(tf_20hz) - 1)
-        U[0, bin_idx] = tf_20hz[insert_idx]
-
-    return U
-
-
-
-
 
 
 def _get_fold_splits(session, condition, ops, n_folds):
@@ -439,7 +397,7 @@ def lds_single_session(sess_dir, ops,
         n_lds = ops['lds_n_dims']
         Z = weights[:, :n_lds].T @ fr_matrix.values
         # print(Z.shape)
-        U = _build_stim_vector(sess_data, t_ax)
+        U = build_stim_vector(sess_data, t_ax)
         del fr_matrix; gc.collect()
 
         results = fit_session_lds(sess_data, Z, t_ax, U, ops,
