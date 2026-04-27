@@ -23,6 +23,7 @@ from utils.filing import get_response_files
 from utils.rois import in_any_area, in_group
 from utils.selection import trim_fr_to_periods, get_condition_mask
 from utils.downsampling import downsample_bins
+from data.stimulus import build_stim_vector
 
 CONDITIONS = {
     'earlyBlock_early': dict(block='early', time='early'),
