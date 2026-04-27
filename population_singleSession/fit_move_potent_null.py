@@ -1,6 +1,6 @@
 """
 Get averaged lick-aligned activity (by area, by session inc orofacial nuclei) to compute
-movement potent dimension per area.
+movement potent and null spaces - single sessions.
 """
 
 from config import PATHS, ANALYSIS_OPTIONS, MOVEDIM_OPTIONS
@@ -49,8 +49,9 @@ def get_lick_aligned_motion(session: Session,
                             eye_cam_times: np.ndarray,
                             move_ops: dict) -> dict:
     """
-    Get lick-aligned movement signals (mouth/whisker motion energy, pupil area,
-    running wheel speed), resampled onto the fr_matrix time axis.
+    Get lick-aligned movement signals (mouth/whisker motion energy, pupil area, running
+    speed), resampled onto the fr_matrix time axis.
+
     Returns dict keyed by signal name, each value also a dict with:
     ['E']: nEv x nT np array containing peri-lick movement energy/pupil size/speed
     ['t']: time axis for X
@@ -117,50 +118,81 @@ def _centre_signals(lick_aligned_mv, lick_aligned_sp):
     lick_aligned_sp = _centre_neural(lick_aligned_sp)
     return lick_aligned_mv, lick_aligned_sp
 
-def calculate_movement_dims_by_area(lick_aligned_mv: dict,
-                                    lick_aligned_sp: dict,
+def calculate_movement_dims_by_area(mv_by_block: dict,
+                                    sp_by_block: dict,
                                     move_ops: dict = MOVEDIM_OPTIONS):
     """
-    regress motion energy versus neural activity by area (at different delays),
-    to identify movement-potent and -null dimensions.
-    Returns: move_dims, dict with k: v:
-        w_pot: n_pot_dims x nN
-        w_null: n_null_dims x nN
+    regress motion energy versus neural activity by area, trying delays from 0
+    to 100ms; pick the delay with best R2 on 'all' (per area), reuse for early/late.
+    motion + neural PCA bases fit on 'all'; regression (on 'lick_period'), null
+    space and null rotation done per block at the chosen delay.
+    Returns: move_dims[area], dict with 'cids', 'delay' (s), and per-block:
+        pot: n_pot_dims x nN
+        null: n_null_dims x nN
     """
 
-    # PCA of motor
-    mv_stack = np.stack([v['E_z'] for _, v in lick_aligned_mv.items()], axis=1)
+    blocks = list(mv_by_block.keys())  # e.g. ['all', 'early', 'late']
+
+    # PCA of motor (fit on 'all', applied per block)
+    mv_stack = {b: np.stack([v['E_z'] for _, v in mv_by_block[b].items()], axis=1)
+                for b in blocks}
     mv_pca = PCA(n_components=2) # basiaclly seemed two dimensional - face motE, wheel spd
-    mv_pca.fit(mv_stack)
-    y = mv_pca.components_ @ mv_stack.T # target for prediction
+    mv_pca.fit(mv_stack['all'])
+
+    # delay grid: 0..100ms in FR bin steps (motion side - always populated)
+    any_t = next(iter(mv_by_block['all'].values()))['t']
+    bin_size = float(np.median(np.diff(any_t)))
+    delay_bins = np.arange(int(round(0.1 / bin_size)) + 1)
 
     move_dims = dict()
-    for area in lick_aligned_sp.keys():
+    for area in sp_by_block['all'].keys():
 
-        X_fulldim = lick_aligned_sp[area]['X_centred']
-        t = lick_aligned_sp[area]['t']
-        if X_fulldim.shape[0] < 10:
+        X_fulldim = sp_by_block['all'][area]['X_centred']
+        t = sp_by_block['all'][area]['t']
+        if X_fulldim.shape[0] < move_ops['min_neurons']:
             continue
-        move_dims[area] = dict()
+        move_dims[area] = {'cids': sp_by_block['all'][area]['cids']}
 
+        # neural PCA (fit on 'all', applied per block)
         sp_pca = PCA(n_components=6)
         sp_pca.fit(X_fulldim.T)
-        X = sp_pca.transform(X_fulldim.T)
-
-        # linear regression to get w_pot
-        pot_mdl = LinearRegression(fit_intercept=True)
-        pot_mdl.fit(X, y.T)
-        # w_null
-        null_pc = null_space(pot_mdl.coef_)
-
-        # rotate w_null to capture pre-lick
-        rot_null_pc = PCA()
         pre_lick_t = time_mask(t, move_ops['prelick_period'])
-        rot_null_pc.fit((null_pc.T @ X[pre_lick_t,:].T).T)
+        lick_t = time_mask(t, move_ops['lick_period'])
 
-        # compute full weighting to go from neurons to movement_potent/-null spaces
-        move_dims[area]['pot'] = pot_mdl.coef_ @ sp_pca.components_
-        move_dims[area]['null']= rot_null_pc.components_ @ null_pc.T @ sp_pca.components_
+        # PC scores + motor targets per block
+        Xs = {b: sp_pca.transform(sp_by_block[b][area]['X_centred'].T) for b in blocks}
+        ys = {b: (mv_pca.components_ @ mv_stack[b].T).T for b in blocks}  # nT x n_motor
+
+        # pick delay on 'all' by max R2 within lick_period
+        r2s = []
+        for k in delay_bins:
+            X_lag = Xs['all'][:len(t)-k]
+            y_lag = ys['all'][k:]
+            mask = lick_t[k:]
+            mdl = LinearRegression(fit_intercept=True).fit(X_lag[mask], y_lag[mask])
+            r2s.append(mdl.score(X_lag[mask], y_lag[mask]))
+        best_k = int(delay_bins[np.argmax(r2s)])
+        move_dims[area]['delay'] = best_k * bin_size
+
+        for block in blocks:
+            X_lag = Xs[block][:len(t)-best_k]
+            y_lag = ys[block][best_k:]
+            mask = lick_t[best_k:]
+
+            # linear regression to get w_pot
+            pot_mdl = LinearRegression(fit_intercept=True)
+            pot_mdl.fit(X_lag[mask], y_lag[mask])
+            # w_null
+            null_pc = null_space(pot_mdl.coef_)
+
+            # rotate w_null to capture pre-lick
+            rot_null_pc = PCA()
+            rot_null_pc.fit((null_pc.T @ Xs[block][pre_lick_t,:].T).T)
+
+            # compute full weighting to go from neurons to movement_potent/-null spaces
+            move_dims[area][block] = dict()
+            move_dims[area][block]['pot'] = pot_mdl.coef_ @ sp_pca.components_
+            move_dims[area][block]['null']= rot_null_pc.components_ @ null_pc.T @ sp_pca.components_
 
     return move_dims
 
@@ -170,8 +202,8 @@ def fit_movespace_per_session(npx_dir: str = PATHS['npx_dir_local'],
                               areas: list[str] = AREA_NAMES,
                               ):
     """
-    Runner to loop through all sessions, extract lick-aligned neural activity and
-    motion energy, calculate movement-potent dim.
+    Runner to loop through all sessions, extract lick-aligned neural activity and motion
+    energy, calculate movement-potent dim.
     """
     animal_sessions = get_session_dirs_by_animal(npx_dir)
 
@@ -183,7 +215,7 @@ def fit_movespace_per_session(npx_dir: str = PATHS['npx_dir_local'],
 
             session = Session.load(session_dir/'session.pkl')
             # load FR matrix
-            fr = load_fr_matrix(str(session_dir / 'FR_matrix_ds.parquet'))
+            fr = load_fr_matrix(str(session_dir / 'FR_matrix.parquet'))
             session.fr_matrix = fr
             # eye-cam timestamps from ceph -
             # TODO: change intiial preprocessing to have these locally! no point having
@@ -191,11 +223,40 @@ def fit_movespace_per_session(npx_dir: str = PATHS['npx_dir_local'],
             ceph_sess = Path(PATHS['ceph_dir']) / session.animal / session.name
             eye_cam_times = pd.read_csv(ceph_sess / 'daq_Eye_cam.csv')['rise_t'].values
 
+            # drop licks too close to baseline onset (applies to all blocks)
+            valid_t = (session.lick_times['tr_time'] > ops['rmv_time_around_bl']).values
+            session.lick_times = session.lick_times[valid_t].reset_index(drop=True)
+
             # create [area](fr) key for lick-aligned movement
             lick_aligned_sp  = get_lick_activity_by_area(session, areas, move_ops)
             lick_aligned_mv = get_lick_aligned_motion(session, eye_cam_times, move_ops)
-            lick_aligned_mv, lick_aligned_sp = _centre_signals(lick_aligned_mv, lick_aligned_sp)
-            move_dims = calculate_movement_dims_by_area(lick_aligned_mv, lick_aligned_sp, move_ops)
+
+            # event-axis masks per block; transition trials excluded from early/late
+            non_trans = (session.lick_times['tr_in_block'] > ops['ignore_first_trials_in_block']).values
+            block_masks = {
+                'all':   np.ones(len(session.lick_times), dtype=bool),
+                'early': (session.lick_times['block'] == 'early').values & non_trans,
+                'late':  (session.lick_times['block'] == 'late').values  & non_trans,
+            }
+            # skip session if 'all' under threshold; drop early/late if either under
+            min_licks = move_ops['min_licks']
+            if block_masks['all'].sum() < min_licks:
+                print(f'      skipping - {block_masks["all"].sum()} licks (< {min_licks})')
+                continue
+            if (block_masks['early'].sum() < min_licks or
+                block_masks['late'].sum() < min_licks):
+                print(f'      early/late under {min_licks} licks - "all" only')
+                block_masks = {'all': block_masks['all']}
+
+            sp_by_block, mv_by_block = dict(), dict()
+            for block, mask in block_masks.items():
+                sp_block = {area: {'cids': v['cids'], 'X': v['X'][mask], 't': v['t']}
+                            for area, v in lick_aligned_sp.items()}
+                mv_block = {sig: {'E': v['E'][mask], 't': v['t']}
+                            for sig, v in lick_aligned_mv.items()}
+                mv_by_block[block], sp_by_block[block] = _centre_signals(mv_block, sp_block)
+
+            move_dims = calculate_movement_dims_by_area(mv_by_block, sp_by_block, move_ops)
 
             # save
             save_path = session_dir / 'move_dims.pkl'

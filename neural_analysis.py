@@ -1,4 +1,4 @@
-import null_space.fit_move_potent_null
+import population_singleSession.fit_move_potent_null
 from config import PATHS, ANALYSIS_OPTIONS
 
 #%% get all event times and event-aligned neural responses
@@ -135,8 +135,11 @@ plot_tuning_curves(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 plot_gain_offset_distributions(npx_dir=PATHS['npx_dir_local'], save_dir=str(tc_plot_dir))
 
 #%% movement potent/null space extraction
-from null_space.fit_move_potent_null import fit_movespace_per_session
+from population_singleSession.fit_move_potent_null import fit_movespace_per_session
 fit_movespace_per_session()
+
+#%% single-session tf dim extraction
+
 
 #%%
 

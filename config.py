@@ -293,7 +293,8 @@ MOVEDIM_OPTIONS = dict(
     full_lick_period = (-2, 2), # full period to extract activity around licks
     lick_period = (-.5, 1),   # period to predict for movement potent
     prelick_period = (-1, 0), # period to capture premotor activity (pca on this period)
-
+    min_licks = 20,
+    min_neurons = 10,
 )
 #%%
 PLOT_OPTIONS = dict(
