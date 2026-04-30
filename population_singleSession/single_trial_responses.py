@@ -10,6 +10,7 @@ from population_singleSession.single_trial_plotting import visualize_responses
 
 EVENT_TYPES = ['bl', 'tf', 'ch', 'lick']
 PRE_BASELINE = 1.0   # s; pre-baseline window for full-trial trajectories
+PROJ_FILENAME = 'single_trial_proj.pkl'
 
 from pathlib import Path, PosixPath
 import numpy as np
@@ -234,10 +235,23 @@ def _add_full_trial_trajectories(proj: dict,
     return proj
 
 
+def _save_proj(proj: dict, session_dir: PosixPath|str):
+    """pickle proj dict to session_dir/PROJ_FILENAME"""
+    with open(Path(session_dir) / PROJ_FILENAME, 'wb') as f:
+        pickle.dump(proj, f)
+
+
+def load_proj(session_dir: PosixPath | str) -> dict:
+    """load pickled proj dict from session_dir"""
+    with open(Path(session_dir) / PROJ_FILENAME, 'rb') as f:
+        return pickle.load(f)
+
+
 def project_and_visualize(npx_dir: str = PATHS["npx_dir_local"],
                           areas: list[str] = AREA_NAMES,
-                          ops: dict = ANALYSIS_OPTIONS):
-    """load psths + full-trial activity, project onto dims, plot per session/area"""
+                          ops: dict = ANALYSIS_OPTIONS,
+                          overwrite: bool = True):
+    """load psths + full-trial activity, project onto dims, save and plot per session/area"""
     animal_sessions = get_session_dirs_by_animal(npx_dir=npx_dir)
 
     for animal in animal_sessions.keys():
@@ -245,17 +259,23 @@ def project_and_visualize(npx_dir: str = PATHS["npx_dir_local"],
         for session_dir in animal_sessions[animal]:
             print(f'    {session_dir}')
 
-            dim_sources = _load_dims(session_dir)
-            if all(len(d) == 0 for d in dim_sources.values()):
-                print('        skipping - no dims extracted')
-                continue
+            proj_path = session_dir / PROJ_FILENAME
+            if not overwrite and proj_path.exists():
+                proj = load_proj(session_dir)
+                session = Session.load(session_dir / 'session.pkl')
+            else:
+                dim_sources = _load_dims(session_dir)
+                if all(len(d) == 0 for d in dim_sources.values()):
+                    print('        skipping - no dims extracted')
+                    continue
 
-            session = Session.load(session_dir / 'session.pkl')
+                session = Session.load(session_dir / 'session.pkl')
 
-            proj = _load_psth_projections(session_dir / 'psths.h5',
-                                          EVENT_TYPES, dim_sources, session)
-            proj = _add_full_trial_trajectories(proj, session_dir, dim_sources,
-                                                session, ops)
+                proj = _load_psth_projections(session_dir / 'psths.h5',
+                                              EVENT_TYPES, dim_sources, session)
+                proj = _add_full_trial_trajectories(proj, session_dir, dim_sources,
+                                                    session, ops)
+                _save_proj(proj, session_dir)
 
             visualize_responses(proj, session.animal, session.name)
 
