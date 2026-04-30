@@ -135,9 +135,11 @@ from population_singleSession.fit_move_potent_null import fit_movespace_per_sess
 fit_movespace_per_session()
 
 #%% single-session tf dim extraction
+from population_singleSession.fit_tf_dims import fit_tf_dims_per_session
+fit_tf_dims_per_session()
 
+#%% Analyse single-trial trajectories
 
-#%%
 
 #%% coding dimensions extraction
 from config import CODING_DIM_OPS
