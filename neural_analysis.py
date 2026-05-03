@@ -140,71 +140,72 @@ fit_tf_dims_per_session()
 
 #%% Analyse single-trial trajectories
 
-
-#%% coding dimensions extraction
-from config import CODING_DIM_OPS
-from coding_dims.extract import (extract_tf_dimensions, extract_motor_dimensions,
-                                 extract_block_dimensions)
-from coding_dims.analysis import (analyse_coding_dimensions, analyse_block_dimensions,
-                                  calculate_tf_motor_alignment,
-                                  cross_dimension_cosines, cross_dimension_projections)
-from coding_dims.plotting import (plot_alignment, plot_block_significance,
-                                 plot_cross_projections, plot_cross_class_alignment)
-from utils.rois import AREA_GROUPS
-
-# areas = [None] + list(AREA_GROUPS.keys())
-areas = list(AREA_GROUPS.keys())
-unit_filters = [None, ['tf'], ['tf', 'lick_prep']]
-
-for area in areas:
-    for uf in unit_filters:
-        print(f'\n=== extraction: area: {area}, filter: {uf} ===')
-        extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
-                              cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                              n_jobs=4)
-        extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
-                                 cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 n_jobs=4)
-        extract_block_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
-                                 cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                 n_jobs=4)
-
-#%% coding dimension stats (tf/motor include plots via analyse_coding_dimensions)
-for area in areas:
-    for uf in unit_filters:
-        print(f'\n=== stats: area: {area}, filter: {uf} ===')
-        analyse_coding_dimensions('tf', cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
-                                  dim_name='dprime_cd')
-        analyse_coding_dimensions('motor', cd_ops=CODING_DIM_OPS, area=area,
-                                  unit_filter=uf,
-                                  dim_name='dprime_cd')
-        analyse_block_dimensions(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-
-#%% coding dimensions alignment
-for area in areas:
-    for uf in unit_filters:
-        print(f'\n=== comparisons: area: {area}, filter: {uf} ===')
-        calculate_tf_motor_alignment(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-        cross_dimension_cosines(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-        cross_dimension_projections(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
-
-#%% coding dim plots
-
-# block significance plots
-for area in areas:
-    for uf in unit_filters:
-        plot_block_significance(area=area, unit_filter=uf, dim_name='dprime_cd')
-
-# projections onto all dimensions
-for area in areas:
-    for uf in unit_filters:
-        plot_cross_projections(area=area, unit_filter=uf, dim_name='dprime_cd')
-
-# cross-class alignment scatters
-for area in areas:
-    for uf in unit_filters:
-        plot_cross_class_alignment(area=area, unit_filter=uf, dim_name='dprime_cd')
-        plot_alignment(area=area, unit_filter=uf, dim_name='dprime_cd')
+#
+#
+# #%% coding dimensions extraction
+# from config import CODING_DIM_OPS
+# from coding_dims.extract import (extract_tf_dimensions, extract_motor_dimensions,
+#                                  extract_block_dimensions)
+# from coding_dims.analysis import (analyse_coding_dimensions, analyse_block_dimensions,
+#                                   calculate_tf_motor_alignment,
+#                                   cross_dimension_cosines, cross_dimension_projections)
+# from coding_dims.plotting import (plot_alignment, plot_block_significance,
+#                                  plot_cross_projections, plot_cross_class_alignment)
+# from utils.rois import AREA_GROUPS
+#
+# # areas = [None] + list(AREA_GROUPS.keys())
+# areas = list(AREA_GROUPS.keys())
+# unit_filters = [None, ['tf'], ['tf', 'lick_prep']]
+#
+# for area in areas:
+#     for uf in unit_filters:
+#         print(f'\n=== extraction: area: {area}, filter: {uf} ===')
+#         extract_tf_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
+#                               cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
+#                               n_jobs=4)
+#         extract_motor_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
+#                                  cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
+#                                  n_jobs=4)
+#         extract_block_dimensions(npx_dir=PATHS['npx_dir_local'], ops=ANALYSIS_OPTIONS,
+#                                  cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
+#                                  n_jobs=4)
+#
+# #%% coding dimension stats (tf/motor include plots via analyse_coding_dimensions)
+# for area in areas:
+#     for uf in unit_filters:
+#         print(f'\n=== stats: area: {area}, filter: {uf} ===')
+#         analyse_coding_dimensions('tf', cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf,
+#                                   dim_name='dprime_cd')
+#         analyse_coding_dimensions('motor', cd_ops=CODING_DIM_OPS, area=area,
+#                                   unit_filter=uf,
+#                                   dim_name='dprime_cd')
+#         analyse_block_dimensions(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+#
+# #%% coding dimensions alignment
+# for area in areas:
+#     for uf in unit_filters:
+#         print(f'\n=== comparisons: area: {area}, filter: {uf} ===')
+#         calculate_tf_motor_alignment(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+#         cross_dimension_cosines(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+#         cross_dimension_projections(cd_ops=CODING_DIM_OPS, area=area, unit_filter=uf)
+#
+# #%% coding dim plots
+#
+# # block significance plots
+# for area in areas:
+#     for uf in unit_filters:
+#         plot_block_significance(area=area, unit_filter=uf, dim_name='dprime_cd')
+#
+# # projections onto all dimensions
+# for area in areas:
+#     for uf in unit_filters:
+#         plot_cross_projections(area=area, unit_filter=uf, dim_name='dprime_cd')
+#
+# # cross-class alignment scatters
+# for area in areas:
+#     for uf in unit_filters:
+#         plot_cross_class_alignment(area=area, unit_filter=uf, dim_name='dprime_cd')
+#         plot_alignment(area=area, unit_filter=uf, dim_name='dprime_cd')
 
 #%%
 """

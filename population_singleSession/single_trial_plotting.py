@@ -12,8 +12,8 @@ import seaborn as sns
 sns.set_style('ticks')
 
 
-SMOOTH_S = {'tf': 0.100, 'lick': 0.250, 'bl': 0.500, 'ch': 0.250, 'bl_traj': 0.500}
-N_VAL_BINS = 20
+SMOOTH_S = {'tf': 0.100, 'lick': 0.250, 'bl': 0.250, 'ch': 0.250, 'bl_traj': 0.250}
+N_VAL_BINS = 30
 DIMS_TO_PLOT = [('mv', 'pot', 0), ('mv', 'pot', 1),
                 ('mv', 'null', 0), ('mv', 'null', 1),
                 ('tf', 'pot', 0),
@@ -34,7 +34,8 @@ def _smooth(traces, t_ax, win_s):
 
 def _gather_traces(proj, area, block, axis_key, dim_idx, event, cond_keys):
     """concat single-trial traces across cond_keys, returning (n_trials, nT) for one dim"""
-    ev_dict = proj['data'][area][block][axis_key].get(event, {})
+    block_dict = proj['data'].get(area, {}).get(block, {})
+    ev_dict = block_dict.get(axis_key, {}).get(event, {})
     parts = []
     for cond in cond_keys:
         arr = ev_dict.get(cond)

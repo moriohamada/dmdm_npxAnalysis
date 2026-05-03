@@ -16,13 +16,21 @@ AREA_NAMES = list(AREA_GROUPS.keys())
 from utils.filing import get_session_dirs_by_animal, load_fr_matrix
 from data.session import Session
 from data.stimulus import build_stim_vector
+from data.responses import compute_psth
 
 import numpy as np
 import pandas as pd
 import pickle
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LassoCV
+from sklearn.model_selection import GroupKFold
 from scipy.linalg import null_space
+
+
+PULSE_PSTH_WIN  = (0.0, 0.5)   # s; tf-pulse window for null-space rotation
+N_NULL          = 2            # null-space dims kept after rotation
+LASSO_CV_FOLDS  = 5
+LASSO_N_ALPHAS  = 20
 
 
 def _baseline_window(row, ops):
@@ -132,31 +140,79 @@ def _lag_concat(X_per_tr: list, tf_per_tr: list, k: int):
     """
     Within each trial, drop first k samples of neural and last k samples of TF, then
     concatenate across trials. TF[t-k] is paired with neural[t] (TF leads neural).
+    Also returns groups: trial index per concatenated sample (for grouped CV).
     """
-    Xs, ys = [], []
-    for X_tr, tf_tr in zip(X_per_tr, tf_per_tr):
+    Xs, ys, groups = [], [], []
+    for tr_idx, (X_tr, tf_tr) in enumerate(zip(X_per_tr, tf_per_tr)):
         n = len(tf_tr)
         if n <= k:
             continue
         Xs.append(X_tr[k:])
         ys.append(tf_tr[:n-k])
+        groups.append(np.full(n - k, tr_idx))
     if not Xs:
-        return None, None
-    return np.concatenate(Xs, axis=0), np.concatenate(ys)
+        return None, None, None
+    return (np.concatenate(Xs, axis=0),
+            np.concatenate(ys),
+            np.concatenate(groups))
+
+
+def _tf_pulse_means_by_area_block(session: Session,
+                                  areas: list[str],
+                                  ops: dict) -> dict:
+    """mean tf-pulse-aligned activity per (area, block), pos and neg means
+    concatenated along time. window = PULSE_PSTH_WIN.
+    returns: {area: {block: (nN, 2 * nT_psth)}}"""
+    pulses = session.tf_pulses
+    fr = session.fr_matrix
+    t_ax = fr.columns.values
+
+    non_trans = (pulses['tr_in_block'] > ops['ignore_first_trials_in_block']).values
+    t_to_event = np.fmin(pulses['time_to_lick'].values,
+                         pulses['time_to_abort'].values)
+    valid = ((pulses['tr_time'].values > ops['rmv_time_around_bl']) &
+             (t_to_event > ops['rmv_time_around_move']))
+    pos = (pulses['tf'].values > 0)
+    block_arr = pulses['block'].values
+
+    block_masks = {
+        'all':   non_trans & valid,
+        'early': (block_arr == 'early') & non_trans & valid,
+        'late':  (block_arr == 'late')  & non_trans & valid,
+    }
+
+    out = {}
+    for area in areas:
+        in_area = session.area_mask(AREA_GROUPS[area])
+        if not any(in_area):
+            continue
+        X = fr.values[in_area, :]
+        out[area] = {}
+        for block, mask in block_masks.items():
+            pos_t = pulses.loc[mask & pos,  'time'].values
+            neg_t = pulses.loc[mask & ~pos, 'time'].values
+            if len(pos_t) == 0 or len(neg_t) == 0:
+                continue
+            pos_psth, _ = compute_psth(X, t_ax, pos_t, resp_win=PULSE_PSTH_WIN)
+            neg_psth, _ = compute_psth(X, t_ax, neg_t, resp_win=PULSE_PSTH_WIN)
+            out[area][block] = np.concatenate(
+                [pos_psth.mean(axis=0), neg_psth.mean(axis=0)], axis=1)
+    return out
 
 
 def calculate_tf_dims_by_area(tf_by_block: dict,
                               sp_by_block: dict,
                               bin_size: float,
+                              pulse_means: dict,
                               tf_ops: dict = TFDIM_OPTIONS):
     """
-    regress log2(TF) versus baseline-period neural activity by area, trying delays from
-    0 to max_lag_s in FR-bin steps with TF leading neural; pick the delay with best R2
-    on 'all' (per area), reuse for early/late. Neural PCA fit on 'all'; regression,
-    null space and null rotation done per block at the chosen delay.
+    fit TF-coding axis per area/block via LassoCV directly on lagged centred neural
+    activity → log2(TF). lag picked on 'all' (per area), reused for early/late.
+    null space rotated via PCA on the mean tf-pulse-aligned PSTH (pos and neg pooled,
+    PULSE_PSTH_WIN window) — top N_NULL dims kept.
     Returns: tf_dims[area], dict with 'cids', 'delay' (s), and per-block:
         pot:  1 x nN
-        null: (n_pcs - 1) x nN
+        null: N_NULL x nN
     """
     blocks = list(tf_by_block.keys())
     delay_bins = np.arange(int(round(tf_ops['max_lag_s'] / bin_size)) + 1)
@@ -168,52 +224,61 @@ def calculate_tf_dims_by_area(tf_by_block: dict,
         n_neurons = X_list_all[0].shape[0] if X_list_all else 0
         if n_neurons < tf_ops['min_neurons']:
             continue
+        if area not in pulse_means:
+            continue
         tf_dims[area] = {'cids': sp_by_block['all'][area]['cids']}
 
-        # neural PCA fit on 'all' (concatenated across trials, samples on rows)
-        X_concat_all = np.concatenate([x.T for x in X_list_all], axis=0)
-        n_pcs = min(tf_ops['n_neural_pcs'], n_neurons, X_concat_all.shape[0])
-        sp_pca = PCA(n_components=n_pcs)
-        sp_pca.fit(X_concat_all)
-
-        # per-trial PC scores per block; per-trial centred TF per block
-        Xs = {b: [sp_pca.transform(x.T) for x in sp_by_block[b][area]['X_centred']]
+        # per-trial neural samples (samples on rows, float64 to avoid LassoCV
+        # Gram-matrix precision errors); per-trial centred TF
+        Xs = {b: [x.T.astype(np.float64) for x in sp_by_block[b][area]['X_centred']]
               for b in blocks}
-        ys = {b: tf_by_block[b]['tf_centred'] for b in blocks}
+        ys = {b: [y.astype(np.float64) for y in tf_by_block[b]['tf_centred']]
+              for b in blocks}
 
-        # pick delay on 'all' by max R2 (TF leads neural)
+        # pick delay on 'all' by max in-sample R2 (TF leads neural).
+        # CV folds hold out whole trials (samples within a trial are temporally
+        # correlated, so random KFold would leak across folds).
         r2s = []
         for k in delay_bins:
-            Xc, yc = _lag_concat(Xs['all'], ys['all'], k)
+            Xc, yc, gc = _lag_concat(Xs['all'], ys['all'], k)
             if Xc is None:
                 r2s.append(-np.inf)
                 continue
-            mdl = LinearRegression(fit_intercept=True).fit(Xc, yc)
+            cv = list(GroupKFold(n_splits=min(LASSO_CV_FOLDS, len(np.unique(gc))))
+                      .split(Xc, yc, groups=gc))
+            mdl = LassoCV(cv=cv, alphas=LASSO_N_ALPHAS).fit(Xc, yc)
             r2s.append(mdl.score(Xc, yc))
         best_k = int(delay_bins[np.argmax(r2s)])
         tf_dims[area]['delay'] = best_k * bin_size
 
         for block in blocks:
-            Xc, yc = _lag_concat(Xs[block], ys[block], best_k)
+            Xc, yc, gc = _lag_concat(Xs[block], ys[block], best_k)
             if Xc is None or len(Xc) < 2:
                 continue
 
-            # linear regression to get w_pot (1 x n_pcs in PC space)
-            pot_mdl = LinearRegression(fit_intercept=True).fit(Xc, yc)
-            pot_coef = pot_mdl.coef_.reshape(1, -1)
+            # lasso regression in neural space → w_pot (1 x nN), trial-grouped CV
+            cv = list(GroupKFold(n_splits=min(LASSO_CV_FOLDS, len(np.unique(gc))))
+                      .split(Xc, yc, groups=gc))
+            pot_mdl = LassoCV(cv=cv, alphas=LASSO_N_ALPHAS).fit(Xc, yc)
+            w_pot = pot_mdl.coef_.reshape(1, -1)
+            if not np.any(w_pot):
+                continue
 
-            # w_null
-            null_pc = null_space(pot_coef)
+            # full null space basis (nN x nN-1)
+            null_basis = null_space(w_pot)
 
-            # rotate w_null to capture baseline-period variance
-            X_block_concat = np.concatenate(Xs[block], axis=0)
-            rot_null_pc = PCA().fit(X_block_concat @ null_pc)
+            # rotate null basis to capture variance of mean tf-pulse psth
+            mean_psth = pulse_means[area].get(block)
+            if mean_psth is None:
+                continue
+            null_coords = null_basis.T @ mean_psth          # (nN-1, 2*nT_psth)
+            n_keep = min(N_NULL, null_coords.shape[0])
+            rot = PCA(n_components=n_keep).fit(null_coords.T)
 
-            # full weighting from neurons to TF-coding/TF-null spaces
-            tf_dims[area][block] = dict()
-            tf_dims[area][block]['pot']  = pot_coef @ sp_pca.components_
-            tf_dims[area][block]['null'] = (rot_null_pc.components_ @ null_pc.T
-                                            @ sp_pca.components_)
+            tf_dims[area][block] = {
+                'pot':  w_pot,
+                'null': rot.components_ @ null_basis.T,     # (n_keep, nN)
+            }
 
     return tf_dims
 
@@ -281,8 +346,9 @@ def fit_tf_dims_per_session(npx_dir: str = PATHS['npx_dir_local'],
             tf_by_block, sp_by_block = _centre_signals(tf_by_block, sp_by_block)
 
             bin_size = float(np.median(np.diff(session.fr_matrix.columns.values)))
+            pulse_means = _tf_pulse_means_by_area_block(session, areas, ops)
             tf_dims = calculate_tf_dims_by_area(tf_by_block, sp_by_block, bin_size,
-                                                tf_ops)
+                                                pulse_means, tf_ops)
 
             # save
             save_path = session_dir / 'tf_dims.pkl'

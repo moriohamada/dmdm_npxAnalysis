@@ -54,6 +54,21 @@ def _all_blocks(dim_sources, area):
     return out
 
 
+def _check_cids(dim_sources, area, expected_cids):
+    """assert each dim source's saved cids for `area` match the current session's
+    in-area cluster_ids; catches order/identity drift between fit and projection"""
+    for prefix, dims in dim_sources.items():
+        if area not in dims:
+            continue
+        cids = dims[area].get('cids')
+        if cids is None:
+            continue
+        assert np.array_equal(np.asarray(cids), expected_cids), (
+            f'cids mismatch for {prefix} {area}: dims have {len(cids)} units, '
+            f'session has {len(expected_cids)} in-area units'
+        )
+
+
 def _project_psths(h5_file, ev_types, w, in_area):
     """project all PSTH conditions through w (n_dim, nN_area)"""
     out = {}
@@ -89,6 +104,8 @@ def _load_psth_projections(psth_path: PosixPath|str,
 
         for area in _all_areas(dim_sources):
             in_area = session.area_mask(AREA_GROUPS[area])
+            _check_cids(dim_sources, area,
+                        session.unit_info.cluster_id.values[in_area])
             proj['data'][area] = {}
             for block in _all_blocks(dim_sources, area):
                 proj['data'][area][block] = {}
@@ -170,6 +187,8 @@ def _add_full_trial_trajectories(proj: dict,
 
     for area in _all_areas(dim_sources):
         in_area = session.area_mask(AREA_GROUPS[area])
+        _check_cids(dim_sources, area,
+                    session.unit_info.cluster_id.values[in_area])
         fr_area = fr_ds.values[in_area, :]
         proj['info'].setdefault(area, {})
 

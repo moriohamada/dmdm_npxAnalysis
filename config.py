@@ -299,7 +299,7 @@ MOVEDIM_OPTIONS = dict(
 #%%
 TFDIM_OPTIONS = dict(
     min_baseline_dur = 1.0,   # s; trials with shorter baseline period excluded
-    max_lag_s        = 1.0,   # s; max delay (TF leads neural) for lag sweep
+    max_lag_s        = .5,   # s; max delay (TF leads neural) for lag sweep
     min_trials       = 30,     # min valid trials per block
     min_neurons      = 10,
     n_neural_pcs     = 6,
