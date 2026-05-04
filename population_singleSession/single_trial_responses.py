@@ -93,8 +93,9 @@ def _load_psth_projections(psth_path: PosixPath|str,
                            dim_sources: dict,
                            session: Session) -> dict:
     """
-    project event-aligned psths onto each dim source's axes (per area / block).
+    project event-aligned psths onto each dim source's 'all' axes (per area).
     axis names are prefixed with the source name (e.g. 'mv_pot', 'tf_null').
+    psths are condition-keyed so the block split lives there, not in the weights.
     """
     proj = {'t_ax': {}, 'data': {}}
     with h5py.File(str(psth_path), 'r') as f:
@@ -106,16 +107,14 @@ def _load_psth_projections(psth_path: PosixPath|str,
             in_area = session.area_mask(AREA_GROUPS[area])
             _check_cids(dim_sources, area,
                         session.unit_info.cluster_id.values[in_area])
-            proj['data'][area] = {}
-            for block in _all_blocks(dim_sources, area):
-                proj['data'][area][block] = {}
-                for prefix, dims in dim_sources.items():
-                    if area not in dims or block not in dims[area]:
-                        continue
-                    for axis, w in dims[area][block].items():
-                        proj['data'][area][block][f'{prefix}_{axis}'] = (
-                            _project_psths(f, ev_types, w, in_area)
-                        )
+            proj['data'][area] = {'all': {}}
+            for prefix, dims in dim_sources.items():
+                if area not in dims or 'all' not in dims[area]:
+                    continue
+                for axis, w in dims[area]['all'].items():
+                    proj['data'][area]['all'][f'{prefix}_{axis}'] = (
+                        _project_psths(f, ev_types, w, in_area)
+                    )
     return proj
 
 
@@ -192,7 +191,17 @@ def _add_full_trial_trajectories(proj: dict,
         fr_area = fr_ds.values[in_area, :]
         proj['info'].setdefault(area, {})
 
-        for block in _all_blocks(dim_sources, area):
+        # weights for this area: always 'all' block, never block-specific
+        area_axes = {}
+        for prefix, dims in dim_sources.items():
+            if area not in dims or 'all' not in dims[area]:
+                continue
+            for axis, w in dims[area]['all'].items():
+                area_axes[f'{prefix}_{axis}'] = w
+        if not area_axes:
+            continue
+
+        for block in ('all', 'early', 'late'):
             trial_slices, trial_info = [], []
             for trial_idx, row in trials.iterrows():
                 if block != 'all' and (not non_trans[trial_idx]
@@ -234,23 +243,19 @@ def _add_full_trial_trajectories(proj: dict,
                     [trial_info[i] for i in idxs])
 
             proj['data'].setdefault(area, {}).setdefault(block, {})
-            for prefix, dims in dim_sources.items():
-                if area not in dims or block not in dims[area]:
-                    continue
-                for axis, w in dims[area][block].items():
-                    n_dim = w.shape[0]
-                    axis_key = f'{prefix}_{axis}'
-                    proj['data'][area][block].setdefault(axis_key, {})
-                    proj['data'][area][block][axis_key]['bl_traj'] = {}
-                    for outcome, idxs in idxs_by_outcome.items():
-                        traj = np.full((len(idxs), n_dim, nT), np.nan)
-                        for i, slice_idx in enumerate(idxs):
-                            _, start_idx, neural = trial_slices[slice_idx]
-                            proj_traj = w @ neural
-                            end_idx = min(nT, start_idx + proj_traj.shape[1])
-                            traj[i, :, start_idx:end_idx] = (
-                                proj_traj[:, :end_idx - start_idx])
-                        proj['data'][area][block][axis_key]['bl_traj'][outcome] = traj
+            for axis_key, w in area_axes.items():
+                n_dim = w.shape[0]
+                proj['data'][area][block].setdefault(axis_key, {})
+                proj['data'][area][block][axis_key]['bl_traj'] = {}
+                for outcome, idxs in idxs_by_outcome.items():
+                    traj = np.full((len(idxs), n_dim, nT), np.nan)
+                    for i, slice_idx in enumerate(idxs):
+                        _, start_idx, neural = trial_slices[slice_idx]
+                        proj_traj = w @ neural
+                        end_idx = min(nT, start_idx + proj_traj.shape[1])
+                        traj[i, :, start_idx:end_idx] = (
+                            proj_traj[:, :end_idx - start_idx])
+                    proj['data'][area][block][axis_key]['bl_traj'][outcome] = traj
     return proj
 
 

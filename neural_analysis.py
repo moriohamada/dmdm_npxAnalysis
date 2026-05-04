@@ -138,6 +138,10 @@ fit_movespace_per_session()
 from population_singleSession.fit_tf_dims import fit_tf_dims_per_session
 fit_tf_dims_per_session()
 
+#%%
+from population_singleSession.single_trial_responses import project_and_visualize
+project_and_visualize()
+
 #%% Analyse single-trial trajectories
 
 #
