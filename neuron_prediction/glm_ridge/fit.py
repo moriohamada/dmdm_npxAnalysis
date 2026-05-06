@@ -12,7 +12,7 @@ from config import PATHS, ANALYSIS_OPTIONS, GLM_OPTIONS
 from data.session import Session
 from utils.filing import load_fr_matrix
 from neuron_prediction.data import (
-    load_glm_inputs, get_trial_fold_indices, neuron_seed,
+    load_glm_inputs, get_trial_fold_indices,
     normalise_design_matrix, analysis_trials, lick_times,
 )
 from neuron_prediction.evaluate import pearson_r, reduce_design_matrix
@@ -580,8 +580,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
     n_folds = ops['n_folds']
     lambdas = ops['ridge_lambdas']
 
-    fit_kw = {k: ops[k] for k in ('max_iter', 'tol') if k in ops}
-    coarse_kw = {**fit_kw, 'max_iter': ops.get('cv_max_iter', 200),
+    fit_params = {k: ops[k] for k in ('max_iter', 'tol') if k in ops}
+    coarse_params = {**fit_params, 'max_iter': ops.get('cv_max_iter', 200),
                  'tol': ops.get('cv_tol', 1e-4)}
 
     # mask to valid bins only
@@ -622,7 +622,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
                 continue
 
             w, b = _fit_poisson_glm(X_train, y_train,
-                                    lambda_l2=lam, **coarse_kw)
+                                    lambda_l2=lam, **coarse_params)
             y_pred = _predict_glm(X_test, w, b)
             fold_r[k] = pearson_r(y_test, y_pred)
             fold_wb[k] = (w, b)
@@ -681,7 +681,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
             X_tr_n, X_te_n, _, _ = normalise_design_matrix(
                 X_train_red, X_test_red, col_map_red)
             w_red, b_red = _fit_poisson_glm(
-                X_tr_n, y_train, lambda_l2=best_lambda, **coarse_kw)
+                X_tr_n, y_train, lambda_l2=best_lambda, **coarse_params)
             y_les = _predict_glm(X_te_n, w_red, b_red)
             lesioned_r[gname][k] = pearson_r(y_test[win], y_les[win])
             y_red_cv[gname][test_T_idx] = y_les
@@ -724,7 +724,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
     w_final, b_final = _fit_poisson_glm(X_all, y_v,
-                                         lambda_l2=best_lambda, **fit_kw)
+                                         lambda_l2=best_lambda, **fit_params)
 
     #%% assemble results
     result = {
@@ -751,7 +751,6 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
 
     fold_ids = get_trial_fold_indices(
         sess.trials, t_ax, ops['n_folds'],
-        seed=neuron_seed(str(sess_dir), neuron_idx),
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
     print(f'Fitting neuron {neuron_idx} '

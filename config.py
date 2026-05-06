@@ -210,6 +210,7 @@ HYBRID_OPTIONS = dict(
 
     # CV
     n_outer_folds = 10,
+    n_inner_folds = 3,
 
     # lesion groups (for skip connection group lasso)
     lesion_groups = GLM_OPTIONS['lesion_groups'],

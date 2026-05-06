@@ -8,7 +8,7 @@ from config import HYBRID_OPTIONS, ANALYSIS_OPTIONS, GLM_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
     load_glm_inputs, get_trial_fold_indices,
-    neuron_seed, normalise_design_matrix,
+    normalise_design_matrix,
 )
 from neuron_prediction.evaluate import pearson_r
 from neuron_prediction.hybrid.model import (
@@ -246,7 +246,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids, trials_df, t_ax,
 
         # inner CV for lambda
         inner_folds = get_trial_fold_indices(
-            trials_df, t_ax, 3, seed=k,
+            trials_df, t_ax, ops['n_inner_folds'],
             ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
         inner_folds_train = inner_folds[valid][train_mask]
 
@@ -357,7 +357,6 @@ def fit_neuron_from_disk(sess_dir, neuron_idx, ops=HYBRID_OPTIONS):
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
     fold_ids = get_trial_fold_indices(
         sess.trials, t_ax, ops['n_outer_folds'],
-        seed=neuron_seed(sess_dir, neuron_idx),
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
 
     event_spec = build_event_spec(

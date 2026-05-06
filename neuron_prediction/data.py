@@ -1,5 +1,4 @@
 """shared data loading and fold assignment for neuron prediction models"""
-import hashlib
 import numpy as np
 import pandas as pd
 import pickle
@@ -79,30 +78,28 @@ def normalise_design_matrix(X_train, X_test, col_map):
     return (X_train - mu) / sd, (X_test - mu) / sd, mu, sd
 
 
-def get_fold_indices(n_samples, n_folds, seed):
-    """deterministic fold assignment for cross-validation
-
-    uses a per-neuron seed so both GLM and network get identical splits
-    """
-    rng = np.random.RandomState(seed)
+def get_fold_indices(n_samples, n_folds):
+    """random fold assignment for cross-validation, fresh splits each call"""
+    rng = np.random.RandomState()
     fold_ids = np.tile(np.arange(n_folds), n_samples // n_folds + 1)[:n_samples]
     rng.shuffle(fold_ids)
     return fold_ids
 
 
-def get_trial_fold_indices(trials_df, t_ax, n_folds, seed,
+def get_trial_fold_indices(trials_df, t_ax, n_folds,
                            ignore_first_n=0,
-                           exclude_outcomes=('Ref',)):
+                           exclude_outcomes=('Ref',),
+                           max_trial_dur=None):
     """assign CV folds at trial level, map back to time bins
 
     all bins within a trial share the same fold. bins outside valid
     trials get fold_id = -1. skips transition trials (tr_in_block
     <= ignore_first_n) and trials whose trialoutcome is in
-    exclude_outcomes (Ref by default).
+    exclude_outcomes (Ref by default). fresh random splits each call.
 
     returns (T,) int array of fold IDs
     """
-    rng = np.random.RandomState(seed)
+    rng = np.random.RandomState()
     excluded = set(exclude_outcomes or ())
 
     # collect valid trial boundaries
@@ -115,6 +112,8 @@ def get_trial_fold_indices(trials_df, t_ax, n_folds, seed,
         bl_on = row['Baseline_ON_rise']
         tr_end = np.nanmax([row['Baseline_ON_fall'],
                             row.get('Change_ON_fall', np.nan)])
+        if max_trial_dur is not None:
+            tr_end = min(tr_end, bl_on + max_trial_dur)
         if np.isnan(bl_on) or np.isnan(tr_end):
             continue
         trial_bounds.append((bl_on, tr_end))
@@ -135,15 +134,6 @@ def get_trial_fold_indices(trials_df, t_ax, n_folds, seed,
         fold_ids[mask] = trial_folds[i]
 
     return fold_ids
-
-
-def neuron_seed(sess_dir, neuron_idx):
-    """reproducible seed from session path + neuron index
-
-    uses hashlib (not hash()) so the seed is stable across python processes
-    """
-    key = f'{sess_dir}_{neuron_idx}'.encode()
-    return int(hashlib.sha256(key).hexdigest(), 16) % (2**31)
 
 
 def select_neurons(sess_dir, min_r=0.2, require_tf=False):

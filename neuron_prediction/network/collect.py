@@ -7,7 +7,7 @@ from pathlib import Path
 from config import PATHS, NETWORK_OPTIONS, ANALYSIS_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
-    load_glm_inputs, get_trial_fold_indices, neuron_seed,
+    load_glm_inputs, get_trial_fold_indices,
     normalise_design_matrix,
 )
 from neuron_prediction.evaluate import pearson_r
@@ -42,7 +42,6 @@ def lesion_hidden_units(sess_dir, neuron_idx, ops=NETWORK_OPTIONS):
     sess = Session.load(str(Path(sess_dir) / 'session.pkl'))
     fold_ids = get_trial_fold_indices(
         sess.trials, t_ax, ops['n_outer_folds'],
-        seed=neuron_seed(sess_dir, neuron_idx),
         ignore_first_n=ANALYSIS_OPTIONS['ignore_first_trials_in_block'])
     valid = fold_ids >= 0
 

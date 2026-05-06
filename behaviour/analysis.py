@@ -218,15 +218,18 @@ def calculate_elta(lts, config=ANALYSIS_OPTIONS):
     elta = {}
     for cond, subj_data in lts.items():
         subj_means = []
+        subjs = []
         for subj, trials in subj_data.items():
             if len(trials) > 0:
                 subj_means.append(np.nanmean(trials, axis=0))
+                subjs.append(subj)
 
         subj_means = np.stack(subj_means)
         elta[cond] = {
             'mean': np.nanmean(subj_means, axis=0),
             'sem': np.nanstd(subj_means, axis=0) / np.sqrt(len(subj_means)),
             'subj_means': subj_means,
+            'subjs': subjs,
         }
     return elta
 

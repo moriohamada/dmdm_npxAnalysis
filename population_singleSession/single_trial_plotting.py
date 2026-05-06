@@ -233,10 +233,13 @@ def _fig_pooled(proj, area, dim_label, axis_key, dim_idx, event, t_ax):
         pooled_keys = spec['early']['all'] + spec['late']['all']
         per_block   = {block: spec[block]['all'] for block in ('early', 'late')}
 
+    # bl_traj is stored under per-block keys; bl/ch live under 'all' with block in cond names
+    block_lookup = lambda b: b if event == 'bl_traj' else 'all'
     pooled = _smooth(_gather_traces(proj, area, 'all', axis_key, dim_idx,
                                     event, pooled_keys), t_ax, win_s)
-    per_bc = {block: _smooth(_gather_traces(proj, area, block, axis_key, dim_idx,
-                                            event, per_block[block]), t_ax, win_s)
+    per_bc = {block: _smooth(_gather_traces(proj, area, block_lookup(block), axis_key,
+                                            dim_idx, event, per_block[block]),
+                             t_ax, win_s)
               for block in ('early', 'late')}
     edges = _val_edges([pooled] + list(per_bc.values()))
 

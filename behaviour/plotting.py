@@ -33,10 +33,14 @@ def plot_psychometric(psycho_or_chrono, config=ANALYSIS_OPTIONS):
 
     if np.nanmax(psycho_or_chrono.flatten()) > 1:
         yax = 'RT (s)'
+        delta_yax = 'delta RT (s)'
     else:
         yax = 'P(Hit)'
+        delta_yax = 'delta P(Hit)'
 
-    fig = go.Figure()
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.4], vertical_spacing=0.08)
+
     for block_id, block in enumerate(['early', 'late']):
         for probe_id, probe in enumerate([False, True]):
             scale = 0.65 if probe else 1.0
@@ -51,20 +55,43 @@ def plot_psychometric(psycho_or_chrono, config=ANALYSIS_OPTIONS):
             fig.add_trace(go.Scatter(
                 x=change_tfs, y=mean,
                 mode='lines+markers', name=label,
-                line=dict(color=colour, dash=dash)))
+                line=dict(color=colour, dash=dash)), row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=list(change_tfs) + list(change_tfs)[::-1],
                 y=list(mean + sem) + list(mean - sem)[::-1],
                 fill='toself', fillcolor=_block_rgba(block, 0.2, scale),
-                line=dict(width=0), mode='none', showlegend=False))
+                line=dict(width=0), mode='none', showlegend=False), row=1, col=1)
 
-    fig.update_layout(xaxis_title='Change TF', yaxis_title=yax,
-                      template='plotly_white')
+    # early-time changes: early-block non-probe (expected) minus late-block probe (unexpected)
+    delta = psycho_or_chrono[:, :, 0, 0] - psycho_or_chrono[:, :, 1, 1]
+    n_valid = np.sum(~np.isnan(delta), axis=0)
+    mean_d = np.nanmean(delta, axis=0)
+    sem_d = np.nanstd(delta, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+    colour = _block_colour('early')
+
+    fig.add_trace(go.Scatter(
+        x=change_tfs, y=mean_d,
+        mode='lines+markers',
+        name='Early time: early-block minus late-block probe',
+        line=dict(color=colour)), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=list(change_tfs) + list(change_tfs)[::-1],
+        y=list(mean_d + sem_d) + list(mean_d - sem_d)[::-1],
+        fill='toself', fillcolor=_block_rgba('early', 0.2),
+        line=dict(width=0), mode='none', showlegend=False), row=2, col=1)
+
+    fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                  row=2, col=1)
+
+    fig.update_xaxes(title_text='Change TF', row=2, col=1)
+    fig.update_yaxes(title_text=yax, row=1, col=1)
+    fig.update_yaxes(title_text=delta_yax, row=2, col=1)
+    fig.update_layout(template='plotly_white')
     return fig
 
 
 def plot_elta(elta, config=ANALYSIS_OPTIONS):
-    """average early-lick-triggered TF for each condition"""
+    """average early-lick-triggered TF for each condition, with expectation delta"""
     n_samples = config.get('n_pre_lick_samples', 40)
     sample_rate = config.get('tf_sample_rate', 20)
     t = np.linspace(-n_samples / sample_rate, 0, n_samples)
@@ -78,7 +105,9 @@ def plot_elta(elta, config=ANALYSIS_OPTIONS):
                            'label': 'Late block, late lick'},
     }
 
-    fig = go.Figure()
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.4], vertical_spacing=0.08)
+
     for cond, spec in line_specs.items():
         if cond not in elta:
             continue
@@ -90,16 +119,47 @@ def plot_elta(elta, config=ANALYSIS_OPTIONS):
 
         fig.add_trace(go.Scatter(
             x=t, y=mean, mode='lines', name=spec['label'],
-            line=dict(color=colour, dash=spec['dash'], width=2)))
+            line=dict(color=colour, dash=spec['dash'], width=2)), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=list(t) + list(t)[::-1],
             y=list(mean + sem) + list(mean - sem)[::-1],
             fill='toself', fillcolor=_block_rgba(spec['block'], 0.2, scale),
-            line=dict(width=0), mode='none', showlegend=False))
+            line=dict(width=0), mode='none', showlegend=False), row=1, col=1)
 
-    fig.update_layout(xaxis_title='Time relative to lick (s)',
-                      yaxis_title='Baseline stimulus (octaves)',
-                      template='plotly_white')
+    # delta: same time window (early-trial licks), early block minus late block
+    if 'earlyBlock_early' in elta and 'lateBlock_early' in elta:
+        e, l = elta['earlyBlock_early'], elta['lateBlock_early']
+        e_subjs = e.get('subjs')
+        l_subjs = l.get('subjs')
+        if e_subjs is not None and l_subjs is not None:
+            common = [s for s in e_subjs if s in l_subjs]
+            e_idx = [e_subjs.index(s) for s in common]
+            l_idx = [l_subjs.index(s) for s in common]
+            delta = e['subj_means'][e_idx] - l['subj_means'][l_idx]
+        else:
+            delta = e['subj_means'] - l['subj_means']
+
+        n_valid = np.sum(~np.isnan(delta), axis=0)
+        mean_d = np.nanmean(delta, axis=0)
+        sem_d = np.nanstd(delta, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+
+        fig.add_trace(go.Scatter(
+            x=t, y=mean_d, mode='lines',
+            name='Early − Late block (early-trial licks)',
+            line=dict(color='grey', width=2)), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=list(t) + list(t)[::-1],
+            y=list(mean_d + sem_d) + list(mean_d - sem_d)[::-1],
+            fill='toself', fillcolor='rgba(128,128,128,0.2)',
+            line=dict(width=0), mode='none', showlegend=False), row=2, col=1)
+
+        fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                      row=2, col=1)
+
+    fig.update_xaxes(title_text='Time relative to lick (s)', row=2, col=1)
+    fig.update_yaxes(title_text='Baseline stimulus (octaves)', row=1, col=1)
+    fig.update_yaxes(title_text='delta stimulus (octaves)', row=2, col=1)
+    fig.update_layout(template='plotly_white')
     return fig
 
 
