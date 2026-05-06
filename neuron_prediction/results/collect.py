@@ -3,9 +3,20 @@ walk sessions and classify units for a given glm fit_type
 """
 import os
 import argparse
+import pandas as pd
+from pathlib import Path
 from config import PATHS, GLM_OPTIONS
 from neuron_prediction.results import FIT_TYPES
-from neuron_prediction.results.classify import classify_units
+from neuron_prediction.results.classify import (
+    classify_units, classify_units_perblock,
+)
+
+
+def _print_counts(df, group_names, label):
+    counts = {g: int(df[f'{g}_sig'].sum()) if f'{g}_sig' in df else 0
+              for g in group_names}
+    parts = ', '.join(f'{v} {k}' for k, v in counts.items())
+    print(f'  {label}: {len(df)} neurons: {parts}')
 
 
 def collect(fit_type, npx_dir=None):
@@ -24,11 +35,16 @@ def collect(fit_type, npx_dir=None):
             if not os.path.isdir(results_dir):
                 continue
             print(f'{subj}/{sess}')
-            df = classify_units(sess_dir, fit_type)
-            counts = {g: df[f'{g}_sig'].sum() if f'{g}_sig' in df else 0
-                      for g in group_names}
-            parts = ', '.join(f'{v} {k}' for k, v in counts.items())
-            print(f'  {len(df)} neurons: {parts}')
+
+            if fit_type == 'glm_perblock':
+                classify_units_perblock(sess_dir, fit_type=fit_type)
+                for block in ('early', 'late'):
+                    csv = Path(sess_dir) / f'{fit_type}_classifications_{block}.csv'
+                    if csv.exists():
+                        _print_counts(pd.read_csv(csv), group_names, block)
+            else:
+                df = classify_units(sess_dir, fit_type)
+                _print_counts(df, group_names, fit_type)
 
 
 if __name__ == '__main__':

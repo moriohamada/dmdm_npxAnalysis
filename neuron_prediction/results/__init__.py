@@ -8,4 +8,4 @@ naming convention per fit_type:
     <plots_dir>/<animal>/<session>/<fit_type>_kernels/
 """
 
-FIT_TYPES = ('glm', 'glm_ridge', 'glm_unreg')
+FIT_TYPES = ('glm', 'glm_ridge', 'glm_unreg', 'glm_perblock')

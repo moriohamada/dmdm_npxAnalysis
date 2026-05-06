@@ -509,7 +509,7 @@ def build_event_masks(session, t_ax):
 
 #%% GLM fitting
 
-def _fit_poisson_glm(X, y, lambda_l2=0.0, max_iter=500, tol=1e-6):
+def fit_poisson_glm(X, y, lambda_l2=0.0, max_iter=500, tol=1e-6):
     """fit poisson GLM with L2 (ridge) penalty via gradient descent
 
     loss = mean(exp(eta) - y * eta) + lambda_l2 * ||w||^2
@@ -555,7 +555,7 @@ def _fit_poisson_glm(X, y, lambda_l2=0.0, max_iter=500, tol=1e-6):
     return w, b
 
 
-def _predict_glm(X, w, b):
+def predict_glm(X, w, b):
     """predict counts from GLM weights"""
     log_rate = np.clip(X @ w + b, -20, 20)
     return np.exp(log_rate)
@@ -621,9 +621,9 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
             if y_train.sum() == 0 or y_test.sum() == 0:
                 continue
 
-            w, b = _fit_poisson_glm(X_train, y_train,
-                                    lambda_l2=lam, **coarse_params)
-            y_pred = _predict_glm(X_test, w, b)
+            w, b = fit_poisson_glm(X_train, y_train,
+                                   lambda_l2=lam, **coarse_params)
+            y_pred = predict_glm(X_test, w, b)
             fold_r[k] = pearson_r(y_test, y_pred)
             fold_wb[k] = (w, b)
 
@@ -659,7 +659,7 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
             X_train_raw, X_test_raw, col_map)
         y_train, y_test = y_v[train_mask], y_v[test_mask]
 
-        y_pred = _predict_glm(X_test, w, b)
+        y_pred = predict_glm(X_test, w, b)
         full_r[k] = pearson_r(y_test, y_pred)
 
         # scatter fold-k test predictions back into full-T array
@@ -680,9 +680,9 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
                 X_test_raw, pred_list, col_map)
             X_tr_n, X_te_n, _, _ = normalise_design_matrix(
                 X_train_red, X_test_red, col_map_red)
-            w_red, b_red = _fit_poisson_glm(
+            w_red, b_red = fit_poisson_glm(
                 X_tr_n, y_train, lambda_l2=best_lambda, **coarse_params)
-            y_les = _predict_glm(X_te_n, w_red, b_red)
+            y_les = predict_glm(X_te_n, w_red, b_red)
             lesioned_r[gname][k] = pearson_r(y_test[win], y_les[win])
             y_red_cv[gname][test_T_idx] = y_les
 
@@ -723,8 +723,8 @@ def fit_neuron(counts_1d, X, col_map, fold_ids,
 
     #%% refit on all valid data for kernel extraction
     X_all, _, _, _ = normalise_design_matrix(X_v, X_v, col_map)
-    w_final, b_final = _fit_poisson_glm(X_all, y_v,
-                                         lambda_l2=best_lambda, **fit_params)
+    w_final, b_final = fit_poisson_glm(X_all, y_v,
+                                       lambda_l2=best_lambda, **fit_params)
 
     #%% assemble results
     result = {

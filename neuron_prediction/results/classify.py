@@ -276,6 +276,29 @@ def _classify_from_files(results_dir, file_pattern, n_neurons, sess, ops,
                 row[f'{gname}_peth_resid_r'] = r_resid_mean
                 row[f'{gname}_peth_p'] = p_resid
                 row[f'{gname}_sig'] = sig
+                continue
+
+            # non-PETH groups: per-bin lesion sig (matches classify_units)
+            full_key = f'{key_prefix}full_r_group_{gname}'
+            les_key = f'{key_prefix}lesioned_r_{gname}'
+            if full_key not in res.files or les_key not in res.files:
+                continue
+            full_r_g = res[full_key]
+            les_r_g = res[les_key]
+            ok = ~(np.isnan(full_r_g) | np.isnan(les_r_g))
+            if ok.sum() >= 3:
+                _, p = ttest_rel(full_r_g[ok], les_r_g[ok])
+                delta_r = np.nanmean(full_r_g[ok]) - np.nanmean(les_r_g[ok])
+                sig_g = (sig_full and p < ops['lesion_alpha']
+                         and delta_r > 0)
+            else:
+                p = 1.0
+                delta_r = 0.0
+                sig_g = False
+            row[f'{gname}_mean_r'] = np.nanmean(full_r_g)
+            row[f'{gname}_p'] = p
+            row[f'{gname}_delta_r'] = delta_r
+            row[f'{gname}_sig'] = sig_g
 
         out.append(row)
     return out

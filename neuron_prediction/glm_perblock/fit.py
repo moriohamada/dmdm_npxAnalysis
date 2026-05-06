@@ -7,8 +7,12 @@ from config import ANALYSIS_OPTIONS, GLM_OPTIONS
 from data.session import Session
 from neuron_prediction.data import (
     load_glm_inputs, get_trial_fold_indices, analysis_trials,
+    normalise_design_matrix,
 )
-from neuron_prediction.glm_ridge.fit import fit_neuron
+from neuron_prediction.evaluate import pearson_r
+from neuron_prediction.glm_ridge.fit import (
+    fit_neuron, fit_poisson_glm, predict_glm,
+)
 from neuron_prediction.results.peth import build_event_spec
 
 
@@ -148,6 +152,50 @@ def get_block_fold_indices(trials_df, t_ax, n_folds, block, ignore_first_n,
                                   max_trial_dur=max_trial_dur)
 
 
+#%% joint lambda selection
+
+def cv_fold_scores(counts_1d, X, col_map, fold_ids, lam, ops):
+    """fold-wise pearson r at one lambda, returns (n_folds,) array"""
+    n_folds = ops['n_folds']
+    coarse_params = {'max_iter': ops.get('cv_max_iter', 200),
+                     'tol': ops.get('cv_tol', 1e-4)}
+    valid = fold_ids >= 0
+    X_v = X[valid]
+    y_v = counts_1d[valid].astype(np.float64)
+    folds_v = fold_ids[valid]
+
+    fold_r = np.full(n_folds, np.nan)
+    for k in range(n_folds):
+        test_mask = folds_v == k
+        train_mask = ~test_mask
+        if test_mask.sum() == 0 or train_mask.sum() == 0:
+            continue
+        X_train, X_test, _, _ = normalise_design_matrix(
+            X_v[train_mask], X_v[test_mask], col_map)
+        y_train, y_test = y_v[train_mask], y_v[test_mask]
+        if y_train.sum() == 0 or y_test.sum() == 0:
+            continue
+        w, b = fit_poisson_glm(X_train, y_train,
+                               lambda_l2=lam, **coarse_params)
+        fold_r[k] = pearson_r(y_test, predict_glm(X_test, w, b))
+    return fold_r
+
+
+def select_joint_lambda(counts_1d, X, col_map, block_fold_ids, ops):
+    """pool per-block fold scores at each lambda, pick the joint maximum"""
+    pooled = {lam: [] for lam in ops['ridge_lambdas']}
+    for fold_ids in block_fold_ids.values():
+        for lam in ops['ridge_lambdas']:
+            pooled[lam].extend(cv_fold_scores(
+                counts_1d, X, col_map, fold_ids, lam, ops))
+
+    means = {lam: np.nanmean(rs) for lam, rs in pooled.items()}
+    if all(np.isnan(v) for v in means.values()):
+        return None, means
+    best = max(means, key=lambda l: (-np.inf if np.isnan(means[l]) else means[l]))
+    return best, means
+
+
 #%% main entry point
 
 def fit_neuron_perblock_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
@@ -183,15 +231,29 @@ def fit_neuron_perblock_from_disk(sess_dir, neuron_idx, ops=GLM_OPTIONS):
         bin_width=ops['bin_width'],
         tf_sd_threshold=ops['tf_sd_threshold'])
 
+    block_fold_ids = {}
     for block in BLOCKS:
         fold_ids = get_block_fold_indices(
             sess.trials, t_ax, ops['n_folds'], block, ignore_n, max_dur)
+        block_fold_ids[block] = fold_ids
         n_valid = (fold_ids >= 0).sum()
         n_folds_actual = len(set(fold_ids[fold_ids >= 0]))
         print(f'  {block}: {n_valid} valid bins, {n_folds_actual} folds')
 
+    # joint lambda search across both blocks: keeps regularisation comparable
+    best_lambda, lam_means = select_joint_lambda(
+        counts[neuron_idx], X, col_map, block_fold_ids, ops)
+    if best_lambda is None:
+        print('  no valid CV scores in any block, skipping')
+        return
+    print('  joint lambda CV: '
+          + ', '.join(f'{l:.0e}={m:.4f}' for l, m in lam_means.items()))
+    print(f'  best joint lambda: {best_lambda:.0e}')
+
+    fit_ops = {**ops, 'ridge_lambdas': [best_lambda]}
+    for block, fold_ids in block_fold_ids.items():
         result = fit_neuron(counts[neuron_idx], X, col_map, fold_ids,
-                            event_spec=event_spec, ops=ops)
+                            event_spec=event_spec, ops=fit_ops)
         if result is None:
             print(f'  {block}: skipped (no valid data)')
             continue
