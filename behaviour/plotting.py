@@ -524,6 +524,80 @@ def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
 
     subjs = list(pulse_lick_prob.keys())
 
+    baseline_hw = config.get('baseline_half_width', 0.1)
+    baseline_mask = np.abs(bin_centres) <= baseline_hw
+
+    def _get_mean_2d(cond_key, lag):
+        valid_subjs = [s for s in subjs if cond_key in pulse_lick_prob[s]]
+        if not valid_subjs:
+            return None, None
+        all_2d = np.stack([pulse_lick_prob[s][cond_key]['lickProb2D'][lag]
+                           for s in valid_subjs])
+        all_n = np.stack([pulse_lick_prob[s][cond_key]['n2D'][lag]
+                          for s in valid_subjs])
+        low_n = all_n.sum(axis=0) < min_n
+        all_2d[:, low_n] = np.nan
+        return all_2d, valid_subjs
+
+    def _smooth(mat):
+        nan_mask = np.isnan(mat)
+        out = mat.copy()
+        out[nan_mask] = 0
+        out = gaussian_filter(out, sigma=1, truncate=1.5)
+        out[nan_mask] = np.nan
+        return out
+
+    def _baseline_1d(cond_key):
+        """mean P(lick) near TF=0 per subject from the 1D curve, broadcastable to (n_subj, 1, 1)"""
+        valid_subjs = [s for s in subjs if cond_key in pulse_lick_prob[s]]
+        all_1d = np.stack([pulse_lick_prob[s][cond_key]['lickProb']
+                           for s in valid_subjs])
+        return np.nanmean(all_1d[:, baseline_mask], axis=1)[:, None, None]
+
+    row_titles = ['Raw', 'Per-block norm', 'Global norm (late baseline)']
+    n_rows = len(row_titles)
+
+    # first pass on first time window only: get z-limits per row from 5th/95th percentiles
+    t0 = time_starts[0]
+    t0_end = t0 + time_win
+    zlims = {r: [0, 1] for r in range(n_rows)}
+
+    all_vals_by_row = {r: [] for r in range(n_rows)}
+    for lag in pulse_lags:
+        early_key = f'earlyBlock_{t0:.0f}-{t0_end:.0f}s'
+        late_key = f'lateBlock_{t0:.0f}-{t0_end:.0f}s'
+        all_early, _ = _get_mean_2d(early_key, lag)
+        all_late, _ = _get_mean_2d(late_key, lag)
+        if all_early is None or all_late is None:
+            continue
+
+        global_bl = _baseline_1d(late_key)
+        block_data = {'early': (all_early, early_key), 'late': (all_late, late_key)}
+
+        for row_idx in range(n_rows):
+            for block in ['early', 'late']:
+                ad, ckey = block_data[block]
+                if row_idx == 0:
+                    normed = ad
+                elif row_idx == 1:
+                    normed = ad - _baseline_1d(ckey)
+                else:
+                    normed = ad - global_bl
+                mean_2d = _smooth(np.nanmean(normed, axis=0))
+                vals = mean_2d[~np.isnan(mean_2d)]
+                if len(vals) > 0:
+                    all_vals_by_row[row_idx].append(vals)
+
+    for r in range(n_rows):
+        if all_vals_by_row[r]:
+            pooled = np.concatenate(all_vals_by_row[r])
+            if r == 0:
+                zlims[r] = [np.percentile(pooled, 1), np.percentile(pooled, 99)]
+            else:
+                vmax = np.percentile(np.abs(pooled), 99)
+                zlims[r] = [-vmax, vmax]
+
+    # second pass: build all figures
     figs = {}
     for t_start in time_starts:
         t_end = t_start + time_win
@@ -533,54 +607,64 @@ def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
             lag_ms = int(lag * dt_ms)
             label = f'{time_label}_lag{lag_ms}ms'
 
-            fig = make_subplots(rows=1, cols=2, shared_yaxes=True,
-                                subplot_titles=['Early block', 'Late block'],
-                                horizontal_spacing=0.08)
+            early_key = f'earlyBlock_{t_start:.0f}-{t_end:.0f}s'
+            late_key = f'lateBlock_{t_start:.0f}-{t_end:.0f}s'
 
-            zmin, zmax = np.inf, -np.inf
-            for col, block in enumerate(['early', 'late'], 1):
-                cond_key = f'{block}Block_{t_start:.0f}-{t_end:.0f}s'
+            all_early, _ = _get_mean_2d(early_key, lag)
+            all_late, _ = _get_mean_2d(late_key, lag)
+            if all_early is None or all_late is None:
+                continue
 
-                valid_subjs = [s for s in subjs if cond_key in pulse_lick_prob[s]]
-                if not valid_subjs:
-                    continue
+            global_bl = _baseline_1d(late_key)
+            block_data = {'early': (all_early, early_key),
+                          'late': (all_late, late_key)}
 
-                all_2d = np.stack([pulse_lick_prob[s][cond_key]['lickProb2D'][lag]
-                                   for s in valid_subjs])
-                all_n = np.stack([pulse_lick_prob[s][cond_key]['n2D'][lag]
-                                  for s in valid_subjs])
-                low_n = all_n.sum(axis=0) < min_n
-                all_2d[:, low_n] = np.nan
+            fig = make_subplots(
+                rows=3, cols=2, shared_xaxes=True, shared_yaxes=True,
+                vertical_spacing=0.08, horizontal_spacing=0.08,
+                subplot_titles=['Early block', 'Late block'] + [''] * 4,
+                row_titles=row_titles)
 
-                mean_2d = np.nanmean(all_2d, axis=0)
-                nan_mask = np.isnan(mean_2d)
-                mean_2d[nan_mask] = 0
-                mean_2d = gaussian_filter(mean_2d, sigma=1, truncate=1.5)
-                mean_2d[nan_mask] = np.nan
+            for row_idx in range(n_rows):
+                caxis = f'coloraxis{row_idx + 1}' if row_idx > 0 else 'coloraxis'
+                for col, block in enumerate(['early', 'late'], 1):
+                    ad, ckey = block_data[block]
+                    if row_idx == 0:
+                        normed = ad
+                    elif row_idx == 1:
+                        normed = ad - _baseline_1d(ckey)
+                    else:
+                        normed = ad - global_bl
 
-                valid_vals = mean_2d[~np.isnan(mean_2d)]
-                if len(valid_vals) > 0:
-                    zmin = min(zmin, np.nanmin(valid_vals))
-                    zmax = max(zmax, np.nanmax(valid_vals))
+                    mean_2d = _smooth(np.nanmean(normed, axis=0))
+                    fig.add_trace(go.Heatmap(
+                        z=mean_2d, x=bin_centres, y=bin_centres,
+                        coloraxis=caxis),
+                        row=row_idx + 1, col=col)
 
-                fig.add_trace(go.Heatmap(
-                    z=mean_2d, x=bin_centres, y=bin_centres,
-                    coloraxis='coloraxis'), row=1, col=col)
-
-            fig.update_layout(
-                template='plotly_white', width=700, height=350,
-                title_text=f'{time_label}, lag = {lag_ms} ms',
-                coloraxis=dict(colorscale='RdBu_r',
-                               cmin=zmin if np.isfinite(zmin) else 0,
-                               cmax=zmax if np.isfinite(zmax) else 1,
-                               colorbar=dict(title='P(lick)')))
+                zlo, zhi = zlims[row_idx]
+                if row_idx == 0:
+                    cscale, cmid = 'Hot_r', None
+                else:
+                    cscale, cmid = 'RdBu_r', 0
+                fig.layout[caxis] = dict(
+                    colorscale=cscale,
+                    cmin=zlo, cmax=zhi, cmid=cmid,
+                    colorbar=dict(
+                        title='P(lick)' if row_idx == 0 else 'dP(lick)',
+                        len=0.27, y=1 - row_idx * 0.35))
 
             for col in [1, 2]:
                 fig.update_xaxes(range=xlims, title_text='TF(t) oct',
-                                 row=1, col=col)
-            fig.update_yaxes(range=xlims,
-                             title_text=f'TF(t-{lag_ms}ms) oct',
-                             row=1, col=1)
+                                 row=3, col=col)
+            for row in [1, 2, 3]:
+                fig.update_yaxes(range=xlims,
+                                 title_text=f'TF(t-{lag_ms}ms) oct',
+                                 row=row, col=1)
+
+            fig.update_layout(
+                template='plotly_white', width=700, height=900,
+                title_text=f'{time_label}, lag = {lag_ms} ms')
 
             figs[label] = fig
 
