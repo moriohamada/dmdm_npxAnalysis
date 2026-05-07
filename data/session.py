@@ -1,17 +1,16 @@
 """
 Session dataclass - for storing basic trial/neural info for a single session.
 
-Note that fr_matrix and daq lines are dropped while saving by default to save storage.
+Note that fr_matrix and daq lines are dropped while saving by default limit storage.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import os
 import pickle
 import pandas as pd
 import numpy as np
 from pathlib import Path
-
 
 @dataclass
 class Session:

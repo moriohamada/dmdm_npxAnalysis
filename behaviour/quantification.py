@@ -13,7 +13,6 @@ def quantify_psychometrics(psycho: np.ndarray,
     shape: animals x change_TF x block (early/late) x probe (expected/unexpected timing)
     """
 
-    pass
 
 def quantify_pulse_lick_probability():
     pass
