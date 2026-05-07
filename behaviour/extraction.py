@@ -77,14 +77,14 @@ def filter_sessions(dfs, config=ANALYSIS_OPTIONS):
     return df_filtered
 
 
-def _strip_and_convert_tf(tf_raw):
+def strip_and_convert_tf(tf_raw):
     """strip grey-screen zeros from raw TF array and convert to log2 octaves"""
     tf_raw = np.array(tf_raw)
     tf_stim = tf_raw[tf_raw > 0]
     return np.log2(tf_stim)
 
 
-def _binomial_ci(k, n, alpha=0.05):
+def binomial_ci(k, n, alpha=0.05):
     from scipy.stats import beta
     lo = beta.ppf(alpha / 2, k, n - k + 1) if k > 0 else 0.0
     hi = beta.ppf(1 - alpha / 2, k + 1, n - k) if k < n else 1.0
@@ -154,7 +154,7 @@ def extract_perilick_info(dfs, config=ANALYSIS_OPTIONS):
             else:
                 continue
 
-            tf_oct = _strip_and_convert_tf(row['stim_TF'])
+            tf_oct = strip_and_convert_tf(row['stim_TF'])
             tf_smooth = uniform_filter1d(tf_oct, size=smooth_size,
                                          origin=smooth_origin)
 
@@ -324,7 +324,7 @@ def extract_baseline_projections(dfs, eltc, config=ANALYSIS_OPTIONS,
             all_licked = []
 
             for _, row in df.iterrows():
-                tf_oct = _strip_and_convert_tf(row['stim_TF'])
+                tf_oct = strip_and_convert_tf(row['stim_TF'])
                 tf = uniform_filter1d(tf_oct, size=smooth_size,
                                       origin=smooth_origin)
                 sampled = tf[::frame_step]
@@ -449,7 +449,7 @@ def calculate_el_hazard(dfs, config=ANALYSIS_OPTIONS):
 
 #%% pulse-aligned lick probability
 
-def _extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
+def extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
     frame_step = config.get('tf_sample_step', 3)
     frame_rate = config.get('frame_rate', 60)
     sample_rate = 1 / (frame_step / frame_rate)
@@ -459,7 +459,7 @@ def _extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
     for subj, df in dfs.items():
         if df.empty:
             continue
-        tf_subsampled = [_strip_and_convert_tf(tf)[::frame_step]
+        tf_subsampled = [strip_and_convert_tf(tf)[::frame_step]
                          for tf in df['stim_TF'].values]
         if len(tf_subsampled) == 0:
             continue
@@ -511,7 +511,7 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
     time_step = config.get('tf_pulse_time_step', 1)
     n_bins = len(bin_centres)
 
-    stim_df = _extract_tf_pulses(dfs, config)
+    stim_df = extract_tf_pulses(dfs, config)
 
     stim_df['licked'] = (
         stim_df['lick_time'].notna() &
@@ -554,7 +554,7 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
                 n_stim[b] = n
                 if n > 0:
                     lick_prob[b] = k / n
-                    lick_prob_ci[b] = _binomial_ci(k, n)
+                    lick_prob_ci[b] = binomial_ci(k, n)
 
             lick_prob_2d = {}
             n_2d = {}
@@ -593,7 +593,7 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
 
 #%% save / load
 
-def _save(obj, name, data_dir=BEHAVIOUR_DATA_DIR):
+def save_behavioural(obj, name, data_dir=BEHAVIOUR_DATA_DIR):
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     path = os.path.join(data_dir, f'{name}.pkl')
     with open(path, 'wb') as f:
@@ -601,7 +601,7 @@ def _save(obj, name, data_dir=BEHAVIOUR_DATA_DIR):
     print(f'Saved {name} to {path}')
 
 
-def _load(name, data_dir=BEHAVIOUR_DATA_DIR):
+def load_behavioural(name, data_dir=BEHAVIOUR_DATA_DIR):
     path = os.path.join(data_dir, f'{name}.pkl')
     with open(path, 'rb') as f:
         return pickle.load(f)
@@ -615,66 +615,61 @@ def extract_all_behavioural(npx_dir=PATHS['npx_dir_local'],
     """extract and save all behavioural analyses"""
     data_dir = os.path.join(npx_dir, 'behaviour')
 
-    def _load_or_compute(name):
+    def load_or_compute(name):
         path = os.path.join(data_dir, f'{name}.pkl')
         if not overwrite and os.path.exists(path):
             print(f'Loading cached {name}')
-            return _load(name, data_dir)
+            return load_behavioural(name, data_dir)
         return None
 
-    dfs = _load_or_compute('dfs_processed')
+    dfs = load_or_compute('dfs_processed')
     if dfs is None:
         dfs = filter_sessions(build_dfs_from_sessions(npx_dir, config), config)
-        _save(dfs, 'dfs_processed', data_dir)
+        save_behavioural(dfs, 'dfs_processed', data_dir)
 
-    psycho_chrono = _load_or_compute('psychometric')
+    psycho_chrono = load_or_compute('psychometric')
     if psycho_chrono is None:
         psycho_chrono = extract_psychometric(dfs, config)
-        _save(psycho_chrono, 'psychometric', data_dir)
+        save_behavioural(psycho_chrono, 'psychometric', data_dir)
 
-    hazard = _load_or_compute('hazard_rates')
+    hazard = load_or_compute('hazard_rates')
     if hazard is None:
         hazard = calculate_el_hazard(dfs, config)
-        _save(hazard, 'hazard_rates', data_dir)
+        save_behavioural(hazard, 'hazard_rates', data_dir)
 
-    lick_triggered = _load_or_compute('lick_triggered')
+    lick_triggered = load_or_compute('lick_triggered')
     if lick_triggered is None:
         lick_triggered = extract_perilick_info(dfs, config)
-        _save(lick_triggered, 'lick_triggered', data_dir)
+        save_behavioural(lick_triggered, 'lick_triggered', data_dir)
 
-    lts = _load_or_compute('elts')
+    lts = load_or_compute('elts')
     if lts is None:
         lts = extract_elts(lick_triggered, config)
-        _save(lts, 'elts', data_dir)
+        save_behavioural(lts, 'elts', data_dir)
 
-    elta = _load_or_compute('elta')
+    elta = load_or_compute('elta')
     if elta is None:
         elta = calculate_elta(lts, config)
-        _save(elta, 'elta', data_dir)
+        save_behavioural(elta, 'elta', data_dir)
 
-    eltc = _load_or_compute('eltc')
+    eltc = load_or_compute('eltc')
     if eltc is None:
         eltc = calculate_eltc(lts, config)
-        _save(eltc, 'eltc', data_dir)
+        save_behavioural(eltc, 'eltc', data_dir)
 
-    projections = _load_or_compute('eltc_projections')
+    projections = load_or_compute('eltc_projections')
     if projections is None:
         projections = extract_baseline_projections(dfs, eltc, config)
-        _save(projections, 'eltc_projections', data_dir)
+        save_behavioural(projections, 'eltc_projections', data_dir)
 
-    eltc_aligned = _load_or_compute('eltc_aligned')
+    eltc_aligned = load_or_compute('eltc_aligned')
     if eltc_aligned is None:
         eltc_aligned = align_eltc(eltc, projections)
-        _save(eltc_aligned, 'eltc_aligned', data_dir)
+        save_behavioural(eltc_aligned, 'eltc_aligned', data_dir)
 
-    pulse_lick = _load_or_compute('pulse_lick_prob')
+    pulse_lick = load_or_compute('pulse_lick_prob')
     if pulse_lick is None:
         pulse_lick = calculate_pulse_lick_prob(dfs, config)
-        _save(pulse_lick, 'pulse_lick_prob', data_dir)
+        save_behavioural(pulse_lick, 'pulse_lick_prob', data_dir)
 
     print('All behavioural analyses extracted')
-
-
-def load_behavioural(name, npx_dir=PATHS['npx_dir_local']):
-    """load a saved behavioural analysis result by name"""
-    return _load(name, os.path.join(npx_dir, 'behaviour'))
