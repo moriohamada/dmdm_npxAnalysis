@@ -5,11 +5,11 @@ plot_dir = Path(PATHS['plots_dir']) / 'behaviour'
 plot_dir.mkdir(parents=True, exist_ok=True)
 
 #%% Extract and save all behavioural analyses
-from behaviour.analysis import extract_all_behavioural
+from behaviour.extraction import extract_all_behavioural
 extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=False)
 
 #%% Psychometric / chronometric
-from behaviour.analysis import load_behavioural
+from behaviour.extraction import load_behavioural
 from behaviour.plotting import plot_psychometric
 
 psycho, chrono = load_behavioural('psychometric')

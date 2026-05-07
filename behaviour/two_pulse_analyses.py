@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from config import ANALYSIS_OPTIONS, PLOT_OPTIONS
-from behaviour.analysis import _strip_and_convert_tf, _binomial_ci
+from behaviour.extraction import _strip_and_convert_tf, _binomial_ci
 
 
 def extract_two_pulse_events(dfs, config=ANALYSIS_OPTIONS):
@@ -133,7 +133,7 @@ def calculate_two_pulse_interaction(dfs, config=ANALYSIS_OPTIONS):
 
 def calculate_baseline_lick_rate(dfs, config=ANALYSIS_OPTIONS):
     """P_0: lick probability for TF samples near baseline (small deviations)"""
-    from behaviour.analysis import _extract_tf_pulses
+    from behaviour.extraction import _extract_tf_pulses
 
     stim_df = _extract_tf_pulses(dfs, config)
     lick_win = config.get('tf_pulse_lick_win', [0.2, 1.5])

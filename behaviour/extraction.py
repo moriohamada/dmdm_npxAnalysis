@@ -1,22 +1,24 @@
 """
-behavioural analysis functions: psychometrics, lick-triggered stimulus,
-hazard rates, pulse-aligned lick probability
+behavioural data extraction: load sessions, compute psychometrics, lick-triggered
+stimulus, hazard rates, pulse-aligned lick probability. results are cached as pickles.
 """
 import os
 import pickle
 import warnings
 import numpy as np
 import pandas as pd
-
-warnings.filterwarnings('ignore', message='invalid value encountered in divide')
 from pathlib import Path
 from sklearn.decomposition import PCA
 from scipy.ndimage import uniform_filter1d
 
 from config import PATHS, ANALYSIS_OPTIONS
 
+warnings.filterwarnings('ignore', message='invalid value encountered in divide')
+
 BEHAVIOUR_DATA_DIR = os.path.join(PATHS['npx_dir_local'], 'behaviour')
 
+
+#%% data loading
 
 def build_dfs_from_sessions(npx_dir, config=ANALYSIS_OPTIONS):
     """
@@ -46,7 +48,6 @@ def build_dfs_from_sessions(npx_dir, config=ANALYSIS_OPTIONS):
 
         if sess_dfs:
             combined = pd.concat(sess_dfs, ignore_index=True)
-            # column aliases
             if 'TF' in combined.columns and 'stim_TF' not in combined.columns:
                 combined['stim_TF'] = combined['TF']
             if 'tag' in combined.columns and 'stim_tag' not in combined.columns:
@@ -81,6 +82,13 @@ def _strip_and_convert_tf(tf_raw):
     tf_raw = np.array(tf_raw)
     tf_stim = tf_raw[tf_raw > 0]
     return np.log2(tf_stim)
+
+
+def _binomial_ci(k, n, alpha=0.05):
+    from scipy.stats import beta
+    lo = beta.ppf(alpha / 2, k, n - k + 1) if k > 0 else 0.0
+    hi = beta.ppf(1 - alpha / 2, k + 1, n - k) if k < n else 1.0
+    return lo, hi
 
 
 #%% psychometrics
@@ -492,13 +500,6 @@ def _extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
     return pd.concat(all_dfs, ignore_index=True)
 
 
-def _binomial_ci(k, n, alpha=0.05):
-    from scipy.stats import beta
-    lo = beta.ppf(alpha / 2, k, n - k + 1) if k > 0 else 0.0
-    hi = beta.ppf(1 - alpha / 2, k + 1, n - k) if k < n else 1.0
-    return lo, hi
-
-
 def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
     """for each TF stimulus, ask: did a lick follow within the lick window?
     conditions: block x sliding time-in-trial windows"""
@@ -615,7 +616,6 @@ def extract_all_behavioural(npx_dir=PATHS['npx_dir_local'],
     data_dir = os.path.join(npx_dir, 'behaviour')
 
     def _load_or_compute(name):
-        """check if cached result exists; return it or None"""
         path = os.path.join(data_dir, f'{name}.pkl')
         if not overwrite and os.path.exists(path):
             print(f'Loading cached {name}')

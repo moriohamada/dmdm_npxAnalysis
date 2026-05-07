@@ -13,14 +13,14 @@ from config import *
 from utils.figures import save_fig
 
 
-#%% Behavioural visualization
+#%% Behaviour visualization
 plot_dir = Path(PATHS['plots_dir']) / 'behaviour'
 plot_dir.mkdir(parents=True, exist_ok=True)
 
-from behaviour.analysis import extract_all_behavioural
-extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=True)
+from behaviour.extraction import extract_all_behavioural
+extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=False)
 
-from behaviour.analysis import load_behavioural
+from behaviour.extraction import load_behavioural
 from behaviour.plotting import (plot_psychometric, plot_elta, plot_eltc,
     plot_eltc_comparison, plot_el_hazard_rates, plot_pulse_aligned_lick_prob,
     plot_pulse_lick_prob_2d)
@@ -46,6 +46,8 @@ for label, fig in plot_pulse_lick_prob_2d(pulse_lick).items():
     save_fig(fig, str(plot_dir / f'pulse_lick_prob_2d_{label}'))
 
 #%% Quantification of expectation-dependent behavioural changes
+
+
 
 
 #%% Model licks
