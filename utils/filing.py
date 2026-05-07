@@ -72,3 +72,59 @@ def file_suffix(area=None, unit_filter=None):
     if unit_filter:
         parts.append('-'.join(unit_filter))
     return '_'.join(parts)
+
+
+IPYTHON_AUTO_NAMES = frozenset({'In', 'Out', 'exit', 'quit', 'get_ipython'})
+
+
+def save_workspace(path, ns=None, exclude=()):
+    """pickle data variables from a namespace (ns) dict (default: caller globals)
+
+    skips modules, callables, dunder names, and IPython auto-injected
+    history (In, Out). variables that fail to pickle are reported and
+    skipped rather than aborting the whole save.
+    """
+    import dill
+    import inspect
+    import types
+
+    if ns is None:
+        ns = inspect.currentframe().f_back.f_globals
+    exclude = set(exclude) | IPYTHON_AUTO_NAMES
+
+    out = {}
+    skipped = []
+    for k, v in ns.items():
+        if k.startswith('_') or k in exclude:
+            continue
+        if isinstance(v, types.ModuleType) or callable(v):
+            continue
+        try:
+            dill.dumps(v)
+        except Exception as e:
+            skipped.append((k, type(v).__name__, str(e).splitlines()[0]))
+            continue
+        out[k] = v
+
+    with open(path, 'wb') as f:
+        dill.dump(out, f)
+
+    print(f'saved {len(out)} variables to {path}')
+    for name, kind, msg in skipped:
+        print(f'  skipped {name} ({kind}): {msg}')
+    return list(out.keys())
+
+
+def load_workspace(path, ns=None):
+    """unpickle a workspace dict and inject it into a namespace (default: caller globals)"""
+    import dill
+    import inspect
+
+    if ns is None:
+        ns = inspect.currentframe().f_back.f_globals
+
+    with open(path, 'rb') as f:
+        ws = dill.load(f)
+    ns.update(ws)
+    print(f'loaded {len(ws)} variables: {sorted(ws)}')
+    return list(ws.keys())
