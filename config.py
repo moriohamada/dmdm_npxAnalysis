@@ -89,9 +89,15 @@ ANALYSIS_OPTIONS = dict(
     hazard_bin_size = 0.5,                # s
     hazard_bin_step = 0.1,                # s
 
-    tf_pulse_bin_centres = np.arange(-1, 1, .025),
+    tf_pulse_bin_centres = np.arange(-1, 1, .05),
     tf_pulse_bin_width   = 0.1,           # octaves
     tf_pulse_lick_win    = [0.2, 1.5],    # s; time after TF pulse to count as 'licked'
+    tf_pulse_time_win    = 3,             # s; width of sliding time-in-trial windows
+    tf_pulse_time_step   = 1,             # s; step between sliding time-in-trial windows
+
+    fast_pulse_threshold = 0.25,          # octaves; 1 s.d. of baseline TF
+    two_pulse_max_delay  = 0.5,           # s; max inter-pulse delay to consider
+    two_pulse_delay_step = 0.05,          # s; bin width for inter-pulse delay
 
     sig_thresh = 0.05,
 )

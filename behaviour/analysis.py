@@ -4,8 +4,11 @@ hazard rates, pulse-aligned lick probability
 """
 import os
 import pickle
+import warnings
 import numpy as np
 import pandas as pd
+
+warnings.filterwarnings('ignore', message='invalid value encountered in divide')
 from pathlib import Path
 from sklearn.decomposition import PCA
 from scipy.ndimage import uniform_filter1d
@@ -493,12 +496,14 @@ def _binomial_ci(k, n, alpha=0.05):
 
 
 def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
-    """for each TF stimulus, ask: did a lick follow within the lick window?"""
+    """for each TF stimulus, ask: did a lick follow within the lick window?
+    conditions: block x sliding time-in-trial windows"""
     bin_centres = np.array(config.get('tf_pulse_bin_centres',
                                       np.arange(-0.5, 0.55, 0.1)))
     half_width = config.get('tf_pulse_bin_width', 0.2) / 2
     lick_win = config.get('tf_pulse_lick_win', [0.25, 1.0])
-    time_split = config.get('tr_split_time', 8.0)
+    time_win = config.get('tf_pulse_time_win', 3)
+    time_step = config.get('tf_pulse_time_step', 1)
     n_bins = len(bin_centres)
 
     stim_df = _extract_tf_pulses(dfs, config)
@@ -508,22 +513,27 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
         (stim_df['lick_time'] >= stim_df['stim_time'] + lick_win[0]) &
         (stim_df['lick_time'] < stim_df['stim_time'] + lick_win[1])
     )
-    stim_df['early_in_trial'] = stim_df['stim_time'] < time_split
 
-    conditions = {
-        'earlyBlock_earlyTrial': (stim_df['block'] == 'early') & stim_df['early_in_trial'],
-        'earlyBlock_lateTrial': (stim_df['block'] == 'early') & ~stim_df['early_in_trial'],
-        'lateBlock_earlyTrial': (stim_df['block'] == 'late') & stim_df['early_in_trial'],
-        'lateBlock_lateTrial': (stim_df['block'] == 'late') & ~stim_df['early_in_trial'],
-    }
+    max_time = stim_df['stim_time'].max()
+    time_starts = np.arange(0, max_time - time_win + time_step, time_step)
+
+    cond_specs = []
+    for block in ['early', 'late']:
+        for t_start in time_starts:
+            t_end = t_start + time_win
+            cond_name = f'{block}Block_{t_start:.0f}-{t_end:.0f}s'
+            cond_specs.append((cond_name, block, t_start, t_end))
 
     results = {}
     for subj in stim_df['subj'].unique():
         subj_df = stim_df[stim_df['subj'] == subj]
-        results[subj] = {'binCentres': bin_centres}
+        results[subj] = {'binCentres': bin_centres, 'time_starts': time_starts,
+                         'time_win': time_win}
 
-        for cond, mask in conditions.items():
-            cond_df = subj_df[mask]
+        for cond_name, block, t_start, t_end in cond_specs:
+            cond_df = subj_df[(subj_df['block'] == block) &
+                              (subj_df['stim_time'] >= t_start) &
+                              (subj_df['stim_time'] < t_end)]
             pairs_df = cond_df[cond_df['tf_dev_next'].notna()]
 
             lick_prob = np.full(n_bins, np.nan)
@@ -555,7 +565,7 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
                     if n > 0:
                         lick_prob_2d[b1, b2] = pairs_df.loc[both, 'licked'].mean()
 
-            results[subj][cond] = {
+            results[subj][cond_name] = {
                 'lickProb': lick_prob,
                 'lickProb_ci': lick_prob_ci,
                 'n': n_stim,
