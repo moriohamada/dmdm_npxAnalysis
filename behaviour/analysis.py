@@ -467,23 +467,27 @@ def _extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
         cens_times = np.minimum(lick_times, df['stimT'].values)
 
         valid_mask = (stim_times[None, :] < cens_times[:, None]) & ~np.isnan(tf_dev)
-        tf_dev_next = np.full_like(tf_dev, np.nan)
-        tf_dev_next[:, :-1] = tf_dev[:, 1:]
 
         rows, cols = np.where(valid_mask)
-        all_dfs.append(pd.DataFrame({
+        rec = {
             'subj': subj,
             'block': df['hazardblock'].values[rows],
             'session': df['sessionID'].values[rows],
             'stim_time': stim_times[cols],
             'tf_dev': tf_dev[rows, cols],
-            'tf_dev_next': tf_dev_next[rows, cols],
             'lick_time': np.where(np.isfinite(lick_times[rows]),
                                   lick_times[rows], np.nan),
             'cens_time': cens_times[rows],
-        }))
+        }
+        pulse_lags = config.get('tf_pulse_lags', [1, 2, 3, 4])
+        for lag in pulse_lags:
+            lagged = np.full_like(tf_dev, np.nan)
+            lagged[:, :-lag] = tf_dev[:, lag:]
+            rec[f'tf_dev_lag{lag}'] = lagged[rows, cols]
 
-        del tf_mat, tf_dev, tf_dev_next, valid_mask
+        all_dfs.append(pd.DataFrame(rec))
+
+        del tf_mat, tf_dev, valid_mask
 
     return pd.concat(all_dfs, ignore_index=True)
 
@@ -530,11 +534,12 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
         results[subj] = {'binCentres': bin_centres, 'time_starts': time_starts,
                          'time_win': time_win}
 
+        pulse_lags = config.get('tf_pulse_lags', [1, 2, 3, 4])
+
         for cond_name, block, t_start, t_end in cond_specs:
             cond_df = subj_df[(subj_df['block'] == block) &
                               (subj_df['stim_time'] >= t_start) &
                               (subj_df['stim_time'] < t_end)]
-            pairs_df = cond_df[cond_df['tf_dev_next'].notna()]
 
             lick_prob = np.full(n_bins, np.nan)
             lick_prob_ci = np.full((n_bins, 2), np.nan)
@@ -550,20 +555,29 @@ def calculate_pulse_lick_prob(dfs, config=ANALYSIS_OPTIONS):
                     lick_prob[b] = k / n
                     lick_prob_ci[b] = _binomial_ci(k, n)
 
-            lick_prob_2d = np.full((n_bins, n_bins), np.nan)
-            n_2d = np.zeros((n_bins, n_bins), dtype=int)
+            lick_prob_2d = {}
+            n_2d = {}
+            for lag in pulse_lags:
+                lag_col = f'tf_dev_lag{lag}'
+                pairs_df = cond_df[cond_df[lag_col].notna()]
 
-            for b1, bc1 in enumerate(bin_centres):
-                in_bin1 = ((pairs_df['tf_dev'] >= bc1 - half_width) &
-                           (pairs_df['tf_dev'] < bc1 + half_width))
-                for b2, bc2 in enumerate(bin_centres):
-                    in_bin2 = ((pairs_df['tf_dev_next'] >= bc2 - half_width) &
-                               (pairs_df['tf_dev_next'] < bc2 + half_width))
-                    both = in_bin1 & in_bin2
-                    n = both.sum()
-                    n_2d[b1, b2] = n
-                    if n > 0:
-                        lick_prob_2d[b1, b2] = pairs_df.loc[both, 'licked'].mean()
+                lp2d = np.full((n_bins, n_bins), np.nan)
+                nd2d = np.zeros((n_bins, n_bins), dtype=int)
+
+                for b1, bc1 in enumerate(bin_centres):
+                    in_bin1 = ((pairs_df['tf_dev'] >= bc1 - half_width) &
+                               (pairs_df['tf_dev'] < bc1 + half_width))
+                    for b2, bc2 in enumerate(bin_centres):
+                        in_bin2 = ((pairs_df[lag_col] >= bc2 - half_width) &
+                                   (pairs_df[lag_col] < bc2 + half_width))
+                        both = in_bin1 & in_bin2
+                        n = both.sum()
+                        nd2d[b1, b2] = n
+                        if n > 0:
+                            lp2d[b1, b2] = pairs_df.loc[both, 'licked'].mean()
+
+                lick_prob_2d[lag] = lp2d
+                n_2d[lag] = nd2d
 
             results[subj][cond_name] = {
                 'lickProb': lick_prob,

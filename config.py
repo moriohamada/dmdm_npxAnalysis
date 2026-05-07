@@ -95,6 +95,8 @@ ANALYSIS_OPTIONS = dict(
     tf_pulse_time_win    = 3,             # s; width of sliding time-in-trial windows
     tf_pulse_time_step   = 1,             # s; step between sliding time-in-trial windows
 
+    tf_pulse_lags        = [1, 2, 3, 4, 5],  # samples; lags for 2D lick prob (50ms each)
+
     fast_pulse_threshold = 0.25,          # octaves; 1 s.d. of baseline TF
     two_pulse_max_delay  = 0.5,           # s; max inter-pulse delay to consider
     two_pulse_delay_step = 0.05,          # s; bin width for inter-pulse delay

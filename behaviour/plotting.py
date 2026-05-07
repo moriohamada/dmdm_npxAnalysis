@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 warnings.filterwarnings('ignore', message='Mean of empty slice')
 warnings.filterwarnings('ignore', message='Degrees of freedom <= 0 for slice')
 from plotly.subplots import make_subplots
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import uniform_filter1d, gaussian_filter
 
 from config import ANALYSIS_OPTIONS, PLOT_OPTIONS
 
@@ -411,20 +411,14 @@ def plot_el_hazard_rates(hazard_rates, config=ANALYSIS_OPTIONS):
 
 
 def plot_pulse_aligned_lick_prob(pulse_lick_prob, config=ANALYSIS_OPTIONS):
-    """pulse-aligned lick probability: one column per time window, rows = blocks + delta"""
+    """pulse-aligned lick probability, one figure per time window.
+    returns {time_label: fig}"""
     first_subj = next(iter(pulse_lick_prob.values()))
     bin_centres = first_subj['binCentres']
     time_starts = first_subj['time_starts']
     time_win = first_subj['time_win']
-    n_cols = len(time_starts)
     min_n = config.get('min_pulse_samples', 500)
-
-    fig = make_subplots(
-        rows=2, cols=n_cols, shared_xaxes=True, shared_yaxes='rows',
-        row_heights=[0.6, 0.4], vertical_spacing=0.08,
-        horizontal_spacing=0.04,
-        subplot_titles=[f'{t:.0f}-{t + time_win:.0f}s' for t in time_starts]
-                       + [''] * n_cols)
+    xlims = [-.6, .6]
 
     def get_probs_and_n(cond_key):
         subjs = [s for s in pulse_lick_prob if cond_key in pulse_lick_prob[s]]
@@ -435,9 +429,13 @@ def plot_pulse_aligned_lick_prob(pulse_lick_prob, config=ANALYSIS_OPTIONS):
         probs[:, n.sum(axis=0) < min_n] = np.nan
         return probs, n
 
-    for col_idx, t_start in enumerate(time_starts):
-        col = col_idx + 1
+    figs = {}
+    for t_start in time_starts:
         t_end = t_start + time_win
+        label = f'{t_start:.0f}-{t_end:.0f}s'
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.6, 0.4], vertical_spacing=0.08)
 
         for block in ['early', 'late']:
             cond_key = f'{block}Block_{t_start:.0f}-{t_end:.0f}s'
@@ -458,123 +456,132 @@ def plot_pulse_aligned_lick_prob(pulse_lick_prob, config=ANALYSIS_OPTIONS):
 
             fig.add_trace(go.Scatter(
                 x=bin_centres, y=mean_prob + ci_prob,
-                mode='lines', line=dict(width=0), showlegend=False),
-                row=1, col=col)
+                mode='lines', line=dict(width=0), showlegend=False), row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=bin_centres, y=mean_prob - ci_prob,
                 mode='lines', line=dict(width=0),
                 fill='tonexty', fillcolor=colour_rgba, showlegend=False),
-                row=1, col=col)
+                row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=bin_centres, y=mean_prob, mode='lines',
                 name=f'{block.capitalize()} block',
-                line=dict(color=colour, width=2),
-                showlegend=(col == 1)), row=1, col=col)
+                line=dict(color=colour, width=2)), row=1, col=1)
 
         early_key = f'earlyBlock_{t_start:.0f}-{t_end:.0f}s'
         late_key = f'lateBlock_{t_start:.0f}-{t_end:.0f}s'
         all_early, _ = get_probs_and_n(early_key)
         all_late, _ = get_probs_and_n(late_key)
-        if all_early is None or all_late is None:
-            continue
+        if all_early is not None and all_late is not None:
+            early_bl = np.nanmean(all_early, axis=1, keepdims=True)
+            late_bl = np.nanmean(all_late, axis=1, keepdims=True)
+            deltas = (all_early - early_bl) - (all_late - late_bl)
 
-        early_bl = np.nanmean(all_early, axis=1, keepdims=True)
-        late_bl = np.nanmean(all_late, axis=1, keepdims=True)
-        deltas = (all_early - early_bl) - (all_late - late_bl)
+            n_valid = np.sum(~np.isnan(deltas), axis=0).astype(float)
+            mean_delta = np.nanmean(deltas, axis=0)
+            ci_delta = 1.96 * np.nanstd(deltas, axis=0) / np.sqrt(
+                np.where(n_valid > 0, n_valid, 1))
 
-        n_valid = np.sum(~np.isnan(deltas), axis=0).astype(float)
-        mean_delta = np.nanmean(deltas, axis=0)
-        ci_delta = 1.96 * np.nanstd(deltas, axis=0) / np.sqrt(
-            np.where(n_valid > 0, n_valid, 1))
+            fig.add_trace(go.Scatter(
+                x=bin_centres, y=mean_delta + ci_delta,
+                mode='lines', line=dict(width=0), showlegend=False), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=bin_centres, y=mean_delta - ci_delta,
+                mode='lines', line=dict(width=0),
+                fill='tonexty', fillcolor='rgba(128,128,128,0.15)',
+                showlegend=False), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=bin_centres, y=mean_delta, mode='lines', name='Early - Late',
+                line=dict(color='grey', width=2)), row=2, col=1)
 
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=mean_delta + ci_delta,
-            mode='lines', line=dict(width=0), showlegend=False),
-            row=2, col=col)
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=mean_delta - ci_delta,
-            mode='lines', line=dict(width=0),
-            fill='tonexty', fillcolor='rgba(128,128,128,0.15)',
-            showlegend=False), row=2, col=col)
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=mean_delta, mode='lines', name='Early - Late',
-            line=dict(color='grey', width=2),
-            showlegend=(col == 1)), row=2, col=col)
+            fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                          row=2, col=1)
 
-        fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
-                      row=2, col=col)
+        fig.update_xaxes(range=xlims, row=1, col=1)
+        fig.update_xaxes(range=xlims, title_text='Delta TF (oct)', row=2, col=1)
+        fig.update_yaxes(title_text='Delta p(lick)', row=1, col=1)
+        fig.update_yaxes(title_text='Early - Late', row=2, col=1)
+        fig.update_layout(template='plotly_white', width=500, height=500,
+                          title_text=label)
+        figs[label] = fig
 
-    xlims = [-.6, .6]
-    fig.update_layout(template='plotly_white',
-                      width=max(200 * n_cols, 600), height=500)
-    for col in range(1, n_cols + 1):
-        fig.update_xaxes(range=xlims, row=1, col=col)
-        fig.update_xaxes(range=xlims, row=2, col=col)
-        fig.update_xaxes(title_text='Delta TF (oct)', row=2, col=col)
-    fig.update_yaxes(title_text='Delta p(lick)', row=1, col=1)
-    fig.update_yaxes(title_text='Early - Late', row=2, col=1)
-
-    return fig
+    return figs
 
 
 def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
-    """heatmap of P(lick) as a function of TF(t) vs TF(t-1), by block x time window"""
+    """heatmap of P(lick) for TF(t) vs TF(t-lag), one figure per time window x lag.
+    returns {label: fig}"""
     first_subj = next(iter(pulse_lick_prob.values()))
     bin_centres = first_subj['binCentres']
     time_starts = first_subj['time_starts']
     time_win = first_subj['time_win']
-    n_cols = len(time_starts)
-    min_n = config.get('min_pulse_samples', 500)
+    min_n = config.get('min_pulse_samples_2d', 50)
+    xlims = [-.6, .6]
+    pulse_lags = config.get('tf_pulse_lags', [1, 2, 3, 4])
 
-    fig = make_subplots(
-        rows=2, cols=n_cols, shared_xaxes=True, shared_yaxes=True,
-        vertical_spacing=0.08, horizontal_spacing=0.04,
-        subplot_titles=[f'{t:.0f}-{t + time_win:.0f}s' for t in time_starts]
-                       + [''] * n_cols,
-        row_titles=['Early block', 'Late block'])
+    frame_step = config.get('tf_sample_step', 3)
+    frame_rate = config.get('frame_rate', 60)
+    dt_ms = 1000 * frame_step / frame_rate
 
     subjs = list(pulse_lick_prob.keys())
-    zmin, zmax = np.inf, -np.inf
 
-    for row, block in enumerate(['early', 'late'], 1):
-        for col_idx, t_start in enumerate(time_starts):
-            col = col_idx + 1
-            t_end = t_start + time_win
-            cond_key = f'{block}Block_{t_start:.0f}-{t_end:.0f}s'
+    figs = {}
+    for t_start in time_starts:
+        t_end = t_start + time_win
+        time_label = f'{t_start:.0f}-{t_end:.0f}s'
 
-            valid_subjs = [s for s in subjs if cond_key in pulse_lick_prob[s]]
-            if not valid_subjs:
-                continue
+        for lag in pulse_lags:
+            lag_ms = int(lag * dt_ms)
+            label = f'{time_label}_lag{lag_ms}ms'
 
-            all_2d = np.stack([pulse_lick_prob[s][cond_key]['lickProb2D']
-                               for s in valid_subjs])
-            all_n = np.stack([pulse_lick_prob[s][cond_key]['n2D']
-                              for s in valid_subjs])
-            low_n = all_n.sum(axis=0) < min_n
-            all_2d[:, low_n] = np.nan
+            fig = make_subplots(rows=1, cols=2, shared_yaxes=True,
+                                subplot_titles=['Early block', 'Late block'],
+                                horizontal_spacing=0.08)
 
-            mean_2d = np.nanmean(all_2d, axis=0)
+            zmin, zmax = np.inf, -np.inf
+            for col, block in enumerate(['early', 'late'], 1):
+                cond_key = f'{block}Block_{t_start:.0f}-{t_end:.0f}s'
 
-            valid_vals = mean_2d[~np.isnan(mean_2d)]
-            if len(valid_vals) > 0:
-                zmin = min(zmin, np.nanmin(valid_vals))
-                zmax = max(zmax, np.nanmax(valid_vals))
+                valid_subjs = [s for s in subjs if cond_key in pulse_lick_prob[s]]
+                if not valid_subjs:
+                    continue
 
-            fig.add_trace(go.Heatmap(
-                z=mean_2d, x=bin_centres, y=bin_centres,
-                coloraxis='coloraxis',
-                showscale=(row == 1 and col == n_cols)),
-                row=row, col=col)
+                all_2d = np.stack([pulse_lick_prob[s][cond_key]['lickProb2D'][lag]
+                                   for s in valid_subjs])
+                all_n = np.stack([pulse_lick_prob[s][cond_key]['n2D'][lag]
+                                  for s in valid_subjs])
+                low_n = all_n.sum(axis=0) < min_n
+                all_2d[:, low_n] = np.nan
 
-    fig.update_layout(
-        template='plotly_white',
-        width=max(200 * n_cols, 600), height=500,
-        coloraxis=dict(colorscale='RdBu_r', cmid=np.nanmean([zmin, zmax]),
-                       colorbar=dict(title='P(lick)')))
+                mean_2d = np.nanmean(all_2d, axis=0)
+                nan_mask = np.isnan(mean_2d)
+                mean_2d[nan_mask] = 0
+                mean_2d = gaussian_filter(mean_2d, sigma=1, truncate=1.5)
+                mean_2d[nan_mask] = np.nan
 
-    for col in range(1, n_cols + 1):
-        fig.update_xaxes(title_text='TF(t) oct', row=2, col=col)
-    fig.update_yaxes(title_text='TF(t-1) oct', row=1, col=1)
-    fig.update_yaxes(title_text='TF(t-1) oct', row=2, col=1)
+                valid_vals = mean_2d[~np.isnan(mean_2d)]
+                if len(valid_vals) > 0:
+                    zmin = min(zmin, np.nanmin(valid_vals))
+                    zmax = max(zmax, np.nanmax(valid_vals))
 
-    return fig
+                fig.add_trace(go.Heatmap(
+                    z=mean_2d, x=bin_centres, y=bin_centres,
+                    coloraxis='coloraxis'), row=1, col=col)
+
+            fig.update_layout(
+                template='plotly_white', width=700, height=350,
+                title_text=f'{time_label}, lag = {lag_ms} ms',
+                coloraxis=dict(colorscale='RdBu_r',
+                               cmin=zmin if np.isfinite(zmin) else 0,
+                               cmax=zmax if np.isfinite(zmax) else 1,
+                               colorbar=dict(title='P(lick)')))
+
+            for col in [1, 2]:
+                fig.update_xaxes(range=xlims, title_text='TF(t) oct',
+                                 row=1, col=col)
+            fig.update_yaxes(range=xlims,
+                             title_text=f'TF(t-{lag_ms}ms) oct',
+                             row=1, col=1)
+
+            figs[label] = fig
+
+    return figs

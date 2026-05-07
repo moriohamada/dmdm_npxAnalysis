@@ -10,9 +10,10 @@ Full analysis pipeline for basic descriptive paper of temporal expectation.
 
 from pathlib import Path
 from config import *
+from utils.figures import save_fig
 
 
-#%% Behavioural quantification
+#%% Behavioural visualization
 plot_dir = Path(PATHS['plots_dir']) / 'behaviour'
 plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -25,25 +26,27 @@ from behaviour.plotting import (plot_psychometric, plot_elta, plot_eltc,
     plot_pulse_lick_prob_2d)
 
 psycho, chrono = load_behavioural('psychometric')
-plot_psychometric(psycho).write_image(str(plot_dir / 'psychometric'
-                                                     '.png'))
-plot_psychometric(chrono).write_image(str(plot_dir / 'chronometric.png'))
+save_fig(plot_psychometric(psycho), str(plot_dir / 'psychometric'))
+save_fig(plot_psychometric(chrono), str(plot_dir / 'chronometric'))
 
 elta = load_behavioural('elta')
-plot_elta(elta).write_image(str(plot_dir / 'elta.png'))
-
-#%% more behaviour
+save_fig(plot_elta(elta), str(plot_dir / 'elta'))
 
 eltc = load_behavioural('eltc_aligned')
-plot_eltc(eltc).write_image(str(plot_dir / 'eltc.png'))
-plot_eltc_comparison(eltc).write_image(str(plot_dir / 'eltc_comparison.png'))
+save_fig(plot_eltc(eltc), str(plot_dir / 'eltc'))
+save_fig(plot_eltc_comparison(eltc), str(plot_dir / 'eltc_comparison'))
 
 hazard = load_behavioural('hazard_rates')
-plot_el_hazard_rates(hazard).write_image(str(plot_dir / 'hazard_rates.png'))
+save_fig(plot_el_hazard_rates(hazard), str(plot_dir / 'hazard_rates'))
 
 pulse_lick = load_behavioural('pulse_lick_prob')
-plot_pulse_aligned_lick_prob(pulse_lick).write_image(str(plot_dir / 'pulse_lick_prob.png'))
-plot_pulse_lick_prob_2d(pulse_lick).write_image(str(plot_dir / 'pulse_lick_prob_2d.png'))
+for label, fig in plot_pulse_aligned_lick_prob(pulse_lick).items():
+    save_fig(fig, str(plot_dir / f'pulse_lick_prob_{label}'))
+for label, fig in plot_pulse_lick_prob_2d(pulse_lick).items():
+    save_fig(fig, str(plot_dir / f'pulse_lick_prob_2d_{label}'))
+
+#%% Quantification of expectation-dependent behavioural changes
+
 
 #%% Model licks
 
