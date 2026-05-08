@@ -71,17 +71,16 @@ def plot_psychometric(psycho_or_chrono, config=ANALYSIS_OPTIONS):
     n_valid = np.sum(~np.isnan(delta), axis=0)
     mean_d = np.nanmean(delta, axis=0)
     sem_d = np.nanstd(delta, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
-    colour = _block_colour('early')
 
     fig.add_trace(go.Scatter(
         x=change_tfs, y=mean_d,
         mode='lines+markers',
         name='Early time: early-block minus late-block probe',
-        line=dict(color=colour)), row=2, col=1)
+        line=dict(color='grey')), row=2, col=1)
     fig.add_trace(go.Scatter(
         x=list(change_tfs) + list(change_tfs)[::-1],
         y=list(mean_d + sem_d) + list(mean_d - sem_d)[::-1],
-        fill='toself', fillcolor=_block_rgba('early', 0.2),
+        fill='toself', fillcolor='rgba(128,128,128,0.2)',
         line=dict(width=0), mode='none', showlegend=False), row=2, col=1)
 
     fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
@@ -90,6 +89,105 @@ def plot_psychometric(psycho_or_chrono, config=ANALYSIS_OPTIONS):
     fig.update_xaxes(title_text='Change TF', row=2, col=1)
     fig.update_yaxes(title_text=yax, row=1, col=1)
     fig.update_yaxes(title_text=delta_yax, row=2, col=1)
+    fig.update_layout(template='plotly_white')
+    return fig
+
+
+def plot_psychometric_fits(params, n_hits, n_trials, changes=None,
+                            config=ANALYSIS_OPTIONS):
+    """psychometric data + fitted curves per block, with early-late delta below
+
+    params: dict {block: dict of (n_subj,) param arrays from _fit_psychometric}
+    n_hits, n_trials: dict {block: (n_subj, n_chs)} count arrays
+    changes: (n_chs,) log2(TF) values; defaults to log2(config['change_tfs'])
+    """
+    if changes is None:
+        changes = np.log2(config['change_tfs'])
+    changes = np.asarray(changes)
+    tf_lin = 2 ** changes
+
+    # x-axis is in log2 octaves (the fitting space) on a linear scale,
+    # with tick labels at the actual TF values in Hz
+    x_grid = np.linspace(changes.min(), changes.max(), 200)
+
+    def p_hit(alpha, beta, gamma, lapse, x):
+        ratio = np.clip(x / max(alpha, 1e-9), 0, 50) ** beta
+        return gamma + (1 - gamma - lapse) * (1 - np.exp(-ratio))
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.4], vertical_spacing=0.08)
+
+    # per-animal curves stacked into (n_subj, n_grid) for the delta plot
+    block_curves = {}
+
+    for block in ('early', 'late'):
+        if block not in params:
+            continue
+        prm = params[block]
+        nh = n_hits[block]
+        nt = n_trials[block]
+        bold = _block_colour(block)
+        faint = _block_rgba(block, 0.25)
+
+        n_subj = nh.shape[0]
+        curves = np.full((n_subj, len(x_grid)), np.nan)
+        for i in range(n_subj):
+            valid = nt[i] > 0
+            if valid.sum() > 0:
+                rate = nh[i, valid] / nt[i, valid]
+                fig.add_trace(go.Scatter(
+                    x=changes[valid], y=rate, mode='markers',
+                    marker=dict(color=faint, size=5),
+                    showlegend=False), row=1, col=1)
+
+            if np.isnan(prm['alpha'][i]):
+                continue
+            curves[i] = p_hit(prm['alpha'][i], prm['beta'][i],
+                              prm['gamma'][i], prm['lapse'][i], x_grid)
+            fig.add_trace(go.Scatter(
+                x=x_grid, y=curves[i], mode='lines',
+                line=dict(color=faint, width=1),
+                showlegend=False), row=1, col=1)
+
+        ok = ~np.isnan(curves[:, 0])
+        if ok.any():
+            mean_curve = np.nanmean(curves[ok], axis=0)
+            fig.add_trace(go.Scatter(
+                x=x_grid, y=mean_curve, mode='lines', name=block,
+                line=dict(color=bold, width=3)), row=1, col=1)
+
+        block_curves[block] = curves
+
+    # delta: paired per animal, mean and SEM across animals
+    if 'early' in block_curves and 'late' in block_curves:
+        delta = block_curves['early'] - block_curves['late']
+        ok = ~np.isnan(delta[:, 0])
+        n_valid = ok.sum()
+        if n_valid > 0:
+            d_mean = np.nanmean(delta[ok], axis=0)
+            d_sem = np.nanstd(delta[ok], axis=0) / np.sqrt(max(n_valid, 1))
+            fig.add_trace(go.Scatter(
+                x=x_grid, y=d_mean, mode='lines',
+                name='early - late', line=dict(color='grey', width=2)),
+                row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=list(x_grid) + list(x_grid)[::-1],
+                y=list(d_mean + d_sem) + list(d_mean - d_sem)[::-1],
+                fill='toself', fillcolor='rgba(128,128,128,0.2)',
+                line=dict(width=0), mode='none', showlegend=False),
+                row=2, col=1)
+        fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                      row=2, col=1)
+
+    tickvals = changes.tolist()
+    ticktext = [f'{tf:g}' for tf in tf_lin]
+    fig.update_xaxes(tickvals=tickvals, ticktext=ticktext, tickangle=0,
+                     row=1, col=1)
+    fig.update_xaxes(title_text='Change TF (Hz)',
+                     tickvals=tickvals, ticktext=ticktext, tickangle=0,
+                     row=2, col=1)
+    fig.update_yaxes(title_text='P(Hit)', range=[0, 1], row=1, col=1)
+    fig.update_yaxes(title_text='delta P(Hit)', row=2, col=1)
     fig.update_layout(template='plotly_white')
     return fig
 
@@ -149,7 +247,7 @@ def plot_elta(elta, config=ANALYSIS_OPTIONS):
 
         fig.add_trace(go.Scatter(
             x=t, y=mean_d, mode='lines',
-            name='Early − Late block (early-trial licks)',
+            name='Early - Late block (early-trial licks)',
             line=dict(color='grey', width=2)), row=2, col=1)
         fig.add_trace(go.Scatter(
             x=list(t) + list(t)[::-1],

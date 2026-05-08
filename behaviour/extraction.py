@@ -60,15 +60,13 @@ def build_dfs_from_sessions(npx_dir, config=ANALYSIS_OPTIONS):
 
 
 def filter_sessions(dfs, config=ANALYSIS_OPTIONS):
-    """remove early sessions and sessions with too few hits"""
+    """drop sessions with too few hits and transition trials at the start of each block"""
     df_filtered = dfs.copy()
     for subj in df_filtered:
         df = df_filtered[subj]
         rmv_idx = []
         for session in df['sessionID'].unique():
             sess_mask = df['sessionID'] == session
-            if session < config.get('ignore_first_sessions', 0):
-                rmv_idx.extend(df[sess_mask].index)
             if df.loc[sess_mask, 'IsHit'].sum() < config['min_hits_in_session']:
                 rmv_idx.extend(df[sess_mask].index)
         rmv_idx.extend(
@@ -94,13 +92,15 @@ def binomial_ci(k, n, alpha=0.05):
 #%% psychometrics
 
 def extract_psychometric(dfs, config=ANALYSIS_OPTIONS):
-    """extract hit rate and RTs for changes across conditions"""
+    """extract hit rate, RTs, and trial counts for changes across conditions"""
     change_tfs = config['change_tfs']
     n_subj, n_chs = len(dfs), len(change_tfs)
     shape = (n_subj, n_chs, 2, 2)  # subj x change x block x probe
 
     psycho = np.full(shape, np.nan)
     chrono = np.full(shape, np.nan)
+    n_hits = np.zeros(shape, dtype=int)
+    n_trials = np.zeros(shape, dtype=int)
 
     blocks = ['early', 'late']
     probes = [False, True]
@@ -118,12 +118,15 @@ def extract_psychometric(dfs, config=ANALYSIS_OPTIONS):
                     hits = mask & df['IsHit']
                     miss = mask & df['IsMiss']
 
-                    total = hits.sum() + miss.sum()
+                    n_h = int(hits.sum())
+                    total = n_h + int(miss.sum())
+                    n_hits[subj_id, ch_id, block_id, probe_id] = n_h
+                    n_trials[subj_id, ch_id, block_id, probe_id] = total
                     if total > 0:
-                        psycho[subj_id, ch_id, block_id, probe_id] = hits.sum() / total
+                        psycho[subj_id, ch_id, block_id, probe_id] = n_h / total
                     chrono[subj_id, ch_id, block_id, probe_id] = df.loc[hits, 'rt_RT'].mean()
 
-    return psycho, chrono
+    return psycho, chrono, n_hits, n_trials
 
 
 #%% lick-triggered stimulus

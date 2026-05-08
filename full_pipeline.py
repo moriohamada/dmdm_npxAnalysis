@@ -18,14 +18,15 @@ plot_dir = Path(PATHS['plots_dir']) / 'behaviour'
 plot_dir.mkdir(parents=True, exist_ok=True)
 
 from behaviour.extraction import extract_all_behavioural
-extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=False)
+extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=True)
 
 from behaviour.extraction import load_behavioural
 from behaviour.plotting import (plot_psychometric, plot_elta, plot_eltc,
     plot_eltc_comparison, plot_el_hazard_rates, plot_pulse_aligned_lick_prob,
     plot_pulse_lick_prob_2d)
 
-psycho, chrono = load_behavioural('psychometric')
+
+psycho, chrono, n_hits, n_trials = load_behavioural('psychometric')
 save_fig(plot_psychometric(psycho), str(plot_dir / 'psychometric'))
 save_fig(plot_psychometric(chrono), str(plot_dir / 'chronometric'))
 

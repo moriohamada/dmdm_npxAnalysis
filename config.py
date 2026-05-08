@@ -78,7 +78,6 @@ ANALYSIS_OPTIONS = dict(
     change_tfs    = [1, 1.25, 1.35, 1.5, 2, 4],
     change_wins   = {'early': [3, 8], 'late': [10.5, 15.5]},
     ignore_trial_start  = 2,               # s; ignore FAs in first seconds of trial
-    ignore_first_sessions = 2,            # ignore first N sessions after introducing blocks
 
     smooth_tf          = 5,               # samples; moving average for lick-triggered analyses
     frame_rate         = 60,
