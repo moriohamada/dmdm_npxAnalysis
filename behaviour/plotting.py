@@ -688,9 +688,10 @@ def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
         if all_vals_by_row[r]:
             pooled = np.concatenate(all_vals_by_row[r])
             if r == 0:
-                zlims[r] = [np.percentile(pooled, 1), np.percentile(pooled, 99)]
+                zlims[r] = [np.percentile(pooled, 0.5),
+                            np.percentile(pooled, 99.5)]
             else:
-                vmax = np.percentile(np.abs(pooled), 99)
+                vmax = np.percentile(np.abs(pooled), 99.5)
                 zlims[r] = [-vmax, vmax]
 
     # second pass: build all figures
@@ -740,7 +741,16 @@ def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
 
                 zlo, zhi = zlims[row_idx]
                 if row_idx == 0:
-                    cscale, cmid = 'Hot_r', None
+                    # white -> dark red, the upper (positive) half of RdBu_r
+                    cscale = [
+                        [0.0, 'rgb(247,247,247)'],
+                        [0.2, 'rgb(253,219,199)'],
+                        [0.4, 'rgb(244,165,130)'],
+                        [0.6, 'rgb(214,96,77)'],
+                        [0.8, 'rgb(178,24,43)'],
+                        [1.0, 'rgb(103,0,31)'],
+                    ]
+                    cmid = None
                 else:
                     cscale, cmid = 'RdBu_r', 0
                 fig.layout[caxis] = dict(

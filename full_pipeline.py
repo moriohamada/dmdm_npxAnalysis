@@ -18,7 +18,7 @@ plot_dir = Path(PATHS['plots_dir']) / 'behaviour'
 plot_dir.mkdir(parents=True, exist_ok=True)
 
 from behaviour.extraction import extract_all_behavioural
-extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=True)
+extract_all_behavioural(npx_dir=PATHS['npx_dir_local'], overwrite=False)
 
 from behaviour.extraction import load_behavioural
 from behaviour.plotting import (plot_psychometric, plot_elta, plot_eltc,
