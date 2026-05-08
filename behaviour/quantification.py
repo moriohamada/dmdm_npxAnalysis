@@ -88,7 +88,6 @@ def _fit_psychometric(n_h, n_tr, changes: list[float] = CHANGE_TFS):
     return out
 
 
-
 def _quantify_perf_change(valsE, valsL, changes, change_labels):
     """
     singned rank/permutation test on differences in hit rates or rts; also hit:fa ratios
