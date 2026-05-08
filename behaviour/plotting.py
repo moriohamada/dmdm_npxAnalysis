@@ -99,15 +99,13 @@ def plot_psychometric_fits(params, n_hits, n_trials, changes=None,
 
     params: dict {block: dict of (n_subj,) param arrays from _fit_psychometric}
     n_hits, n_trials: dict {block: (n_subj, n_chs)} count arrays
-    changes: (n_chs,) log2(TF) values; defaults to log2(config['change_tfs'])
+    changes: (n_chs,) Hz-above-baseline values; defaults to config['change_tfs'] - 1
     """
     if changes is None:
-        changes = np.log2(config['change_tfs'])
+        changes = np.asarray(config['change_tfs']) - 1
     changes = np.asarray(changes)
-    tf_lin = 2 ** changes
+    tf_lin = changes + 1   # absolute TF in Hz, for tick labels
 
-    # x-axis is in log2 octaves (the fitting space) on a linear scale,
-    # with tick labels at the actual TF values in Hz
     x_grid = np.linspace(changes.min(), changes.max(), 200)
 
     def p_hit(alpha, beta, gamma, lapse, x):

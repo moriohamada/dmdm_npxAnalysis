@@ -8,7 +8,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 
-CHANGE_TFS = np.log2(ANALYSIS_OPTIONS['change_tfs'])
+CHANGE_TFS = np.asarray(ANALYSIS_OPTIONS['change_tfs']) - 1   # Hz above baseline; x=0 is no-change
 CHANGE_GRPS = ['z' if tf==0 else 's' if tf<1 else 'l' for tf in CHANGE_TFS] # zero/small/large change
 
 def _fit_psychometric(n_h, n_tr, changes: list[float] = CHANGE_TFS):
@@ -17,13 +17,15 @@ def _fit_psychometric(n_h, n_tr, changes: list[float] = CHANGE_TFS):
 
         P(hit | x) = gamma + (1 - gamma - lapse) * (1 - exp(-(x / alpha)**beta))
 
-    parameter interpretation:
+    parameters:
         gamma:  FA rate at no change
         lapse:  inattention floor below 1; ceiling = 1 - lapse
-        alpha:  threshold scale in log2 octaves; the x at which the curve sits
-                ~63% of the way between gamma and (1 - lapse) - horizontal pos
-        beta:   slope shape/steepness. beta=1 -> exponential rise (log-like). beta>1 ->
-                more sigmoidal. beta<1 -> even more saturating.
+        alpha:  threshold scale in Hz above baseline; the x at which the curve is ~63%
+                between gamma and (1 - lapse) - horizontal pos
+        beta:   slope shape/steepness.
+                beta=1 -> exponential rise (log-like).
+                beta>1 -> more sigmoidal
+                beta<1 -> even more saturating
 
     n_h, n_tr shape (n_subj, n_chs); returns dict of (n_subj,) arrays
     keyed by alpha, beta, gamma, lapse, log_lik, converged.
@@ -66,10 +68,8 @@ def _fit_psychometric(n_h, n_tr, changes: list[float] = CHANGE_TFS):
               1.0,
               np.clip(gamma0, 0.01, 0.5),
               np.clip(lapse0, 0.01, 0.5)]
-        # beta lower bound at 1 prevents the infinite-slope-at-zero
-        # cliff (beta < 1) and keeps curves visually smooth at the floor
         bounds = [(1e-3, float(tfs.max()) * 5),
-                  (1.0, 10.0),
+                  (0, 10.0),
                   (0.0, 0.5),
                   (0.0, 0.5)]
         try:
