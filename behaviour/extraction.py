@@ -492,8 +492,9 @@ def extract_tf_pulses(dfs, config=ANALYSIS_OPTIONS):
         }
         pulse_lags = config.get('tf_pulse_lags', [1, 2, 3, 4])
         for lag in pulse_lags:
+            # past pulse at sample c-lag (lag*dt_ms before the current pulse)
             lagged = np.full_like(tf_dev, np.nan)
-            lagged[:, :-lag] = tf_dev[:, lag:]
+            lagged[:, lag:] = tf_dev[:, :-lag]
             rec[f'tf_dev_lag{lag}'] = lagged[rows, cols]
 
         all_dfs.append(pd.DataFrame(rec))

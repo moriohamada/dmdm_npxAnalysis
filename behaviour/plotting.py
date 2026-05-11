@@ -95,16 +95,21 @@ def plot_psychometric(psycho_or_chrono, config=ANALYSIS_OPTIONS):
 
 def plot_psychometric_fits(params, n_hits, n_trials, changes=None,
                             config=ANALYSIS_OPTIONS):
-    """psychometric data + fitted curves per block, with early-late delta below
+    """
+    psychometric data + fitted curves per block, with early-late delta below.
 
-    params: dict {block: dict of (n_subj,) param arrays from _fit_psychometric}
-    n_hits, n_trials: dict {block: (n_subj, n_chs)} count arrays
-    changes: (n_chs,) Hz-above-baseline values; defaults to config['change_tfs'] - 1
+    Inputs:
+        params: dict {block: param arrays} from _fit_psychometric per block.
+        n_hits, n_trials: 4D arrays (n_animals, n_changes, 2 block, 2 probe).
+            sliced internally to early-block non-probe and late-block probe.
+        changes: (n_chs,) Hz-above-baseline; defaults to config['change_tfs'] - 1.
     """
     if changes is None:
         changes = np.asarray(config['change_tfs']) - 1
     changes = np.asarray(changes)
-    tf_lin = changes + 1   # absolute TF in Hz, for tick labels
+
+    # diagonal slices: early-block non-probe vs late-block probe (matched in-trial timing)
+    block_idx = {'early': np.s_[:, :, 0, 0], 'late': np.s_[:, :, 1, 1]}
 
     x_grid = np.linspace(changes.min(), changes.max(), 200)
 
@@ -122,8 +127,8 @@ def plot_psychometric_fits(params, n_hits, n_trials, changes=None,
         if block not in params:
             continue
         prm = params[block]
-        nh = n_hits[block]
-        nt = n_trials[block]
+        nh = n_hits[block_idx[block]]
+        nt = n_trials[block_idx[block]]
         bold = _block_colour(block)
         faint = _block_rgba(block, 0.25)
 
@@ -163,22 +168,40 @@ def plot_psychometric_fits(params, n_hits, n_trials, changes=None,
         n_valid = ok.sum()
         if n_valid > 0:
             d_mean = np.nanmean(delta[ok], axis=0)
-            d_sem = np.nanstd(delta[ok], axis=0) / np.sqrt(max(n_valid, 1))
+            d_ci = 1.96 * np.nanstd(delta[ok], axis=0) / np.sqrt(max(n_valid, 1))
             fig.add_trace(go.Scatter(
                 x=x_grid, y=d_mean, mode='lines',
                 name='early - late', line=dict(color='grey', width=2)),
                 row=2, col=1)
             fig.add_trace(go.Scatter(
                 x=list(x_grid) + list(x_grid)[::-1],
-                y=list(d_mean + d_sem) + list(d_mean - d_sem)[::-1],
+                y=list(d_mean + d_ci) + list(d_mean - d_ci)[::-1],
                 fill='toself', fillcolor='rgba(128,128,128,0.2)',
                 line=dict(width=0), mode='none', showlegend=False),
                 row=2, col=1)
+
+        # per-animal empirical delta points at each change tf
+        rate_E = np.where(n_trials[block_idx['early']] > 0,
+                          n_hits[block_idx['early']]
+                          / np.maximum(n_trials[block_idx['early']], 1), np.nan)
+        rate_L = np.where(n_trials[block_idx['late']] > 0,
+                          n_hits[block_idx['late']]
+                          / np.maximum(n_trials[block_idx['late']], 1), np.nan)
+        emp_delta = rate_E - rate_L
+        for i in range(emp_delta.shape[0]):
+            valid = ~np.isnan(emp_delta[i])
+            if valid.any():
+                fig.add_trace(go.Scatter(
+                    x=changes[valid], y=emp_delta[i, valid],
+                    mode='markers',
+                    marker=dict(color='rgba(128,128,128,0.45)', size=5),
+                    showlegend=False), row=2, col=1)
+
         fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
                       row=2, col=1)
 
     tickvals = changes.tolist()
-    ticktext = [f'{tf:g}' for tf in tf_lin]
+    ticktext = [f'{c + 1:g}' for c in changes]
     fig.update_xaxes(tickvals=tickvals, ticktext=ticktext, tickangle=0,
                      row=1, col=1)
     fig.update_xaxes(title_text='Change TF (Hz)',
@@ -601,6 +624,144 @@ def plot_pulse_aligned_lick_prob(pulse_lick_prob, config=ANALYSIS_OPTIONS):
         figs[label] = fig
 
     return figs
+
+
+def plot_pulse_lick_prob_by_period(pulse_lick_prob,
+                                   config=ANALYSIS_OPTIONS):
+    """pulse-aligned lick probability for three trial-period conditions,
+    shown under raw, per-block-normalised, and global-normalised scaling.
+
+    conditions:
+        earlyBlock_early: early block, early in trial
+        lateBlock_early:  late block, early in trial (probe-like)
+        lateBlock_late:   late block, late in trial
+
+    trial-period split uses the project-wide convention:
+        early-in-trial: ignore_trial_start -> tr_split_time
+        late-in-trial:  tr_split_time -> end of data
+    saved sliding windows that fall fully inside each range are pooled
+    (n-weighted across windows).
+    """
+    first_subj = next(iter(pulse_lick_prob.values()))
+    bin_centres = first_subj['binCentres']
+    time_starts = first_subj['time_starts']
+    time_win = first_subj['time_win']
+    min_n = config.get('min_pulse_samples', 500)
+    xlims = [-.6, .6]
+    baseline_hw = config.get('baseline_half_width', 0.1)
+    baseline_mask = np.abs(bin_centres) <= baseline_hw
+
+    t_split = config['tr_split_time']
+    t_early_start = config['ignore_trial_start']
+    t_late_end = float(time_starts[-1] + time_win)
+
+    def windows_in_range(t_lo, t_hi):
+        """sliding-window keys whose [start, start+time_win] fits in [t_lo, t_hi]"""
+        return [t for t in time_starts
+                if t >= t_lo and t + time_win <= t_hi]
+
+    early_starts = windows_in_range(t_early_start, t_split)
+    late_starts = windows_in_range(t_split, t_late_end)
+
+    period_starts = {'early': early_starts, 'late': late_starts}
+
+    cond_specs = {
+        'earlyBlock_early': ('early', 'early', 'solid'),
+        'lateBlock_early':  ('late',  'early', 'dash'),
+        'lateBlock_late':   ('late',  'late',  'solid'),
+    }
+    label_for = {
+        'earlyBlock_early': 'Early block, early in trial',
+        'lateBlock_early':  'Late block, early in trial',
+        'lateBlock_late':   'Late block, late in trial',
+    }
+
+    def get_probs(block, period):
+        """n-weighted average of lickProb across the period's sliding windows"""
+        starts = period_starts[period]
+        subjs = list(pulse_lick_prob.keys())
+        sums = np.zeros((len(subjs), len(bin_centres)))
+        ns = np.zeros((len(subjs), len(bin_centres)))
+        for t in starts:
+            key = f'{block}Block_{t:.0f}-{t + time_win:.0f}s'
+            for i, s in enumerate(subjs):
+                if key not in pulse_lick_prob[s]:
+                    continue
+                p = pulse_lick_prob[s][key]['lickProb']
+                n = pulse_lick_prob[s][key]['n']
+                ok = ~np.isnan(p)
+                sums[i, ok] += p[ok] * n[ok]
+                ns[i, ok] += n[ok]
+        probs = np.where(ns > 0, sums / np.maximum(ns, 1), np.nan)
+        probs[:, ns.sum(axis=0) < min_n] = np.nan
+        return probs
+
+    cond_data = {name: get_probs(block, period)
+                 for name, (block, period, _) in cond_specs.items()}
+
+    # global baseline: per-subject P(lick) near tf_dev=0 in lateBlock_early
+    gbl = cond_data['lateBlock_early']
+    global_baseline = (np.nanmean(gbl[:, baseline_mask], axis=1, keepdims=True)
+                       if gbl is not None else None)
+
+    norm_titles = ['Raw', 'Per-block norm', 'Global norm (late baseline)']
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.07, row_titles=norm_titles)
+
+    for name, (key, block, dash) in cond_specs.items():
+        probs = cond_data[name]
+        if probs is None:
+            continue
+        colour = _block_colour(block)
+        colour_rgba = _block_rgba(block, 0.15)
+
+        per_cond_baseline = np.nanmean(probs[:, baseline_mask],
+                                       axis=1, keepdims=True)
+
+        normed = {
+            0: probs,
+            1: probs - per_cond_baseline,
+            2: probs - global_baseline if global_baseline is not None else None,
+        }
+
+        for row_idx, data in normed.items():
+            if data is None:
+                continue
+            n_valid = np.sum(~np.isnan(data), axis=0).astype(float)
+            mean = np.nanmean(data, axis=0)
+            ci = 1.96 * np.nanstd(data, axis=0) / np.sqrt(
+                np.where(n_valid > 0, n_valid, 1))
+            show_legend = (row_idx == 0)
+
+            fig.add_trace(go.Scatter(
+                x=bin_centres, y=mean + ci, mode='lines',
+                line=dict(width=0), showlegend=False),
+                row=row_idx + 1, col=1)
+            fig.add_trace(go.Scatter(
+                x=bin_centres, y=mean - ci, mode='lines',
+                line=dict(width=0), fill='tonexty',
+                fillcolor=colour_rgba, showlegend=False),
+                row=row_idx + 1, col=1)
+            fig.add_trace(go.Scatter(
+                x=bin_centres, y=mean, mode='lines',
+                name=label_for[name],
+                line=dict(color=colour, width=2, dash=dash),
+                showlegend=show_legend),
+                row=row_idx + 1, col=1)
+
+        # zero line on the normalised rows
+    for row in (2, 3):
+        fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                      row=row, col=1)
+
+    fig.update_xaxes(range=xlims, row=3, col=1, title_text='TF deviation (oct)')
+    for row in (1, 2, 3):
+        fig.update_xaxes(range=xlims, row=row, col=1)
+    fig.update_yaxes(title_text='P(lick)', row=1, col=1)
+    fig.update_yaxes(title_text='delta P(lick)', row=2, col=1)
+    fig.update_yaxes(title_text='delta P(lick)', row=3, col=1)
+    fig.update_layout(template='plotly_white', width=600, height=750)
+    return fig
 
 
 def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
