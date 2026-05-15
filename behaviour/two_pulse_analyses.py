@@ -50,20 +50,32 @@ def extract_two_pulse_events(dfs, config=ANALYSIS_OPTIONS):
                 licked = (lick_time >= pulse_time + lick_win[0] and
                           lick_time < pulse_time + lick_win[1])
 
-                # find nearest preceding fast pulse
-                nearest_delay = np.nan
+                # nearest preceding fast pulse within max_delay
+                preceding_delay = np.nan
                 for i_pos in range(j_pos - 1, -1, -1):
                     gap = j - fast_idx[i_pos]
                     if gap > max_delay_samples:
                         break
-                    nearest_delay = gap * dt
+                    preceding_delay = gap * dt
+                    break
+
+                # nearest following fast pulse within max_delay
+                # (used to exclude first-of-pair pulses from "isolated" set)
+                following_delay = np.nan
+                for k_pos in range(j_pos + 1, len(fast_idx)):
+                    gap = fast_idx[k_pos] - j
+                    if gap > max_delay_samples:
+                        break
+                    following_delay = gap * dt
+                    break
 
                 records.append({
                     'subj': subj,
                     'block': row['hazardblock'],
                     'pulse_time': pulse_time,
                     'licked': licked,
-                    'preceding_delay': nearest_delay,
+                    'preceding_delay': preceding_delay,
+                    'following_delay': following_delay,
                 })
 
     return pd.DataFrame(records)
@@ -95,10 +107,10 @@ def calculate_two_pulse_interaction(dfs, config=ANALYSIS_OPTIONS):
             subj_block = events[(events['subj'] == subj) &
                                 (events['block'] == block)]
 
-            # P_0: baseline lick rate from non-fast pulses in same block
-            # computed from the full pulse data, not just the fast events
-            # use the fast events to get P_single for isolated fast pulses
-            isolated = subj_block[subj_block['preceding_delay'].isna()]
+            # P_single: isolated in BOTH directions (no fast pulse within
+            # max_delay either side), to avoid contaminating with first-of-pair
+            isolated = subj_block[subj_block['preceding_delay'].isna() &
+                                  subj_block['following_delay'].isna()]
             paired = subj_block[subj_block['preceding_delay'].notna()]
 
             n_isolated = len(isolated)

@@ -2,11 +2,14 @@
 behavioural quantification: significance tests, effect sizes, model comparisons.
 operates on cached results from extraction.py.
 """
+import os
 from config import ANALYSIS_OPTIONS
-from behaviour.extraction import load_behavioural, save_behavioural
+from behaviour.extraction import (load_behavioural, save_behavioural,
+                                  BEHAVIOUR_DATA_DIR)
 import numpy as np
 from scipy.optimize import minimize
-
+from scipy.stats import ttest_rel, wilcoxon
+from sklearn.decomposition import PCA
 
 CHANGE_TFS = np.asarray(ANALYSIS_OPTIONS['change_tfs']) - 1   # Hz above baseline; x=0 is no-change
 CHANGE_GRPS = tuple('z' if tf == 0 else 's' if tf < 1 else 'l' for tf in CHANGE_TFS)   # zero/small/large change
@@ -312,43 +315,411 @@ def quantify_change_detection(psycho: np.ndarray,
     return psychometric_params, psychometric_param_stats, hit_stats_grp, rt_stats_grp
 
 
-def quantify_lick_triggered_stim(elts: dict, config=ANALYSIS_OPTIONS):
+def quantify_lick_triggered_stim(elts: dict, config=ANALYSIS_OPTIONS,
+                                 n_components=3, sig_test='ttest', seed=0):
     """
-    1) Quantify difference in mean AND variance between lick-triggered stimuli
-    2) Extract common pc dims for early and late, find diffrences in
-    occupancy/projections of stimuli along each to detect possible strategy change or
-    component-specifc changes
+    quantify earlyBlock_early vs lateBlock_early lick-triggered stims:
+    1) paired test per timepoint on per-animal ELTA (mean) and ELTV (variance)
+    2) single global PCA on pooled stims across all animals and all 3 lts
+       conditions, with per-animal counts matched across conditions (each
+       condition subsampled to the smallest of the animal's 3). Each animal
+       then has its earlyBlock_early and lateBlock_early stims projected
+       onto the shared basis; paired test per component on projection mean
+       and variance.
+
+    args:
+        elts: dict from extract_elts; uses earlyBlock_early, lateBlock_early,
+              lateBlock_late
+        n_components: number of common PCs to summarise
+        sig_test: 'ttest' or 'wilcoxon'
+        seed: rng seed for per-animal subsampling
+
+    returns dict with:
+        subjs                                          list of animals
+        elta_E, elta_L, eltv_E, eltv_L                 (n_subj, n_samples)
+        mean_stats, var_stats                          (n_samples, 2) stat, pval per timepoint
+        pc_components                                  (n_components, n_samples)
+        pc_explained_var                               (n_components,)
+        projection_mean_E, projection_mean_L           (n_subj, n_components)
+        projection_var_E, projection_var_L             (n_subj, n_components)
+        projection_mean_stats, projection_var_stats    list of (stat, pval) per component
     """
 
 
-def quantify_pulse_lick_probability():
+    if sig_test == 'ttest':
+        paired_test = ttest_rel
+    elif sig_test == 'wilcoxon':
+        paired_test = wilcoxon
+    else:
+        raise ValueError(f'unknown sig_test: {sig_test}')
 
-    pass
+    rel_idx = np.s_[:, 10:]
+    animals = elts['earlyBlock_early'].keys()
+    rng = np.random.default_rng(seed)
+    conds = ('earlyBlock_early', 'lateBlock_early', 'lateBlock_late')
+
+    subjs = []
+    elta_E, elta_L, eltv_E, eltv_L = [], [], [], []
+    pca_pool = []
+
+    for animal in animals:
+        per_cond = [elts[c][animal][rel_idx] for c in conds]
+        if any(len(x) < 2 for x in per_cond):
+            continue
+        e, l, _ = per_cond
+
+        elta_E.append(e.mean(axis=0))
+        elta_L.append(l.mean(axis=0))
+        eltv_E.append(e.var(axis=0))
+        eltv_L.append(l.var(axis=0))
+
+        # match counts across this animal's 3 conditions before adding to global PCA pool
+        n_match = min(len(x) for x in per_cond)
+        for x in per_cond:
+            pca_pool.append(x[rng.choice(len(x), n_match, replace=False)])
+
+        subjs.append(animal)
+
+    elta_E = np.stack(elta_E)
+    elta_L = np.stack(elta_L)
+    eltv_E = np.stack(eltv_E)
+    eltv_L = np.stack(eltv_L)
+
+    pca = PCA(n_components=n_components).fit(np.vstack(pca_pool))
+    pc_components = pca.components_
+    pc_explained = pca.explained_variance_ratio_
+
+    projection_mean_E, projection_mean_L = [], []
+    projection_var_E, projection_var_L = [], []
+    for animal in subjs:
+        e = elts['earlyBlock_early'][animal][rel_idx]
+        l = elts['lateBlock_early'][animal][rel_idx]
+        e_scores = (e - pca.mean_) @ pc_components.T
+        l_scores = (l - pca.mean_) @ pc_components.T
+        projection_mean_E.append(e_scores.mean(axis=0))
+        projection_mean_L.append(l_scores.mean(axis=0))
+        projection_var_E.append(e_scores.var(axis=0))
+        projection_var_L.append(l_scores.var(axis=0))
+
+    projection_mean_E = np.stack(projection_mean_E)
+    projection_mean_L = np.stack(projection_mean_L)
+    projection_var_E = np.stack(projection_var_E)
+    projection_var_L = np.stack(projection_var_L)
+
+    n_samples = elta_E.shape[1]
+    mean_stats = np.full((n_samples, 2), np.nan)
+    var_stats = np.full((n_samples, 2), np.nan)
+    for t in range(n_samples):
+        s, p = paired_test(elta_E[:, t], elta_L[:, t])
+        mean_stats[t] = float(s), float(p)
+        s, p = paired_test(eltv_E[:, t], eltv_L[:, t])
+        var_stats[t] = float(s), float(p)
+
+    projection_mean_stats, projection_var_stats = [], []
+    for c in range(n_components):
+        s, p = paired_test(projection_mean_E[:, c], projection_mean_L[:, c])
+        projection_mean_stats.append((float(s), float(p)))
+        s, p = paired_test(projection_var_E[:, c], projection_var_L[:, c])
+        projection_var_stats.append((float(s), float(p)))
+
+    return {
+        'subjs': subjs,
+        'elta_E': elta_E, 'elta_L': elta_L,
+        'eltv_E': eltv_E, 'eltv_L': eltv_L,
+        'mean_stats': mean_stats, 'var_stats': var_stats,
+        'pc_components': pc_components,
+        'pc_explained_var': pc_explained,
+        'projection_mean_E': projection_mean_E, 'projection_mean_L': projection_mean_L,
+        'projection_var_E': projection_var_E, 'projection_var_L': projection_var_L,
+        'projection_mean_stats': projection_mean_stats, 'projection_var_stats': projection_var_stats,
+    }
 
 
-def quantify_hazard_rates():
-    pass
+def quantify_hazard_rates(hazard: dict,
+                          config=ANALYSIS_OPTIONS,
+                          sig_test: str = 'wilcoxon',
+                          min_n: int = 100):
+    """
+    Simple bin-wise test to see time-range of signficant differences.
 
-def quantify_integration_time():
-    pass
+    args:
+        hazard: dict; from extract_hazard_rates
+        sig_test: 'ttest' or 'wilcoxon'
+        min_n: float; minimum number of trials per bin to consider valid. Only time
+               bins with at least this many trials in BOTH blocks are considered.
+    """
+
+    animals = list(hazard.keys())
+    bin_centres = hazard[animals[0]]['binCentres']
+    n_bins = len(bin_centres)
+
+    early = np.full((len(animals), n_bins), np.nan)
+    late  = np.full((len(animals), n_bins), np.nan)
+    diffs = np.full((len(animals), n_bins), np.nan)
+
+    for a, animal in enumerate(animals):
+        haz = hazard[animal]
+        eValid = haz['early_n'] >= min_n
+        lValid = haz['late_n'] >= min_n
+        both   = eValid & lValid
+
+        early[a, eValid] = haz['earlyBlock'][eValid]
+        late[a, lValid]  = haz['lateBlock'][lValid]
+        diffs[a, both]   = (haz['earlyBlock'] - haz['lateBlock'])[both]
+
+    stat = np.full(n_bins, np.nan)
+    ps   = np.full(n_bins, np.nan)
+    if sig_test == 'ttest':
+        from scipy.stats import ttest_1samp
+        stat_fn = lambda d: ttest_1samp(d, 0, nan_policy='omit')
+    elif sig_test == 'wilcoxon':
+        from scipy.stats import wilcoxon as stat_fn
+    else:
+        raise ValueError(f'unknown sig_test: {sig_test}')
+
+    for t in range(n_bins):
+        col = diffs[:, t]
+        if np.sum(~np.isnan(col)) < 2:
+            continue
+        stat[t], ps[t] = stat_fn(col)
+
+    return {
+        'binCentres': bin_centres,
+        'animals': animals,
+        'early': early,
+        'late': late,
+        'diffs': diffs,
+        'stat': stat,
+        'ps': ps,
+        'sig_test': sig_test,
+        'min_n': min_n,
+    }
+
+
+def quantify_pulse_lick_probability(pulse_lick: dict,
+                                    config=ANALYSIS_OPTIONS,
+                                    sig_test: str = 'wilcoxon',
+                                    min_n: int = 500):
+    """
+    Per-animal OLS fit of P(lick) ~ b0 + b1 * tf_dev to baseline-pulse-aligned
+    lick probability, per block x time window. Then paired test between blocks
+    on bias and slope across animals, per time window.
+
+    args:
+        pulse_lick: dict from calculate_pulse_lick_prob
+        sig_test: 'ttest' or 'wilcoxon'
+        min_n: minimum pulses per bin (per animal) for that bin to enter the fit
+    """
+    if sig_test == 'ttest':
+        from scipy.stats import ttest_rel
+        paired_test = ttest_rel
+    elif sig_test == 'wilcoxon':
+        from scipy.stats import wilcoxon as paired_test
+    else:
+        raise ValueError(f'unknown sig_test: {sig_test}')
+
+    subjs = list(pulse_lick.keys())
+    first = pulse_lick[subjs[0]]
+    bin_centres = first['binCentres']
+    time_starts = first['time_starts']
+    time_win = first['time_win']
+
+    def fit_subj(p, n):
+        valid = (n >= min_n) & ~np.isnan(p)
+        if valid.sum() < 2:
+            return np.nan, np.nan
+        x = bin_centres[valid]
+        y = p[valid]
+        b1, b0 = np.polyfit(x, y, 1)
+        return b0, b1
+
+    results = {}
+    for t_start in time_starts:
+        t_end = t_start + time_win
+        label = f'{t_start:.0f}-{t_end:.0f}s'
+
+        block_fits = {}
+        for block in ('early', 'late'):
+            key = f'{block}Block_{label}'
+            b0s = np.full(len(subjs), np.nan)
+            b1s = np.full(len(subjs), np.nan)
+            for i, s in enumerate(subjs):
+                if key not in pulse_lick[s]:
+                    continue
+                p = pulse_lick[s][key]['lickProb']
+                n = pulse_lick[s][key]['n']
+                b0s[i], b1s[i] = fit_subj(p, n)
+            block_fits[block] = {'bias': b0s, 'slope': b1s}
+
+        stats = {}
+        for param in ('bias', 'slope'):
+            e = block_fits['early'][param]
+            l = block_fits['late'][param]
+            paired = ~np.isnan(e) & ~np.isnan(l)
+            if paired.sum() < 2:
+                stats[param] = (np.nan, np.nan)
+                continue
+            stat, p = paired_test(e[paired], l[paired])
+            stats[param] = (float(stat), float(p))
+
+        results[label] = {
+            'early': block_fits['early'],
+            'late': block_fits['late'],
+            'stats': stats,
+        }
+
+    return {
+        'subjs': subjs,
+        'time_starts': time_starts,
+        'time_win': time_win,
+        'sig_test': sig_test,
+        'min_n': min_n,
+        'by_window': results,
+    }
+
+
+
+def quantify_integration_time(interaction: dict,
+                              config=ANALYSIS_OPTIONS,
+                              sig_test: str = 'ttest',
+                              min_n: int = 20,
+                              alpha: float = 0.05):
+    """
+    quantify behavioural integration timescale from the two-pulse interaction
+    index J(delay), per block. J(d) is the relative facilitation of P(lick) by
+    a second TF pulse at delay d, over the prediction from independent pulse
+    effects (paper Methods, denoted I): J=0 means pulses act independently,
+    J>0 means evidence from the first pulse is still influencing the decision.
+
+    per delay bin: one-sample test across animals on J vs 0. integration time
+    per block = largest delay where J is sig > 0. per animal per block: fit
+    J(d) = A * exp(-d/tau) for a decay timescale; paired test on tau between
+    blocks.
+
+    args:
+        interaction: dict from compute_interaction_index, keyed by subject
+        sig_test: 'ttest' or 'wilcoxon'
+        min_n: min n_pairs per delay bin (per animal) for that bin to count
+        alpha: significance threshold for "integration time" cutoff
+    """
+    from scipy.optimize import curve_fit
+    from scipy.stats import ttest_1samp, ttest_rel, wilcoxon
+
+    if sig_test == 'ttest':
+        one_sample = lambda d: ttest_1samp(d, 0, nan_policy='omit')
+        paired_test = ttest_rel
+    elif sig_test == 'wilcoxon':
+        one_sample = wilcoxon
+        paired_test = wilcoxon
+    else:
+        raise ValueError(f'unknown sig_test: {sig_test}')
+
+    subjs = [s for s in interaction
+             if isinstance(interaction[s], dict)
+             and ('early' in interaction[s] or 'late' in interaction[s])]
+    delay_centres = interaction[subjs[0]]['delay_centres']
+    n_delays = len(delay_centres)
+
+    def exp_decay(d, A, tau):
+        return A * np.exp(-d / tau)
+
+    block_results = {}
+    for block in ('early', 'late'):
+        # stack J across animals, masking delay bins with too few pulse pairs
+        j_per_subj = np.full((len(subjs), n_delays), np.nan)
+        for i, s in enumerate(subjs):
+            if block not in interaction[s]:
+                continue
+            data = interaction[s][block]
+            j_subj = data['J'].copy()
+            j_subj[data['n_pairs'] < min_n] = np.nan
+            j_per_subj[i] = j_subj
+
+        stat = np.full(n_delays, np.nan)
+        pvals = np.full(n_delays, np.nan)
+        for d in range(n_delays):
+            j_across_subjs = j_per_subj[:, d]
+            j_across_subjs = j_across_subjs[~np.isnan(j_across_subjs)]
+            if len(j_across_subjs) < 2:
+                continue
+            stat[d], pvals[d] = one_sample(j_across_subjs)
+
+        # integration time = largest delay where J is sig > 0 across animals
+        sig_pos = (pvals < alpha) & (np.nanmean(j_per_subj, axis=0) > 0)
+        integration_time = (float(delay_centres[np.where(sig_pos)[0].max()])
+                            if sig_pos.any() else np.nan)
+
+        # per-animal exponential decay fit on J(delay)
+        amps = np.full(len(subjs), np.nan)
+        taus = np.full(len(subjs), np.nan)
+        for i in range(len(subjs)):
+            j_subj = j_per_subj[i]
+            valid = ~np.isnan(j_subj)
+            if valid.sum() < 3:
+                continue
+            amp_init = float(np.clip(j_subj[valid][0], 0.05, 9.9))
+            try:
+                (amps[i], taus[i]), _ = curve_fit(
+                    exp_decay, delay_centres[valid], j_subj[valid],
+                    p0=[amp_init, 0.2],
+                    bounds=([0, 1e-3], [10, 5]),
+                    maxfev=2000)
+            except Exception as e:
+                print(f'tau fit failed for {subjs[i]} ({block}): '
+                      f'{type(e).__name__}: {e}')
+
+        n_valid = np.sum(~np.isnan(j_per_subj), axis=0).astype(float)
+        block_results[block] = {
+            'J': j_per_subj,
+            'J_mean': np.nanmean(j_per_subj, axis=0),
+            'J_sem': np.nanstd(j_per_subj, axis=0) / np.sqrt(np.maximum(n_valid, 1)),
+            'stat': stat,
+            'pval': pvals,
+            'integration_time': integration_time,
+            'amp': amps,
+            'tau': taus,
+        }
+
+    # paired E vs L on tau
+    eT = block_results['early']['tau']
+    lT = block_results['late']['tau']
+    paired = ~np.isnan(eT) & ~np.isnan(lT)
+    if paired.sum() >= 2:
+        s, p = paired_test(eT[paired], lT[paired])
+        tau_stats = (float(s), float(p))
+    else:
+        tau_stats = (np.nan, np.nan)
+
+    return {
+        'subjs': subjs,
+        'delay_centres': delay_centres,
+        'min_n': min_n,
+        'sig_test': sig_test,
+        'alpha': alpha,
+        'early': block_results['early'],
+        'late': block_results['late'],
+        'tau_stats': tau_stats,
+    }
+
 
 def run_all_quantifications(config=ANALYSIS_OPTIONS, overwrite=False):
 
-    cached = load_behavioural('stats') if not overwrite else None
-    if cached is not None:
-        return cached
+    stats_path = os.path.join(BEHAVIOUR_DATA_DIR, 'stats.pkl')
+    if not overwrite and os.path.exists(stats_path):
+        return load_behavioural('stats')
 
     psycho, chrono, n_hits, n_trials = load_behavioural('psychometric')
     elts = load_behavioural('elts')
     hazard = load_behavioural('hazard_rates')
     pulse_lick = load_behavioural('pulse_lick_prob')
+    two_pulse = load_behavioural('two_pulse_interaction')
 
     stats = {
         'psychometric': quantify_change_detection(psycho, chrono, n_hits, n_trials, config),
         'lts': quantify_lick_triggered_stim(elts, config),
         'hazard_rates': quantify_hazard_rates(hazard, config),
         'pulse_lick_prob': quantify_pulse_lick_probability(pulse_lick, config),
-        'integration_time': quantify_integration_time(pulse_lick, config),
+        'integration_time': quantify_integration_time(two_pulse, config),
     }
     save_behavioural(stats, 'stats')
     return stats

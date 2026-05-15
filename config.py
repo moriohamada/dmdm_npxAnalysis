@@ -313,6 +313,19 @@ TFDIM_OPTIONS = dict(
     n_neural_pcs     = 6,
 )
 #%%
+BEHAVIOUR_RNN_OPS = dict(
+    n_hidden        = 8,
+    n_hidden_sweep  = [4, 8, 16, 32],
+    lr              = 1e-3,
+    weight_decay    = 1e-4,
+    batch_size      = 64,
+    max_epochs      = 300,
+    patience        = 20,
+    val_frac        = 0.2,
+    grad_clip       = 1.0,
+    seed            = 0,
+)
+#%%
 PLOT_OPTIONS = dict(
     colours = dict(
         block = {

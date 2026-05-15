@@ -1,257 +1,262 @@
 """
-leaky integrator model for FA behaviour.
-simulates a noisy evidence accumulator driven by baseline TF,
-fits parameters per subject per block via grid search.
+leaky integrator model fit per animal per block on baseline-only data.
+fits (tau, gain, threshold) by feature matching against three observables:
+    P(lick|TF)         -> gain (sensitivity)
+    baseline FA hazard -> threshold (criterion)
+    lick-triggered TF  -> tau (integration time)
+the three-feature objective breaks the gain x threshold degeneracy that arises
+when fitting only to FA times.
 """
 import numpy as np
 import pandas as pd
 import pickle
 from pathlib import Path
 from itertools import product
-from scipy.stats import gaussian_kde
 from joblib import Parallel, delayed
 
 from config import ANALYSIS_OPTIONS
+from behaviour.extraction import strip_and_convert_tf
 
 
-SEARCH_PARAMS = {
-    'threshold': np.linspace(.25, 3, 24),
-    'gain':      np.array([1.0]),
-    'tau':       np.concatenate([[0], np.logspace(-3, np.log10(10), 18), [np.inf]]),
-    'sigma':     np.logspace(-3, 1, 20),
-}
+#%% grid + feature targets
+
+# tau: dense log-spacing around the paper's behavioural estimate (~0.27s);
+#      sentinels [0] (no integration) and [inf] (perfect integration) bracket the search.
+# gain: factor-25 around 1 in log octaves (sensitivity scaling of log2(TF) input).
+# threshold: log-spaced; the integrator state SS-SD is ~gain*0.43 octaves at tau=0.25s,
+#            so thresholds 0.2-8 span ~0.5x to ~20x the noise floor at gain=1.
+SEARCH_PARAMS = dict(
+    tau       = np.concatenate([[0], np.logspace(np.log10(0.05), np.log10(3), 14), [np.inf]]),
+    gain      = np.logspace(np.log10(0.2), np.log10(5), 10),
+    threshold = np.logspace(np.log10(0.2), np.log10(8), 14),
+)
+
+LICK_WIN    = (0.2, 1.0)                       # s; window for P(lick|TF)
+TF_BINS     = np.arange(-0.8, 0.85, 0.1)       # octaves
+HAZARD_BINS = np.arange(2.0, 16.0, 0.5)        # s; centres
+HAZARD_HALF = 0.25                             # s; half-width
+KERNEL_LAGS = np.arange(-1.0, 0.0 + 0.05, 0.05)  # s before FA
 
 
-def clean_df(df, min_rt=ANALYSIS_OPTIONS['ignore_trial_start'],
-             include_non_fa=True):
-    """keep FA trials (with RT filter) and optionally non-FA trials"""
-    fa_mask = df['IsFA'] & (df['rt_FA'] > min_rt) & (df['rt_FA'] <= 8)
+#%% preprocessing
 
-    if include_non_fa:
-        non_fa_mask = ~df['IsFA'] & (df['stimT'] > min_rt)
-        df_clean = df[fa_mask | non_fa_mask].reset_index(drop=True)
+def clean_baseline_trials(df, min_t=ANALYSIS_OPTIONS['ignore_trial_start']):
+    """keep FA trials with rt_FA past min_t and non-FA trials whose baseline lasted past min_t"""
+    fa_ok = df['IsFA'] & (df['rt_FA'] > min_t)
+    non_fa_ok = ~df['IsFA'] & (df['stimT'] > min_t)
+    return df[fa_ok | non_fa_ok].reset_index(drop=True)
+
+
+def precompute_tf(df, config=ANALYSIS_OPTIONS):
+    """per-trial baseline TF in log2 octaves, subsampled, truncated at FA or change onset"""
+    frame_step  = config['tf_sample_step']
+    sample_rate = config['tf_sample_rate']
+    dt = 1.0 / sample_rate
+
+    # strip grey-screen and convert before subsampling so times align with rt_FA/stimT
+    tf_seqs = [strip_and_convert_tf(tf)[::frame_step] for tf in df['stim_TF']]
+    max_t = max((len(t) for t in tf_seqs), default=0)
+    n = len(df)
+
+    tf_mat = np.full((n, max_t), np.nan)
+    for i, t in enumerate(tf_seqs):
+        tf_mat[i, :len(t)] = t
+
+    is_fa  = df['IsFA'].to_numpy(dtype=bool)
+    fa_t   = df['rt_FA'].to_numpy(dtype=float)
+    stim_t = df['stimT'].to_numpy(dtype=float)
+
+    bl_end_t = np.where(is_fa, fa_t, stim_t)
+    bl_end = np.minimum(np.ceil(bl_end_t * sample_rate).astype(int), max_t)
+    past = np.arange(max_t)[None] >= bl_end[:, None]
+    tf_mat[past] = np.nan
+
+    fa_time = np.where(is_fa, fa_t, np.nan)
+    return tf_mat, bl_end, fa_time, dt
+
+
+#%% simulation
+
+def simulate_integrator(tf_mat, bl_end, tau, gain, threshold, dt,
+                        min_t=ANALYSIS_OPTIONS['ignore_trial_start']):
+    """deterministic leaky integrator: v_{t+1} = decay * v_t + gain * tf_t.
+    returns predicted FA time per trial, nan if no threshold crossing within baseline"""
+    n_trials, max_t = tf_mat.shape
+    if tau == 0:
+        decay = 0.0
+    elif np.isinf(tau):
+        decay = 1.0
     else:
-        df_clean = df[fa_mask].reset_index(drop=True)
+        decay = float(np.exp(-dt / tau))
+    min_sample = int(min_t / dt)
 
-    return df_clean
+    v = np.zeros(n_trials)
+    pred_fa = np.full(n_trials, np.nan)
+    running = np.ones(n_trials, dtype=bool)
 
-
-def subsample_df(df, max_trials=10000):
-    if len(df) > max_trials:
-        print(f'Subsampling {max_trials} from {len(df)} trials')
-        df = df.sample(n=max_trials).reset_index(drop=True)
-    return df
-
-
-def get_rt_kernel(df, fast_tfs=(2.0, 4.0)):
-    """fit KDE to RT distribution from fast changes"""
-    fast_hits = df[df['Stim2TF'].isin(fast_tfs) & df['IsHit']]
-    rts = fast_hits['rt_RT'].dropna().values
-    if len(rts) < 30:
-        raise ValueError(f'Too few fast-change hits to fit RT kernel: n={len(rts)}')
-    return gaussian_kde(rts)
-
-
-def precompute_tf_matrix(df, config=ANALYSIS_OPTIONS, max_time=8.0):
-    """build stimulus matrices for the integrator simulation"""
-    frame_step = config.get('tf_sample_step', 3)
-    frame_rate = config.get('frame_rate', 60)
-    n_trials = len(df)
-    max_samples = int(max_time * frame_rate / frame_step)
-
-    stim_end_times = np.where(df['IsFA'].values, df['rt_FA'].values, df['stimT'].values)
-    stim_end_times = np.minimum(stim_end_times, max_time)
-    stim_frames = np.round(stim_end_times * frame_rate).astype(int)
-    stim_samples = np.minimum((stim_frames / frame_step).astype(int), max_samples)
-
-    real_tf_dev = np.full((n_trials, max_samples), np.nan)
-    is_synthetic = np.zeros((n_trials, max_samples), dtype=bool)
-    trial_lengths = np.full(n_trials, max_samples, dtype=int)
-
-    for i, (_, row) in enumerate(df.iterrows()):
-        tf_frames = np.array(row['stim_TF'])
-        real = tf_frames[::frame_step]
-        n_real = min(len(real), stim_samples[i])
-        real_tf_dev[i, :n_real] = real[:n_real]
-        is_synthetic[i, n_real:] = True
-
-    return real_tf_dev, is_synthetic, trial_lengths, max_samples
-
-
-def simulate_behaviour(real_tf_dev, is_synthetic, trial_lengths, max_samples,
-                       threshold=1.0, gain=1.0, tau=0.1, sigma=0.0, N=5000,
-                       config=ANALYSIS_OPTIONS):
-    """vectorised leaky integrator simulation across all trials"""
-    frame_step = config.get('tf_sample_step', 3)
-    frame_rate = config.get('frame_rate', 60)
-    dt = frame_step / frame_rate
-    decay = 0.0 if tau == 0 else (1.0 if np.isinf(tau) else np.exp(-dt / tau))
-    n_trials = real_tf_dev.shape[0]
-
-    lick_times = np.full((n_trials, N), np.nan)
-    evidence = np.zeros((n_trials, N))
-    still_running = np.ones((n_trials, N), dtype=bool)
-
-    min_time = config.get('ignore_trial_start', 2.0)
-    min_sample = int(min_time / dt)
-
-    for t in range(max_samples):
-        if not np.any(still_running):
+    for t in range(max_t):
+        active = running & (t < bl_end)
+        if not active.any():
             break
+        x = np.where(np.isnan(tf_mat[:, t]), 0.0, tf_mat[:, t])
+        v = np.where(active, decay * v + gain * x, v)
+        if t >= min_sample:
+            crossed = active & (v >= threshold)
+            pred_fa[crossed] = t * dt
+            running[crossed] = False
+    return pred_fa
 
-        if t < min_sample:
-            evidence[:] = 0.0
+
+#%% features
+
+def _p_lick_tf(tf_mat, bl_end, fa_time, dt,
+               min_t=ANALYSIS_OPTIONS['ignore_trial_start']):
+    """P(FA within LICK_WIN s after each TF sample), binned by TF value"""
+    n, max_t = tf_mat.shape
+    t_grid = np.arange(max_t) * dt
+    win_lo, win_hi = LICK_WIN
+
+    lick_t  = np.where(np.isfinite(fa_time), fa_time, np.inf)
+    horizon = bl_end * dt - win_hi
+    valid = (t_grid[None] >= min_t) & (t_grid[None] <= horizon[:, None]) & ~np.isnan(tf_mat)
+    diff = lick_t[:, None] - t_grid[None]
+    licked = (diff >= win_lo) & (diff <= win_hi)
+
+    tfv = tf_mat[valid]
+    lk  = licked[valid].astype(float)
+    p = np.full(len(TF_BINS) - 1, np.nan)
+    for b in range(len(TF_BINS) - 1):
+        m = (tfv >= TF_BINS[b]) & (tfv < TF_BINS[b + 1])
+        if m.sum() > 20:
+            p[b] = lk[m].mean()
+    return p
+
+
+def _hazard(bl_end, fa_time, dt):
+    """FA hazard rate per time-in-trial bin (life-table)"""
+    bl_t = bl_end * dt
+    fa_finite = np.isfinite(fa_time)
+    haz = np.full(len(HAZARD_BINS), np.nan)
+    for b, c in enumerate(HAZARD_BINS):
+        lo, hi = c - HAZARD_HALF, c + HAZARD_HALF
+        at_risk = (bl_t > lo).sum()
+        if at_risk == 0:
             continue
-
-        within_trial = (t < trial_lengths)
-        active = still_running & within_trial[:, None]
-        if not np.any(active):
-            break
-
-        real_input = np.where(is_synthetic[:, t], 0.0,
-                              np.nan_to_num(real_tf_dev[:, t]))[:, None]
-
-        internal = np.random.normal(0, sigma, (n_trials, N)) if sigma > 0 else 0.0
-
-        evidence = evidence * decay + gain * real_input + internal
-
-        crossed = active & (evidence >= threshold)
-        lick_times[crossed] = t * dt
-        still_running[crossed] = False
-
-    time_bins = np.arange(0, max_samples * dt, dt)
-    bin_edges = np.append(time_bins, max_samples * dt)
-    lick_dist = np.zeros((n_trials, len(time_bins)))
-
-    for i in range(n_trials):
-        licked = lick_times[i][~np.isnan(lick_times[i])]
-        if len(licked) > 0:
-            counts, _ = np.histogram(licked, bins=bin_edges)
-            lick_dist[i] = counts / N
-
-    return lick_dist, time_bins, N
+        n_fa = (fa_finite & (fa_time >= lo) & (fa_time < hi)).sum()
+        haz[b] = n_fa / at_risk
+    return haz
 
 
-def calculate_likelihood(df, lick_dist, time_bins, rt_kernel, epsilon=1e-6):
-    """log likelihood of observed FA behaviour given simulated lick distributions"""
-    log_lik = 0.0
-    dt = time_bins[1] - time_bins[0]
+def _kernel(tf_mat, bl_end, fa_time, dt):
+    """mean TF (octaves) at each lag before FA, vectorised over lags and FA trials"""
+    sample_rate = 1.0 / dt
+    fa_idx = np.where(np.isfinite(fa_time))[0]
+    n_lags = len(KERNEL_LAGS)
+    if len(fa_idx) == 0:
+        return np.full(n_lags, np.nan)
 
-    rt_probs = rt_kernel(np.arange(0, 2.0, dt))
-    rt_probs /= rt_probs.sum()
+    fa_samples = (fa_time[fa_idx] * sample_rate).astype(int)
+    lag_samples = np.round(KERNEL_LAGS * sample_rate).astype(int)
+    idx = fa_samples[:, None] + lag_samples[None, :]
+    valid = (idx >= 0) & (idx < bl_end[fa_idx, None])
 
-    for trial_idx, (_, row) in enumerate(df.iterrows()):
-        dist = lick_dist[trial_idx]
-        p_licked = dist.sum()
+    vals = np.full(idx.shape, np.nan)
+    rows = np.broadcast_to(fa_idx[:, None], idx.shape)
+    vals[valid] = tf_mat[rows[valid], idx[valid]]
 
-        if row['IsFA']:
-            t_real = row['rt_FA']
-            if p_licked == 0:
-                log_lik += np.log(epsilon)
-            else:
-                convolved = np.convolve(dist, rt_probs, mode='full')[:len(time_bins)]
-                t_idx = np.clip(np.searchsorted(time_bins, t_real), 0, len(time_bins) - 1)
-                p = convolved[t_idx] / dt
-                log_lik += np.log(p + epsilon)
-        else:
-            p_no_lick = 1.0 - p_licked
-            log_lik += np.log(p_no_lick + epsilon)
-
-    return log_lik / len(df)
+    n_per_lag = np.isfinite(vals).sum(axis=0)
+    kernel = np.where(n_per_lag >= 10, np.nanmean(vals, axis=0), np.nan)
+    return kernel
 
 
-def grid_search_params(df, rt_kernel, params=SEARCH_PARAMS, n_jobs=-1, verbose=True):
-    param_keys = list(params.keys())
-    param_combos = list(product(*params.values()))
+def compute_features(tf_mat, bl_end, fa_time, dt):
+    return dict(
+        p_lick_tf = _p_lick_tf(tf_mat, bl_end, fa_time, dt),
+        hazard    = _hazard(bl_end, fa_time, dt),
+        kernel    = _kernel(tf_mat, bl_end, fa_time, dt),
+    )
 
-    real_tf_dev, is_synthetic, trial_lengths, max_samples = precompute_tf_matrix(df)
+
+#%% fitting
+
+def feature_loss(real, synth, weights=None):
+    """variance-normalised mse across the three observables, averaged"""
+    weights = weights or dict(p_lick_tf=1.0, hazard=1.0, kernel=1.0)
+    parts, ws = [], []
+    for k, w in weights.items():
+        r, s = real[k], synth[k]
+        valid = np.isfinite(r) & np.isfinite(s)
+        if valid.sum() < 3:
+            continue
+        scale = np.nanvar(r[valid]) + 1e-9
+        parts.append(np.mean((r[valid] - s[valid]) ** 2) / scale)
+        ws.append(w)
+    if not parts:
+        return np.inf
+    return float(np.average(parts, weights=ws))
+
+
+def grid_search(df_block, search_params=SEARCH_PARAMS, weights=None,
+                n_jobs=-1, verbose=True):
+    """fit (tau, gain, threshold) for one (subject, block) via 3D grid"""
+    tf_mat, bl_end, fa_time, dt = precompute_tf(df_block)
+    real = compute_features(tf_mat, bl_end, fa_time, dt)
+
+    keys = list(search_params)
+    combos = list(product(*search_params.values()))
+    if verbose:
+        print(f'grid: {len(combos)} combos over {keys}')
+
+    def _one(vals):
+        params = dict(zip(keys, vals))
+        pred = simulate_integrator(tf_mat, bl_end, dt=dt, **params)
+        synth = compute_features(tf_mat, bl_end, pred, dt)
+        return feature_loss(real, synth, weights), params, pred, synth
+
+    res = Parallel(n_jobs=n_jobs, verbose=10 if verbose else 0)(
+        delayed(_one)(v) for v in combos)
+    losses = np.array([r[0] for r in res])
+    best = int(np.argmin(losses))
 
     if verbose:
-        print(f'Running grid search over {len(param_combos)} parameter combinations...')
+        print(f'best: {res[best][1]} (loss={losses[best]:.4f})')
 
-    def _run(vals):
-        combo = dict(zip(param_keys, vals))
-        lick_dist, time_bins, n_runs = simulate_behaviour(
-            real_tf_dev, is_synthetic, trial_lengths, max_samples, **combo)
-        lik = calculate_likelihood(df, lick_dist, time_bins, rt_kernel)
-        return lik, lick_dist, time_bins, combo, n_runs
-
-    results = Parallel(n_jobs=n_jobs, verbose=10 if verbose else 0)(
-        delayed(_run)(vals) for vals in param_combos)
-
-    likelihoods = np.array([r[0] for r in results])
-    best_idx = np.argmax(likelihoods)
-
-    all_params = [dict(zip(param_keys, vals)) for vals in param_combos]
-    best_lick_dist = results[best_idx][1]
-    best_time_bins = results[best_idx][2]
-    best_params = results[best_idx][3]
-    n_runs = results[best_idx][4]
-
-    if verbose:
-        print(f'Best params: {best_params} (ll={likelihoods[best_idx]:.3f})')
-
-    return all_params, likelihoods, best_lick_dist, best_time_bins, best_params, n_runs
+    return dict(
+        params           = [r[1] for r in res],
+        losses           = losses,
+        real_feats       = real,
+        best_params      = res[best][1],
+        best_pred_fa     = res[best][2],
+        best_synth_feats = res[best][3],
+    )
 
 
-def model_integrator_by_subj(dfs, search_params=SEARCH_PARAMS,
-                             save_path=None, overwrite=False):
-    """run grid search per subject per block"""
-    if save_path is not None and Path(save_path).exists() and not overwrite:
-        print(f'Loading simulation results from {save_path}')
-        return load_results(save_path)
+def fit_per_subj(dfs, save_path=None, overwrite=False, min_trials=50, **kwargs):
+    """fit per animal per block, baseline-only data"""
+    if save_path and Path(save_path).exists() and not overwrite:
+        with open(save_path, 'rb') as f:
+            return pickle.load(f)
 
-    params = {'early': {}, 'late': {}}
-    likelihoods = {'early': {}, 'late': {}}
-    lick_dists = {'early': {}, 'late': {}}
-    time_bins = {'early': {}, 'late': {}}
-    best_params = {'early': {}, 'late': {}}
-    n_runs = {'early': {}, 'late': {}}
-
+    results = {}
     for subj, df in dfs.items():
-        df_clean = clean_df(df)
-        rt_kernel = get_rt_kernel(df)
-
+        df_clean = clean_baseline_trials(df)
+        results[subj] = {}
         for block in ['early', 'late']:
-            df_block = df_clean[df_clean['hazardblock'] == block].reset_index(drop=True)
+            df_b = df_clean[df_clean['hazardblock'] == block].reset_index(drop=True)
+            if len(df_b) < min_trials:
+                print(f'{subj} | {block}: only {len(df_b)} trials, skipping')
+                continue
+            print(f'{subj} | {block} | n={len(df_b)}')
+            results[subj][block] = grid_search(df_b, **kwargs)
 
-            fa_trials = df_block[df_block['IsFA']]
-            non_fa_trials = df_block[~df_block['IsFA']]
-            if len(non_fa_trials) > len(fa_trials) * 3:
-                non_fa_trials = non_fa_trials.sample(
-                    n=len(fa_trials) * 3, random_state=42)
-            df_block = pd.concat([fa_trials, non_fa_trials]).reset_index(drop=True)
-            df_block = subsample_df(df_block, max_trials=2000)
-
-            print(f'{subj} | {block} n_trials={len(df_block)}')
-            (params[block][subj],
-             likelihoods[block][subj],
-             lick_dists[block][subj],
-             time_bins[block][subj],
-             best_params[block][subj],
-             n_runs[block][subj]) = grid_search_params(df_block, rt_kernel, search_params)
-
-    if save_path is not None:
+    if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        save_results(save_path, params, likelihoods, lick_dists,
-                     time_bins, best_params, n_runs)
-
-    return params, likelihoods, lick_dists, time_bins, best_params, n_runs
-
-
-def save_results(path, params, likelihoods, lick_dists,
-                 time_bins, best_params, n_runs):
-    with open(path, 'wb') as f:
-        pickle.dump({
-            'params': params, 'likelihoods': likelihoods,
-            'lick_dists': lick_dists, 'time_bins': time_bins,
-            'best_params': best_params, 'n_runs': n_runs,
-        }, f)
-    print(f'Results saved to {path}')
+        with open(save_path, 'wb') as f:
+            pickle.dump(results, f)
+        print(f'saved to {save_path}')
+    return results
 
 
 def load_results(path):
     with open(path, 'rb') as f:
-        results = pickle.load(f)
-    return (results['params'], results['likelihoods'], results['lick_dists'],
-            results['time_bins'], results['best_params'], results['n_runs'])
+        return pickle.load(f)

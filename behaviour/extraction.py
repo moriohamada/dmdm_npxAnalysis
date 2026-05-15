@@ -676,4 +676,16 @@ def extract_all_behavioural(npx_dir=PATHS['npx_dir_local'],
         pulse_lick = calculate_pulse_lick_prob(dfs, config)
         save_behavioural(pulse_lick, 'pulse_lick_prob', data_dir)
 
+    two_pulse = load_or_compute('two_pulse_interaction')
+    if two_pulse is None:
+        from behaviour.two_pulse_analyses import (
+            calculate_two_pulse_interaction,
+            calculate_baseline_lick_rate,
+            compute_interaction_index,
+        )
+        raw = calculate_two_pulse_interaction(dfs, config)
+        p0 = calculate_baseline_lick_rate(dfs, config)
+        two_pulse = compute_interaction_index(raw, p0)
+        save_behavioural(two_pulse, 'two_pulse_interaction', data_dir)
+
     print('All behavioural analyses extracted')
