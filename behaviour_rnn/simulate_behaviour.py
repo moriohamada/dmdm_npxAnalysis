@@ -36,10 +36,22 @@ def predict_p_lick(model, inputs, mask, pos_weight, batch_size=64, device='cpu')
 
 
 def predict_for_df(model, df, pos_weight, **kwargs):
-    """build_tensors + predict_p_lick. returns (p_lick, meta)"""
+    """build_tensors + predict_p_lick. returns (p_lick, tf_in, meta) where
+    tf_in is the TF input channel as a numpy array of shape (n_trials, T)."""
     inputs, _, mask, meta = build_tensors(df)
     p_lick = predict_p_lick(model, inputs, mask, pos_weight, **kwargs)
-    return p_lick, meta
+    tf_in = inputs[:, :, 0].numpy()
+    return p_lick, tf_in, meta
+
+
+def simulate_all(model, df, pos_weight, config=ANALYSIS_OPTIONS):
+    """forward + run all three mirror analyses for one mouse"""
+    p_lick, tf_in, meta = predict_for_df(model, df, pos_weight)
+    return dict(
+        hazard = predicted_hazard(p_lick, meta, config),
+        pulse  = predicted_pulse_lick_prob(p_lick, tf_in, meta, config),
+        kernel = predicted_lick_kernel(p_lick, tf_in, meta, config),
+    )
 
 
 #%% predicted hazard rate (mirrors calculate_el_hazard)
@@ -116,12 +128,6 @@ def predicted_pulse_lick_prob(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
     log_survival = np.log(np.clip(one_minus, 1e-9, 1.0))
     cumlog = np.concatenate([np.zeros((n_trials, 1)), np.cumsum(log_survival, axis=1)], axis=1)
 
-    def window_prob(t_idx):
-        lo = np.clip(t_idx + win_lo_b, 0, max_t)
-        hi = np.clip(t_idx + win_hi_b, 0, max_t)
-        log_s = cumlog[np.arange(n_trials)[:, None], hi] - cumlog[np.arange(n_trials)[:, None], lo]
-        return 1.0 - np.exp(log_s)
-
     # masked TF values: only valid (not NaN) per-bin entries
     valid = ~np.isnan(p_lick)
     tf = tf_inputs.numpy() if hasattr(tf_inputs, 'numpy') else tf_inputs
@@ -135,11 +141,6 @@ def predicted_pulse_lick_prob(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
         sel = (blocks == block_val)
         if not sel.any():
             continue
-        # compute window probability per (trial, bin) for this subset
-        t_idx_all = np.broadcast_to(np.arange(max_t), (sel.sum(), max_t))
-        win_p_sub = window_prob(np.arange(max_t)[None].repeat(sel.sum(), axis=0))[sel] \
-            if False else None  # placeholder, recompute below
-        # simpler: compute log_s on the subset
         cumlog_sub = cumlog[sel]
         lo = np.clip(np.arange(max_t) + win_lo_b, 0, max_t)
         hi = np.clip(np.arange(max_t) + win_hi_b, 0, max_t)

@@ -1348,3 +1348,67 @@ def plot_pulse_lick_prob_2d(pulse_lick_prob, config=ANALYSIS_OPTIONS):
             figs[label] = fig
 
     return figs
+
+
+#%% pipeline entry points
+
+def plot_all_behavioural(plot_dir):
+    """load all cached behavioural extractions and save every plot"""
+    from pathlib import Path
+    from behaviour.extraction import load_behavioural
+    from behaviour.two_pulse_analyses import (plot_two_pulse_interaction,
+        plot_two_pulse_raw)
+    from utils.figures import save_fig
+
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    psycho, chrono, _, _ = load_behavioural('psychometric')
+    save_fig(plot_psychometric(psycho), str(plot_dir / 'psychometric'))
+    save_fig(plot_psychometric(chrono), str(plot_dir / 'chronometric'))
+
+    save_fig(plot_elta(load_behavioural('elta')), str(plot_dir / 'elta'))
+
+    eltc = load_behavioural('eltc_aligned')
+    save_fig(plot_eltc(eltc), str(plot_dir / 'eltc'))
+    save_fig(plot_eltc_comparison(eltc), str(plot_dir / 'eltc_comparison'))
+
+    save_fig(plot_el_hazard_rates(load_behavioural('hazard_rates')),
+             str(plot_dir / 'hazard_rates'))
+
+    pulse_lick = load_behavioural('pulse_lick_prob')
+    for label, fig in plot_pulse_aligned_lick_prob(pulse_lick).items():
+        save_fig(fig, str(plot_dir / f'pulse_lick_prob_{label}'))
+    for label, fig in plot_pulse_lick_prob_2d(pulse_lick).items():
+        save_fig(fig, str(plot_dir / f'pulse_lick_prob_2d_{label}'))
+
+    two_pulse = load_behavioural('two_pulse_interaction')
+    save_fig(plot_two_pulse_interaction(two_pulse),
+             str(plot_dir / 'two_pulse_interaction'))
+    save_fig(plot_two_pulse_raw(two_pulse), str(plot_dir / 'two_pulse_raw'))
+
+
+def plot_all_quantifications(plot_dir):
+    """compute (or load cached) behavioural stats and save every quant plot"""
+    from pathlib import Path
+    from behaviour.extraction import load_behavioural
+    from behaviour.quantification import run_all_quantifications
+    from utils.figures import save_fig
+
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    _, _, n_hits, n_trials = load_behavioural('psychometric')
+    stats = run_all_quantifications(overwrite=False)
+
+    psycho_params, _, _, _ = stats['psychometric']
+    save_fig(plot_psychometric_fits(psycho_params, n_hits, n_trials),
+             str(plot_dir / 'psychometric_fits'))
+    save_fig(plot_lts_quant(stats['lts']), str(plot_dir / 'lts_quant'))
+    save_fig(plot_lts_pcs(stats['lts']), str(plot_dir / 'lts_pcs'))
+    save_fig(plot_hazard_rate_stats(stats['hazard_rates']),
+             str(plot_dir / 'hazard_rate_stats'))
+    save_fig(plot_pulse_lick_fits(stats['pulse_lick_prob']),
+             str(plot_dir / 'pulse_lick_fits'))
+    save_fig(plot_integration_time(stats['integration_time']),
+             str(plot_dir / 'integration_time'))

@@ -319,11 +319,14 @@ BEHAVIOUR_RNN_OPS = dict(
     lr              = 1e-3,
     weight_decay    = 1e-4,
     batch_size      = 64,
-    max_epochs      = 300,
-    patience        = 20,
+    max_epochs      = 2000,
+    patience        = 100,                 # epochs of no val improvement before early stop
+    min_epochs      = 200,                 # don't allow early stop before this
     val_frac        = 0.2,
     grad_clip       = 1.0,
     seed            = 0,
+    lick_weight     = 1.0,                 # multiplier on pos_weight = n_neg/n_pos
+                                           # >1 -> model predicts more licks
 )
 #%%
 PLOT_OPTIONS = dict(

@@ -1,14 +1,22 @@
 """
 train a small vanilla RNN per mouse to predict per-bin P(lick) from
 (TF, time-in-trial, block). supervised on baseline-only data.
+also runs the cohort-level train + simulate + cache loop (train_rnns_all_subj).
 """
+import os
+import pickle
 import numpy as np
 import torch
 import torch.nn as nn
 from pathlib import Path
 
-from config import ANALYSIS_OPTIONS, BEHAVIOUR_RNN_OPS
+from config import ANALYSIS_OPTIONS, BEHAVIOUR_RNN_OPS, PATHS
 from behaviour.integrator import clean_baseline_trials, precompute_tf
+
+
+RNN_DATA_DIR  = os.path.join(PATHS['npx_dir_local'], 'behaviour_rnn')
+MODELS_SUBDIR = 'models'
+SIM_NAME      = 'rnn_sim.pkl'
 
 
 #%% dataset
@@ -120,7 +128,7 @@ def train_one(inputs, target, mask, train_idx, val_idx,
     target = target.to(device)
     mask   = mask.to(device)
 
-    pos_weight = compute_pos_weight(target[train_idx], mask[train_idx])
+    pos_weight = compute_pos_weight(target[train_idx], mask[train_idx]) * ops['lick_weight']
 
     hist = {'train': [], 'val': []}
     best_val, best_state, stagn = np.inf, None, 0
@@ -162,7 +170,7 @@ def train_one(inputs, target, mask, train_idx, val_idx,
             tag = ' *' if improved else ''
             print(f'  epoch {epoch:3d} | train {tr_loss:.4f} | val {v_loss:.4f}{tag}')
 
-        if stagn >= ops['patience']:
+        if epoch >= ops['min_epochs'] and stagn >= ops['patience']:
             if verbose:
                 print(f'  early stop @ epoch {epoch}, best val {best_val:.4f}')
             break
@@ -236,3 +244,61 @@ def load_model(path):
     model.load_state_dict(obj['state_dict'])
     model.eval()
     return model, obj
+
+
+#%% cohort-level: train every mouse, cache simulated behavioural mirrors
+
+def _model_path(subj, data_dir=RNN_DATA_DIR):
+    return Path(data_dir) / MODELS_SUBDIR / f'rnn_{subj}.pt'
+
+
+def train_rnns_all_subj(dfs, overwrite=False, data_dir=RNN_DATA_DIR, **fit_kwargs):
+    """
+    train an RNN per mouse, save weights, compute and save the simulated
+    behavioural mirrors (hazard, pulse-lick, kernel) for the whole cohort.
+    skips mice whose model already exists unless overwrite=True.
+    """
+    from behaviour_rnn.simulate_behaviour import simulate_all
+    data_dir = Path(data_dir)
+    (data_dir / MODELS_SUBDIR).mkdir(parents=True, exist_ok=True)
+
+    for subj, df in dfs.items():
+        path = _model_path(subj, data_dir)
+        if path.exists() and not overwrite:
+            print(f'{subj}: cached, skipping')
+            continue
+        print(f'\n=== training RNN for {subj} ===')
+        result = fit_subj(df, verbose=True, **fit_kwargs)
+        save_model(result, path)
+
+    sim_path = data_dir / SIM_NAME
+    if sim_path.exists() and not overwrite:
+        print(f'simulated mirrors cached at {sim_path}')
+        return
+
+    sim = {'hazard': {}, 'pulse': {}, 'kernel': {}}
+    for subj, df in dfs.items():
+        path = _model_path(subj, data_dir)
+        if not path.exists():
+            continue
+        model, obj = load_model(path)
+        out = simulate_all(model, df, obj['pos_weight'])
+        for k in sim:
+            sim[k][subj] = out[k]
+
+    with open(sim_path, 'wb') as f:
+        pickle.dump(sim, f)
+    print(f'saved simulated mirrors to {sim_path}')
+
+
+def load_rnn_results(data_dir=RNN_DATA_DIR):
+    """return (rnn_meta_by_subj, sim_by_observable)"""
+    data_dir = Path(data_dir)
+    rnn = {}
+    for path in (data_dir / MODELS_SUBDIR).glob('rnn_*.pt'):
+        subj = path.stem.replace('rnn_', '')
+        _, obj = load_model(path)
+        rnn[subj] = obj
+    with open(data_dir / SIM_NAME, 'rb') as f:
+        sim = pickle.load(f)
+    return rnn, sim
