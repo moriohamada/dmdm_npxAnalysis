@@ -335,6 +335,11 @@ BEHAVIOUR_RNN_OPS = dict(
     target_sigma_bins = 2,                 # gaussian width; ignored for other kernels
     motor_shift_stat  = 'median',          # 'median' or 'mean'; ignored for rt_convolved
     fa_extend_bins    = 0,                 # extra bins past FA in mask (FA trials only)
+
+    # warm-up pad: zero-TF bins prepended to every trial so the RNN can settle
+    # from h=0 before the real trial starts. target=0 across the pad (mouse never
+    # licks during the ITI).
+    pad_seconds       = 1.0,
 )
 #%%
 PLOT_OPTIONS = dict(

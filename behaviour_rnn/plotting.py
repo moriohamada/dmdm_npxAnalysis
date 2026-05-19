@@ -2,10 +2,13 @@
 plotly visualisations for the behaviour RNN:
 - training curves per mouse
 - real-vs-RNN mirror plots for the three mouse behavioural observables
-  (FA hazard, pulse-aligned lick prob, lick-triggered TF)
+  (FA hazard, pulse-aligned lick prob, lick-triggered TF). these mirror the
+  mouse-only plots in behaviour.plotting (2-row mean+delta, CI ribbons,
+  change-window shading) with the RNN overlaid as a dotted line.
 """
 from pathlib import Path
 import numpy as np
+from scipy.ndimage import uniform_filter1d
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -54,46 +57,87 @@ def _stack_block(d, block_key, subj_keys):
 
 
 def plot_hazard_real_vs_rnn(real, sim, config=ANALYSIS_OPTIONS):
-    """overlay mouse and RNN FA hazard, per block, with per-mouse lines + group mean"""
-    subj_keys = [s for s in real if s in sim]
-    bin_centres = real[subj_keys[0]]['binCentres']
+    """FA hazard mouse vs RNN, mirroring plot_el_hazard_rates: rate + delta rows,
+    1.96 SEM ribbon around the mouse mean, dotted RNN overlay (mean only),
+    change-window shading on both rows."""
+    block_keys = {'early': 'earlyBlock', 'late': 'lateBlock'}
+    n_keys = {'early': 'early_n', 'late': 'late_n'}
+    min_n = config.get('min_hazard_samples', 100)
     change_wins = config.get('change_wins', {})
 
-    fig = go.Figure()
+    subj_keys = [s for s in real if s in sim]
+    if not subj_keys:
+        return go.Figure()
+    bin_centres = real[subj_keys[0]]['binCentres']
 
-    for block, key in [('early', 'earlyBlock'), ('late', 'lateBlock')]:
-        if block in change_wins:
-            w = change_wins[block]
-            fig.add_vrect(x0=w[0], x1=w[1], fillcolor=_block_rgba(block, 0.10),
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.4], vertical_spacing=0.08)
+
+    for block in ['early', 'late']:
+        if block not in change_wins:
+            continue
+        w = change_wins[block]
+        for xref, yref in [('x', 'y'), ('x2', 'y2')]:
+            fig.add_shape(type='rect', x0=w[0], x1=w[1], y0=0, y1=1,
+                          xref=xref, yref=f'{yref} domain',
+                          fillcolor=_block_rgba(block, 0.12),
                           line_width=0, layer='below')
 
-        real_arr = _stack_block(real, key, subj_keys)
-        sim_arr  = _stack_block(sim,  key, subj_keys)
-
+    real_block, sim_block = {}, {}
+    for block in ['early', 'late']:
         colour = _block_colour(block)
-        # per-mouse thin lines
-        for i in range(real_arr.shape[0]):
-            fig.add_trace(go.Scatter(
-                x=bin_centres, y=real_arr[i], mode='lines',
-                line=dict(color=colour, width=1), opacity=0.25,
-                showlegend=False, hoverinfo='skip'))
-            fig.add_trace(go.Scatter(
-                x=bin_centres, y=sim_arr[i], mode='lines',
-                line=dict(color=colour, width=1, dash='dot'), opacity=0.25,
-                showlegend=False, hoverinfo='skip'))
-        # group means
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=np.nanmean(real_arr, axis=0),
-            mode='lines', name=f'{block} mouse',
-            line=dict(color=colour, width=2.5)))
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=np.nanmean(sim_arr, axis=0),
-            mode='lines', name=f'{block} RNN',
-            line=dict(color=colour, width=2.5, dash='dot')))
+        rgba = _block_rgba(block, 0.15)
+        bkey = block_keys[block]
+        nkey = n_keys[block]
 
-    fig.update_xaxes(title_text='time in trial (s)')
-    fig.update_yaxes(title_text='FA hazard')
-    fig.update_layout(template='plotly_white', width=700, height=450)
+        all_real = np.stack([real[s][bkey] for s in subj_keys]).astype(float)
+        all_sim  = np.stack([sim[s][bkey]  for s in subj_keys]).astype(float)
+        all_n    = np.stack([real[s][nkey] for s in subj_keys])
+        all_real[all_n < min_n] = np.nan
+        all_sim[all_n < min_n]  = np.nan
+        real_block[block], sim_block[block] = all_real, all_sim
+
+        n_valid = np.sum(~np.isnan(all_real), axis=0).astype(float)
+        mean_r = np.nanmean(all_real, axis=0)
+        ci_r = 1.96 * np.nanstd(all_real, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+        mean_s = np.nanmean(all_sim, axis=0)
+
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_r + ci_r, mode='lines',
+            line=dict(width=0), showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_r - ci_r, mode='lines',
+            line=dict(width=0), fill='tonexty', fillcolor=rgba,
+            showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_r, mode='lines',
+            name=f'{block.capitalize()} block',
+            line=dict(color=colour, width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_s, mode='lines',
+            name=f'{block.capitalize()} (RNN)',
+            line=dict(color=colour, width=2, dash='dot')), row=1, col=1)
+
+    delta_r = real_block['early'] - real_block['late']
+    delta_s = sim_block['early']  - sim_block['late']
+    n_valid = np.sum(~np.isnan(delta_r), axis=0).astype(float)
+    mean_dr = np.nanmean(delta_r, axis=0)
+    ci_dr = 1.96 * np.nanstd(delta_r, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+    mean_ds = np.nanmean(delta_s, axis=0)
+
+    fig.add_trace(go.Scatter(x=bin_centres, y=mean_dr + ci_dr, mode='lines',
+        line=dict(width=0), showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=bin_centres, y=mean_dr - ci_dr, mode='lines',
+        line=dict(width=0), fill='tonexty', fillcolor='rgba(128,128,128,0.15)',
+        showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=bin_centres, y=mean_dr, mode='lines',
+        name='Early - Late', line=dict(color='grey', width=2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=bin_centres, y=mean_ds, mode='lines',
+        name='Early - Late (RNN)',
+        line=dict(color='grey', width=2, dash='dot')), row=2, col=1)
+    fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                  row=2, col=1)
+
+    fig.update_layout(template='plotly_white', width=600, height=500)
+    fig.update_xaxes(title_text='Time in trial (s)', row=2, col=1)
+    fig.update_yaxes(title_text='FA hazard rate', row=1, col=1)
+    fig.update_yaxes(title_text='Delta hazard (Early - Late)', row=2, col=1)
     return fig
 
 
@@ -356,13 +400,13 @@ def plot_subject_mirrors(subj, sim, plot_dir, real_cached=None,
     sim_h  = {subj: sim['hazard']}
     if real_h:
         save_fig(plot_hazard_real_vs_rnn(real_h, sim_h, config),
-                 str(plot_dir / 'hazard'))
+                 str(plot_dir / 'hazard_rates'))
 
     real_p = {subj: real_cached['pulse'][subj]} if subj in real_cached['pulse'] else {}
     sim_p  = {subj: sim['pulse']}
     if real_p:
         for cond, fig in plot_pulse_lick_real_vs_rnn(real_p, sim_p, config).items():
-            save_fig(fig, str(plot_dir / f'pulse_{cond}'))
+            save_fig(fig, str(plot_dir / f'pulse_lick_prob_{cond}'))
 
     # elta is cohort-aggregated (mean/sem across subjs); rebuild for this subj only
     real_elta_subj = {}
@@ -374,7 +418,7 @@ def plot_subject_mirrors(subj, sim, plot_dir, real_cached=None,
     if real_elta_subj:
         save_fig(plot_kernel_real_vs_rnn(real_elta_subj,
                                          {subj: sim['kernel']}, config),
-                 str(plot_dir / 'kernel'))
+                 str(plot_dir / 'elta'))
 
 
 def load_real_observables():
@@ -397,11 +441,11 @@ def comparative_plots(plot_dir):
 
     save_fig(plot_training_curves(rnn), str(plot_dir / 'training_curves'))
     save_fig(plot_hazard_real_vs_rnn(load_behavioural('hazard_rates'), sim['hazard']),
-             str(plot_dir / 'hazard_real_vs_rnn'))
+             str(plot_dir / 'hazard_rates'))
     for cond, fig in plot_pulse_lick_real_vs_rnn(
             load_behavioural('pulse_lick_prob'), sim['pulse']).items():
-        save_fig(fig, str(plot_dir / f'pulse_lick_real_vs_rnn_{cond}'))
+        save_fig(fig, str(plot_dir / f'pulse_lick_prob_{cond}'))
     save_fig(plot_kernel_real_vs_rnn(load_behavioural('elta'), sim['kernel']),
-             str(plot_dir / 'kernel_real_vs_rnn'))
+             str(plot_dir / 'elta'))
     save_fig(plot_outcome_dist_cohort(sim['outcome']),
-             str(plot_dir / 'outcome_real_vs_rnn'))
+             str(plot_dir / 'outcome'))
