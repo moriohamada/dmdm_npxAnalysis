@@ -193,6 +193,199 @@ def plot_kernel_real_vs_rnn(real_elta, sim_kernel, config=ANALYSIS_OPTIONS):
     return fig
 
 
+#%% outcome distribution (Hit / FA / Miss)
+
+def plot_outcome_dist_single(dist):
+    """one mouse, three panels (Hit / FA / Miss): mouse vs RNN proportion by block"""
+    outcomes = ['hit', 'fa', 'miss']
+    fig = make_subplots(rows=1, cols=3, subplot_titles=[o.upper() for o in outcomes],
+                        shared_yaxes=True, horizontal_spacing=0.06)
+    for c, oc in enumerate(outcomes, start=1):
+        for block_name, data in dist.items():
+            colour = _block_colour(block_name)
+            fig.add_trace(go.Scatter(
+                x=['mouse', 'RNN'],
+                y=[data['mouse'][oc], data['model'][oc]],
+                mode='lines+markers',
+                line=dict(color=colour, width=2.5),
+                marker=dict(size=10),
+                name=block_name, legendgroup=block_name,
+                showlegend=(c == 1)),
+                row=1, col=c)
+    fig.update_yaxes(range=[0, 1], title_text='proportion', col=1)
+    fig.update_layout(template='plotly_white', width=720, height=320)
+    return fig
+
+
+def plot_outcome_dist_cohort(dist_by_subj):
+    """three panels (Hit / FA / Miss): thin per-mouse mouse-vs-RNN lines + group mean by block"""
+    outcomes = ['hit', 'fa', 'miss']
+    fig = make_subplots(rows=1, cols=3, subplot_titles=[o.upper() for o in outcomes],
+                        shared_yaxes=True, horizontal_spacing=0.06)
+    for c, oc in enumerate(outcomes, start=1):
+        for block_name in ['early', 'late']:
+            colour = _block_colour(block_name)
+            mice = [s for s in dist_by_subj if block_name in dist_by_subj[s]]
+            if not mice:
+                continue
+            mouse_p = np.array([dist_by_subj[s][block_name]['mouse'][oc] for s in mice])
+            model_p = np.array([dist_by_subj[s][block_name]['model'][oc] for s in mice])
+            for i in range(len(mice)):
+                fig.add_trace(go.Scatter(
+                    x=['mouse', 'RNN'], y=[mouse_p[i], model_p[i]],
+                    mode='lines+markers',
+                    line=dict(color=colour, width=1), opacity=0.35,
+                    marker=dict(size=4),
+                    showlegend=False, hoverinfo='skip'),
+                    row=1, col=c)
+            fig.add_trace(go.Scatter(
+                x=['mouse', 'RNN'],
+                y=[np.nanmean(mouse_p), np.nanmean(model_p)],
+                mode='lines+markers',
+                line=dict(color=colour, width=3),
+                marker=dict(size=10),
+                name=block_name, legendgroup=block_name,
+                showlegend=(c == 1)),
+                row=1, col=c)
+    fig.update_yaxes(range=[0, 1], title_text='proportion', col=1)
+    fig.update_layout(template='plotly_white', width=900, height=380)
+    return fig
+
+
+#%% example-trial panels
+
+def plot_example_trials(model, df_subj, pos_weight, n_examples=3, seed=0,
+                        config=ANALYSIS_OPTIONS):
+    """grid of example trials per (block, outcome): TF + RNN p_lick + lick/change markers.
+    rows = early hit / early FA / early miss / late hit / late FA / late miss.
+    cols = n_examples random trials per cell."""
+    from behaviour_rnn.simulate_behaviour import predict_for_df
+    p_lick, tf_in, meta = predict_for_df(model, df_subj, pos_weight)
+    df = meta['df']
+    dt = meta['dt']
+    max_t = p_lick.shape[1]
+    t_grid = np.arange(max_t) * dt
+
+    rng = np.random.default_rng(seed)
+    outcomes = [('hit',  meta['is_hit']),
+                ('fa',   meta['is_fa']),
+                ('miss', meta['is_miss'])]
+    blocks_def = [('early', 1.0), ('late', -1.0)]
+
+    rows, row_labels = [], []
+    for block_name, block_val in blocks_def:
+        for outcome_name, outcome_mask in outcomes:
+            sel = np.where((meta['blocks'] == block_val) & outcome_mask)[0]
+            picks = (rng.choice(sel, size=min(n_examples, len(sel)), replace=False)
+                     if len(sel) else np.array([], dtype=int))
+            rows.append(picks)
+            row_labels.append(f'{block_name} {outcome_name}')
+
+    n_rows = len(rows)
+    fig = make_subplots(rows=n_rows, cols=n_examples,
+                        specs=[[{'secondary_y': True}] * n_examples] * n_rows,
+                        row_titles=row_labels,
+                        shared_xaxes=False, shared_yaxes=False,
+                        horizontal_spacing=0.06, vertical_spacing=0.025)
+
+    for r, trial_ids in enumerate(rows, start=1):
+        block_name = 'early' if r <= 3 else 'late'
+        col = _block_colour(block_name)
+        for c, trial_i in enumerate(trial_ids, start=1):
+            tf_tr = tf_in[trial_i]
+            pl_tr = p_lick[trial_i]
+            valid = ~np.isnan(pl_tr)
+            if not valid.any():
+                continue
+            t = t_grid[valid]
+
+            fig.add_trace(go.Scatter(x=t, y=tf_tr[valid], mode='lines',
+                line=dict(color='dimgrey', width=1.2),
+                showlegend=(r == 1 and c == 1), name='TF (oct)'),
+                row=r, col=c, secondary_y=False)
+            fig.add_trace(go.Scatter(x=t, y=pl_tr[valid], mode='lines',
+                line=dict(color=col, width=1.6),
+                showlegend=(r == 1 and c == 1), name='RNN P(lick)'),
+                row=r, col=c, secondary_y=True)
+
+            tr = df.iloc[int(trial_i)]
+            stim_t = float(tr['stimT']) if np.isfinite(tr.get('stimT', np.nan)) else None
+            if meta['is_hit'][trial_i] or meta['is_miss'][trial_i]:
+                if stim_t is not None:
+                    fig.add_vline(x=stim_t, line_dash='dash', line_color='black',
+                                  row=r, col=c)
+            if meta['is_hit'][trial_i] and np.isfinite(tr.get('rt_RT', np.nan)):
+                fig.add_vline(x=stim_t + float(tr['rt_RT']),
+                              line_dash='solid', line_color='seagreen',
+                              row=r, col=c)
+            if meta['is_fa'][trial_i] and np.isfinite(tr.get('rt_FA', np.nan)):
+                fig.add_vline(x=float(tr['rt_FA']),
+                              line_dash='solid', line_color='crimson',
+                              row=r, col=c)
+
+    fig.update_xaxes(title_text='time in trial (s)', row=n_rows)
+    fig.update_yaxes(title_text='TF (octaves)', secondary_y=False, col=1)
+    fig.update_yaxes(title_text='P(lick)', secondary_y=True, col=n_examples)
+    fig.update_yaxes(range=[0, 1], secondary_y=True)
+    fig.update_layout(template='plotly_white',
+                      height=180 * n_rows, width=320 * n_examples,
+                      showlegend=True,
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                                  xanchor='right', x=1))
+    return fig
+
+
+#%% single-subject plots (used during n_hidden sweep)
+
+def plot_subject_mirrors(subj, sim, plot_dir, real_cached=None,
+                         config=ANALYSIS_OPTIONS):
+    """write hazard / pulse / kernel real-vs-RNN plots for one mouse.
+    sim has keys 'hazard', 'pulse', 'kernel', each a single-subject dict
+    (i.e. what simulate_all returns)."""
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    if real_cached is None:
+        real_cached = dict(
+            hazard = load_behavioural('hazard_rates'),
+            pulse  = load_behavioural('pulse_lick_prob'),
+            elta   = load_behavioural('elta'),
+        )
+
+    real_h = {subj: real_cached['hazard'][subj]} if subj in real_cached['hazard'] else {}
+    sim_h  = {subj: sim['hazard']}
+    if real_h:
+        save_fig(plot_hazard_real_vs_rnn(real_h, sim_h, config),
+                 str(plot_dir / 'hazard'))
+
+    real_p = {subj: real_cached['pulse'][subj]} if subj in real_cached['pulse'] else {}
+    sim_p  = {subj: sim['pulse']}
+    if real_p:
+        for cond, fig in plot_pulse_lick_real_vs_rnn(real_p, sim_p, config).items():
+            save_fig(fig, str(plot_dir / f'pulse_{cond}'))
+
+    # elta is cohort-aggregated (mean/sem across subjs); rebuild for this subj only
+    real_elta_subj = {}
+    for cond, data in real_cached['elta'].items():
+        subjs = list(data.get('subjs', []))
+        if subj in subjs:
+            m = data['subj_means'][subjs.index(subj)]
+            real_elta_subj[cond] = {'mean': m, 'sem': np.zeros_like(m)}
+    if real_elta_subj:
+        save_fig(plot_kernel_real_vs_rnn(real_elta_subj,
+                                         {subj: sim['kernel']}, config),
+                 str(plot_dir / 'kernel'))
+
+
+def load_real_observables():
+    """convenience loader for the three real observables used in mirror plots"""
+    return dict(
+        hazard = load_behavioural('hazard_rates'),
+        pulse  = load_behavioural('pulse_lick_prob'),
+        elta   = load_behavioural('elta'),
+    )
+
+
 #%% pipeline entry point
 
 def comparative_plots(plot_dir):
@@ -210,3 +403,5 @@ def comparative_plots(plot_dir):
         save_fig(fig, str(plot_dir / f'pulse_lick_real_vs_rnn_{cond}'))
     save_fig(plot_kernel_real_vs_rnn(load_behavioural('elta'), sim['kernel']),
              str(plot_dir / 'kernel_real_vs_rnn'))
+    save_fig(plot_outcome_dist_cohort(sim['outcome']),
+             str(plot_dir / 'outcome_real_vs_rnn'))

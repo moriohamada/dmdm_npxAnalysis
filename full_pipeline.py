@@ -27,7 +27,8 @@ from behaviour.extraction import load_behavioural
 from behaviour_rnn.train import train_rnns_all_subj
 from behaviour_rnn.plotting import comparative_plots
 
-train_rnns_all_subj(load_behavioural('dfs_processed'))
+train_rnns_all_subj(load_behavioural('dfs_processed'), overwrite=True,
+                    sweep_plot_dir=plot_dir / 'rnn' / 'sweep')
 comparative_plots(plot_dir / 'rnn')
 
 #%% Leaky integration simulation

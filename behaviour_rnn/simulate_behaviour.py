@@ -45,12 +45,13 @@ def predict_for_df(model, df, pos_weight, **kwargs):
 
 
 def simulate_all(model, df, pos_weight, config=ANALYSIS_OPTIONS):
-    """forward + run all three mirror analyses for one mouse"""
+    """forward + run all mirror analyses for one mouse"""
     p_lick, tf_in, meta = predict_for_df(model, df, pos_weight)
     return dict(
-        hazard = predicted_hazard(p_lick, meta, config),
-        pulse  = predicted_pulse_lick_prob(p_lick, tf_in, meta, config),
-        kernel = predicted_lick_kernel(p_lick, tf_in, meta, config),
+        hazard  = predicted_hazard(p_lick, meta, config),
+        pulse   = predicted_pulse_lick_prob(p_lick, tf_in, meta, config),
+        kernel  = predicted_lick_kernel(p_lick, tf_in, meta, config),
+        outcome = predicted_outcome_dist(p_lick, meta, config),
     )
 
 
@@ -69,7 +70,7 @@ def predicted_hazard(p_lick, meta, config=ANALYSIS_OPTIONS):
     centres = np.arange(half, max_t_s - half + bin_step, bin_step)
 
     dt = meta['dt']
-    bl_end = meta['bl_end']
+    baseline_end = meta.get('baseline_end', meta['bl_end'])
     blocks = meta['blocks']
     t_bin = np.arange(p_lick.shape[1]) * dt
 
@@ -80,7 +81,7 @@ def predicted_hazard(p_lick, meta, config=ANALYSIS_OPTIONS):
             out[block_name] = np.full(len(centres), np.nan)
             continue
         p_sub = p_lick[sel]              # (n_trials, T)
-        bl_sub = bl_end[sel]
+        bl_sub = baseline_end[sel]
         at_risk_n = np.zeros(len(centres))
         hazard_sum = np.zeros(len(centres))
         for c_i, c in enumerate(centres):
@@ -116,7 +117,7 @@ def predicted_pulse_lick_prob(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
     time_step = config.get('tf_pulse_time_step', 1)
 
     dt = meta['dt']
-    bl_end = meta['bl_end']
+    baseline_end = meta.get('baseline_end', meta['bl_end'])
     blocks = meta['blocks']
     n_trials, max_t = p_lick.shape
     t_bin = np.arange(max_t) * dt
@@ -128,12 +129,12 @@ def predicted_pulse_lick_prob(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
     log_survival = np.log(np.clip(one_minus, 1e-9, 1.0))
     cumlog = np.concatenate([np.zeros((n_trials, 1)), np.cumsum(log_survival, axis=1)], axis=1)
 
-    # masked TF values: only valid (not NaN) per-bin entries
-    valid = ~np.isnan(p_lick)
+    # restrict to bins inside baseline only; post-change bins distort TF binning
+    valid = ~np.isnan(p_lick) & (np.arange(max_t)[None] < baseline_end[:, None])
     tf = tf_inputs.numpy() if hasattr(tf_inputs, 'numpy') else tf_inputs
 
     # iterate over time windows and blocks
-    max_time = t_bin[bl_end - 1].max() if len(bl_end) else 0
+    max_time = t_bin[baseline_end - 1].max() if len(baseline_end) else 0
     time_starts = np.arange(0, max_time - time_win + time_step, time_step)
 
     results = {'binCentres': bin_centres, 'time_starts': time_starts, 'time_win': time_win}
@@ -178,7 +179,7 @@ def predicted_lick_kernel(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
     computed separately per condition (earlyBlock_early, lateBlock_early, lateBlock_late).
     """
     dt = meta['dt']
-    bl_end = meta['bl_end']
+    baseline_end = meta.get('baseline_end', meta['bl_end'])
     blocks = meta['blocks']
     n_trials, max_t = p_lick.shape
     n_pre = config.get('n_pre_lick_samples', 40)
@@ -187,11 +188,14 @@ def predicted_lick_kernel(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
 
     tf = tf_inputs.numpy() if hasattr(tf_inputs, 'numpy') else tf_inputs
 
-    p_safe = np.where(np.isnan(p_lick), 0.0, p_lick)
+    # zero p_lick past the baseline period so post-change bins don't contribute
+    # to the FA kernel
+    bl_mask = np.arange(max_t)[None] < baseline_end[:, None]
+    p_safe = np.where(np.isnan(p_lick) | ~bl_mask, 0.0, p_lick)
     log_survival = np.log(np.clip(1.0 - p_safe, 1e-9, 1.0))
     cumlog_prev = np.concatenate([np.zeros((n_trials, 1)),
                                   np.cumsum(log_survival, axis=1)[:, :-1]], axis=1)
-    p_first = p_safe * np.exp(cumlog_prev)  # P(first lick at bin t)
+    p_first = p_safe * np.exp(cumlog_prev)  # P(first lick at bin t), baseline only
 
     t_bin = np.arange(max_t) * dt
 
@@ -227,4 +231,61 @@ def predicted_lick_kernel(p_lick, tf_inputs, meta, config=ANALYSIS_OPTIONS):
                 kernel[l] = num / den
         # kernel currently indexed by lag (0 = lick bin). reverse so index 0 = earliest
         out[cond_name] = kernel[::-1]
+    return out
+
+
+#%% predicted outcome distribution (Hit / FA / Miss)
+
+def predicted_outcome_dist(p_lick, meta, config=ANALYSIS_OPTIONS):
+    """per-block model vs mouse proportions of Hit / FA / Miss.
+    model side uses analytic first-lick probabilities:
+        p_first(t) = p_lick(t) * prod_{s<t}(1 - p_lick(s))
+        P(FA)  = sum p_first over t < change_bin
+        P(Hit) = sum p_first over t in [change_bin, change_bin + rw_bins)
+        P(Miss) = 1 - P(FA) - P(Hit)"""
+    dt = meta['dt']
+    rw_bins = int(round(config.get('response_window', 2.15) / dt))
+    df = meta['df']
+    n_trials, max_t = p_lick.shape
+
+    p_safe = np.where(np.isnan(p_lick), 0.0, p_lick)
+    log_surv = np.log(np.clip(1.0 - p_safe, 1e-9, 1.0))
+    cumlog_prev = np.concatenate([np.zeros((n_trials, 1)),
+                                  np.cumsum(log_surv, axis=1)[:, :-1]], axis=1)
+    p_first = p_safe * np.exp(cumlog_prev)
+
+    stim_t = df['stimT'].to_numpy(dtype=float)
+    has_change = np.isfinite(stim_t)
+    change_bin = np.where(has_change,
+                          np.clip(np.ceil(stim_t / dt).astype(int) - 1, 0, max_t - 1),
+                          max_t)
+
+    P_fa = np.zeros(n_trials)
+    P_hit = np.zeros(n_trials)
+    for i in range(n_trials):
+        cb = int(change_bin[i])
+        P_fa[i] = p_first[i, :cb].sum() if cb > 0 else 0.0
+        if cb < max_t:
+            P_hit[i] = p_first[i, cb:min(cb + rw_bins, max_t)].sum()
+    P_miss = np.clip(1.0 - P_fa - P_hit, 0.0, 1.0)
+
+    blocks = meta['blocks']
+    out = {}
+    for block_name, block_val in [('early', 1.0), ('late', -1.0)]:
+        sel = blocks == block_val
+        if not sel.any():
+            continue
+        out[block_name] = dict(
+            model = dict(
+                fa   = float(np.nanmean(P_fa[sel])),
+                hit  = float(np.nanmean(P_hit[sel])),
+                miss = float(np.nanmean(P_miss[sel])),
+            ),
+            mouse = dict(
+                fa   = float(df.loc[sel, 'IsFA'].mean()),
+                hit  = float(df.loc[sel, 'IsHit'].mean()),
+                miss = float(df.loc[sel, 'IsMiss'].mean()),
+            ),
+            n = int(sel.sum()),
+        )
     return out

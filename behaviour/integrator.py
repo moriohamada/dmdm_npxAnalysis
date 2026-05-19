@@ -47,15 +47,22 @@ def clean_baseline_trials(df, min_t=ANALYSIS_OPTIONS['ignore_trial_start']):
     return df[fa_ok | non_fa_ok].reset_index(drop=True)
 
 
-def precompute_tf(df, config=ANALYSIS_OPTIONS):
-    """per-trial baseline TF in log2 octaves, subsampled, truncated at FA or change onset"""
+def precompute_tf(df, config=ANALYSIS_OPTIONS, fa_extend_bins=0, mode='baseline'):
+    """per-trial TF in log2 octaves, subsampled, with `bl_end` marking the per-trial
+    cutoff.
+
+    mode='baseline': bl_end = FA bin (FA trials) or change-onset bin (non-FA), with
+        optional fa_extend_bins past the FA. tf_mat is NaN'd past bl_end.
+    mode='full_trial': non-FA trials extend through the response window so the model
+        sees the change pulse and learns to (not) lick. FA path unchanged."""
     frame_step  = config['tf_sample_step']
     sample_rate = config['tf_sample_rate']
     dt = 1.0 / sample_rate
 
     # strip grey-screen and convert before subsampling so times align with rt_FA/stimT
     tf_seqs = [strip_and_convert_tf(tf)[::frame_step] for tf in df['stim_TF']]
-    max_t = max((len(t) for t in tf_seqs), default=0)
+    seq_lens = np.array([len(t) for t in tf_seqs], dtype=int)
+    max_t = int(seq_lens.max()) if len(seq_lens) else 0
     n = len(df)
 
     tf_mat = np.full((n, max_t), np.nan)
@@ -67,7 +74,14 @@ def precompute_tf(df, config=ANALYSIS_OPTIONS):
     stim_t = df['stimT'].to_numpy(dtype=float)
 
     bl_end_t = np.where(is_fa, fa_t, stim_t)
-    bl_end = np.minimum(np.ceil(bl_end_t * sample_rate).astype(int), max_t)
+    bl_end = np.minimum(np.ceil(bl_end_t * sample_rate).astype(int), seq_lens)
+    if fa_extend_bins:
+        bl_end = np.where(is_fa, np.minimum(bl_end + fa_extend_bins, seq_lens), bl_end)
+    if mode == 'full_trial':
+        rw_bins = int(round(config['response_window'] * sample_rate))
+        non_fa_end = np.minimum(np.ceil(stim_t * sample_rate).astype(int) + rw_bins,
+                                seq_lens)
+        bl_end = np.where(is_fa, bl_end, non_fa_end)
     past = np.arange(max_t)[None] >= bl_end[:, None]
     tf_mat[past] = np.nan
 

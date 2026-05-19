@@ -21,15 +21,94 @@ SIM_NAME      = 'rnn_sim.pkl'
 
 #%% dataset
 
-def build_tensors(df, config=ANALYSIS_OPTIONS):
+FAST_CHANGE_TFS = (2.0, 4.0)
+
+
+def _motor_rt_samples(df):
+    """hit reaction times (s) at fast TF changes - dominated by motor delay"""
+    hits = df['IsHit'].astype(bool) & df['Stim2TF'].isin(FAST_CHANGE_TFS)
+    return df.loc[hits, 'rt_RT'].dropna().to_numpy(dtype=float)
+
+
+def _rt_kernel(rt_samples, dt, max_bins=None):
+    """peak-normalised histogram of motor RT in dt-sized bins.
+    returns h where h[k] >= 0 is the (normalised) frequency of RT == k bins."""
+    rt = rt_samples[rt_samples >= 0]
+    if len(rt) == 0:
+        return np.array([1.0], dtype=np.float32)
+    offsets = np.round(rt / dt).astype(int)
+    max_off = int(offsets.max()) + 1
+    if max_bins is not None:
+        max_off = min(max_off, max_bins)
+    h = np.bincount(np.clip(offsets, 0, max_off - 1), minlength=max_off).astype(np.float32)
+    return h / h.max()
+
+
+def _apply_kernel(target, event_bin, idx, rt_samples, dt, ops):
+    """add the configured kernel into target rows in idx, centred at event_bin[idx]"""
+    if len(idx) == 0:
+        return target
+    max_t = target.shape[1]
+    kernel = ops.get('target_kernel', 'point')
+
+    if kernel == 'rt_convolved':
+        h = _rt_kernel(rt_samples, dt)
+        n_h = len(h)
+        for i in idx:
+            offsets = event_bin[i] - np.arange(max_t)
+            valid = (offsets >= 0) & (offsets < n_h)
+            target[i, valid] = np.maximum(target[i, valid], h[offsets[valid]])
+        return target
+
+    if len(rt_samples) > 0:
+        stat = ops.get('motor_shift_stat', 'median')
+        rt_central = float(np.median(rt_samples) if stat == 'median' else np.mean(rt_samples))
+    else:
+        rt_central = 0.0
+    shift = int(round(rt_central / dt))
+    centres = np.clip(event_bin - shift, 0, max_t - 1)
+
+    sigma = float(ops.get('target_sigma_bins', 0))
+    if kernel == 'point' or sigma <= 0:
+        target[idx, centres[idx]] = np.maximum(target[idx, centres[idx]], 1.0)
+        return target
+
+    t_grid = np.arange(max_t)[None]
+    c = centres[idx][:, None]
+    gauss = np.exp(-0.5 * ((t_grid - c) / sigma) ** 2).astype(np.float32)
+    target[idx] = np.maximum(target[idx], gauss)
+    return target
+
+
+def _build_target(fa_bin, is_fa, hit_bin, is_hit, n_trials, max_t,
+                  rt_samples, dt, ops):
+    """target = decision kernel at FA bin for FA trials AND at hit bin for hit trials.
+    miss trials get zero (model should not lick). kernel set by ops['target_kernel']."""
+    target = np.zeros((n_trials, max_t), dtype=np.float32)
+    _apply_kernel(target, fa_bin, np.where(is_fa)[0], rt_samples, dt, ops)
+    _apply_kernel(target, hit_bin, np.where(is_hit)[0], rt_samples, dt, ops)
+    return target
+
+
+def build_tensors(df, config=ANALYSIS_OPTIONS, ops=BEHAVIOUR_RNN_OPS):
     """
-    build (inputs, target, mask, meta) from one mouse's trial df.
+    build (inputs, target, mask, meta) from one mouse's trial df. trial inputs span
+    baseline and the response window (mode='full_trial'), so the model sees the
+    change pulse on hit/miss trials.
+
     inputs: (N, T, 3) float32 -- tf in octaves, time/16, block (+/-1)
-    target: (N, T) float32 -- 1 at FA bin for FA trials, else 0
-    mask:   (N, T) float32 -- 1 for bins in [ignore_trial_start, bl_end-1]
+    target: (N, T) float32 -- decision kernel at the FA bin (FA trials) and at the
+                              hit bin (hit trials), peak 1.0. miss trials are zero.
+                              kernel set by ops['target_kernel']; the centre is
+                              shifted earlier by the mouse's motor delay.
+    mask:   (N, T) float32 -- 1 for bins in [ignore_trial_start, bl_end). non-FA
+                              trials extend through stimT + response_window.
     """
+    # exclude aborts/refs
+    df = df[~df['trialoutcome'].isin(['abort', 'Ref'])]
     df = clean_baseline_trials(df)
-    tf_mat, bl_end, fa_time, dt = precompute_tf(df)
+    tf_mat, bl_end, fa_time, dt = precompute_tf(
+        df, fa_extend_bins=ops['fa_extend_bins'], mode='full_trial')
     n_trials, max_t = tf_mat.shape
 
     blocks = df['hazardblock'].map({'early': 1.0, 'late': -1.0}).to_numpy(dtype=np.float32)
@@ -40,22 +119,49 @@ def build_tensors(df, config=ANALYSIS_OPTIONS):
     block_in = np.broadcast_to(blocks[:, None], (n_trials, max_t))
     inputs = np.stack([tf_in, time_in, block_in], axis=-1)
 
-    target = np.zeros((n_trials, max_t), dtype=np.float32)
-    is_fa = df['IsFA'].to_numpy(dtype=bool)
-    fa_bin = (bl_end - 1).clip(min=0)
-    target[np.where(is_fa)[0], fa_bin[is_fa]] = 1.0
+    is_fa  = df['IsFA'].to_numpy(dtype=bool)
+    is_hit = df['IsHit'].to_numpy(dtype=bool)
+    is_miss = df['IsMiss'].to_numpy(dtype=bool)
+
+    fa_t_safe = np.nan_to_num(fa_time, nan=0.0)
+    fa_bin = np.clip(np.ceil(fa_t_safe / dt).astype(int) - 1, 0, max_t - 1)
+    fa_bin = np.where(is_fa, fa_bin, -1)
+
+    stim_t = df['stimT'].to_numpy(dtype=float)
+    rt_rt  = df['rt_RT'].to_numpy(dtype=float)
+    hit_t  = np.where(is_hit, stim_t + rt_rt, 0.0)
+    hit_bin = np.clip(np.ceil(hit_t / dt).astype(int) - 1, 0, max_t - 1)
+    hit_bin = np.where(is_hit, hit_bin, -1)
+
+    # baseline_end_bin = where the baseline periodactually ends (used by hazard /
+    # pulse / kernel analyses, which are baseline-only). distinct from bl_end which
+    # in 'full_trial' mode extends through the response window for non-FA trials.
+    baseline_end_t = np.where(is_fa, fa_t_safe, stim_t)
+    baseline_end_bin = np.minimum(
+        np.ceil(baseline_end_t / dt).astype(int), max_t)
+
+    rt_samples = _motor_rt_samples(df)
+    target = _build_target(fa_bin, is_fa, hit_bin, is_hit,
+                           n_trials, max_t, rt_samples, dt, ops)
 
     min_bin = int(round(config['ignore_trial_start'] / dt))
     t_idx = np.arange(max_t)[None]
     mask = ((t_idx >= min_bin) & (t_idx < bl_end[:, None])).astype(np.float32)
 
     meta = dict(
-        df       = df.reset_index(drop=True),
-        bl_end   = bl_end,
-        fa_time  = fa_time,
-        dt       = dt,
-        blocks   = blocks,
-        min_bin  = min_bin,
+        df         = df.reset_index(drop=True),
+        bl_end     = bl_end,
+        baseline_end = baseline_end_bin,
+        fa_time    = fa_time,
+        fa_bin     = fa_bin,
+        hit_bin    = hit_bin,
+        is_fa      = is_fa,
+        is_hit     = is_hit,
+        is_miss    = is_miss,
+        dt         = dt,
+        blocks     = blocks,
+        min_bin    = min_bin,
+        rt_samples = rt_samples,
     )
     return (
         torch.from_numpy(inputs),
@@ -66,14 +172,16 @@ def build_tensors(df, config=ANALYSIS_OPTIONS):
 
 
 def split_train_val(meta, val_frac=0.2, seed=0):
-    """stratified by (block, IsFA) so val mirrors train"""
+    """stratified by (block, outcome) so val mirrors train across hit/miss/FA"""
     rng = np.random.default_rng(seed)
-    is_fa = meta['df']['IsFA'].to_numpy(dtype=bool)
-    blk   = meta['blocks']
+    outcome = np.where(meta['is_fa'], 'fa',
+                       np.where(meta['is_hit'], 'hit',
+                                np.where(meta['is_miss'], 'miss', 'other')))
+    blk = meta['blocks']
     train_idx, val_idx = [], []
     for b in [1.0, -1.0]:
-        for fa in [True, False]:
-            ids = np.where((blk == b) & (is_fa == fa))[0]
+        for o in ['fa', 'hit', 'miss']:
+            ids = np.where((blk == b) & (outcome == o))[0]
             rng.shuffle(ids)
             cut = int(len(ids) * val_frac)
             val_idx.extend(ids[:cut])
@@ -166,7 +274,7 @@ def train_one(inputs, target, mask, train_idx, val_idx,
         else:
             stagn += 1
 
-        if verbose and (epoch % 10 == 0 or improved):
+        if verbose and epoch % 10 == 0:
             tag = ' *' if improved else ''
             print(f'  epoch {epoch:3d} | train {tr_loss:.4f} | val {v_loss:.4f}{tag}')
 
@@ -179,10 +287,14 @@ def train_one(inputs, target, mask, train_idx, val_idx,
     return model, hist, pos_weight
 
 
-def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=True):
+def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=True,
+             subj=None, sweep_plot_dir=None, real_cached=None):
     """
     fit one mouse. n_hidden=None -> sweep ops['n_hidden_sweep'] and pick
     the smallest n_h within 1% of the best val loss.
+
+    if subj and sweep_plot_dir are provided, real-vs-RNN mirror plots are written
+    to sweep_plot_dir/<subj>/n_h_<n_h>/ after each sweep entry.
     """
     inputs, target, mask, meta = build_tensors(df)
     train_idx, val_idx = split_train_val(meta, val_frac=ops['val_frac'], seed=ops['seed'])
@@ -191,6 +303,9 @@ def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=Tru
         model, hist, pw = train_one(
             inputs, target, mask, train_idx, val_idx,
             n_hidden=n_hidden, ops=ops, device=device, verbose=verbose)
+        if subj and sweep_plot_dir:
+            _plot_sweep_entry(model, df, pw, subj, n_hidden,
+                              sweep_plot_dir, real_cached)
         return dict(
             model=model, history=hist, pos_weight=pw, n_hidden=n_hidden,
             meta=meta, train_idx=train_idx, val_idx=val_idx,
@@ -204,6 +319,8 @@ def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=Tru
             inputs, target, mask, train_idx, val_idx,
             n_hidden=n_h, ops=ops, device=device, verbose=verbose)
         sweep[n_h] = dict(model=m, history=h, pos_weight=pw, best_val=min(h['val']))
+        if subj and sweep_plot_dir:
+            _plot_sweep_entry(m, df, pw, subj, n_h, sweep_plot_dir, real_cached)
 
     best_loss = min(s['best_val'] for s in sweep.values())
     chosen = min(n_h for n_h, s in sweep.items() if s['best_val'] <= best_loss * 1.01)
@@ -246,21 +363,46 @@ def load_model(path):
     return model, obj
 
 
+def _plot_sweep_entry(model, df, pos_weight, subj, n_h, plot_dir, real_cached):
+    """write real-vs-RNN mirror plots + example trials + outcome dist for one mouse"""
+    from behaviour_rnn.simulate_behaviour import simulate_all
+    from behaviour_rnn.plotting import (plot_subject_mirrors, plot_example_trials,
+                                        plot_outcome_dist_single)
+    from utils.figures import save_fig
+
+    out_dir = Path(plot_dir) / subj / f'n_h_{n_h}'
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sim = simulate_all(model, df, pos_weight)
+    plot_subject_mirrors(subj, sim, out_dir, real_cached=real_cached)
+    save_fig(plot_example_trials(model, df, pos_weight), str(out_dir / 'examples'))
+    save_fig(plot_outcome_dist_single(sim['outcome']), str(out_dir / 'outcome'))
+
+
 #%% cohort-level: train every mouse, cache simulated behavioural mirrors
 
 def _model_path(subj, data_dir=RNN_DATA_DIR):
     return Path(data_dir) / MODELS_SUBDIR / f'rnn_{subj}.pt'
 
 
-def train_rnns_all_subj(dfs, overwrite=False, data_dir=RNN_DATA_DIR, **fit_kwargs):
+def train_rnns_all_subj(dfs, overwrite=False, data_dir=RNN_DATA_DIR,
+                        sweep_plot_dir=None, **fit_kwargs):
     """
     train an RNN per mouse, save weights, compute and save the simulated
     behavioural mirrors (hazard, pulse-lick, kernel) for the whole cohort.
     skips mice whose model already exists unless overwrite=True.
+
+    sweep_plot_dir, if given, receives per-mouse per-n_hidden diagnostic plots
+    (one subdir per (mouse, n_h)) generated as each sweep entry finishes.
     """
     from behaviour_rnn.simulate_behaviour import simulate_all
     data_dir = Path(data_dir)
     (data_dir / MODELS_SUBDIR).mkdir(parents=True, exist_ok=True)
+
+    real_cached = None
+    if sweep_plot_dir is not None:
+        from behaviour_rnn.plotting import load_real_observables
+        real_cached = load_real_observables()
 
     for subj, df in dfs.items():
         path = _model_path(subj, data_dir)
@@ -268,7 +410,9 @@ def train_rnns_all_subj(dfs, overwrite=False, data_dir=RNN_DATA_DIR, **fit_kwarg
             print(f'{subj}: cached, skipping')
             continue
         print(f'\n=== training RNN for {subj} ===')
-        result = fit_subj(df, verbose=True, **fit_kwargs)
+        result = fit_subj(df, verbose=True, subj=subj,
+                          sweep_plot_dir=sweep_plot_dir, real_cached=real_cached,
+                          **fit_kwargs)
         save_model(result, path)
 
     sim_path = data_dir / SIM_NAME
@@ -276,7 +420,7 @@ def train_rnns_all_subj(dfs, overwrite=False, data_dir=RNN_DATA_DIR, **fit_kwarg
         print(f'simulated mirrors cached at {sim_path}')
         return
 
-    sim = {'hazard': {}, 'pulse': {}, 'kernel': {}}
+    sim = {'hazard': {}, 'pulse': {}, 'kernel': {}, 'outcome': {}}
     for subj, df in dfs.items():
         path = _model_path(subj, data_dir)
         if not path.exists():

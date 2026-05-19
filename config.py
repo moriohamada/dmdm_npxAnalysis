@@ -77,6 +77,7 @@ ANALYSIS_OPTIONS = dict(
     # Behavioural analysis
     change_tfs    = [1, 1.25, 1.35, 1.5, 2, 4],
     change_wins   = {'early': [3, 8], 'late': [10.5, 15.5]},
+    response_window     = 2.15,            # s; task response window after change onset
     ignore_trial_start  = 2,               # s; ignore FAs in first seconds of trial
 
     smooth_tf          = 5,               # samples; moving average for lick-triggered analyses
@@ -327,6 +328,13 @@ BEHAVIOUR_RNN_OPS = dict(
     seed            = 0,
     lick_weight     = 1.0,                 # multiplier on pos_weight = n_neg/n_pos
                                            # >1 -> model predicts more licks
+
+    # FA target shape: when does the decision happen relative to the observed lick?
+    # motor delay (rt_RT for hits at 2/4 Hz changes) is subtracted from fa_bin per mouse.
+    target_kernel     = 'rt_convolved',    # 'point' | 'gaussian' | 'rt_convolved'
+    target_sigma_bins = 2,                 # gaussian width; ignored for other kernels
+    motor_shift_stat  = 'median',          # 'median' or 'mean'; ignored for rt_convolved
+    fa_extend_bins    = 0,                 # extra bins past FA in mask (FA trials only)
 )
 #%%
 PLOT_OPTIONS = dict(
