@@ -315,18 +315,18 @@ TFDIM_OPTIONS = dict(
 )
 #%%
 BEHAVIOUR_RNN_OPS = dict(
-    n_hidden        = 8,
-    n_hidden_sweep  = [4, 8, 16, 32],
-    lr              = 1e-3,
-    weight_decay    = 1e-4,
-    batch_size      = 64,
-    max_epochs      = 2000,
-    patience        = 100,                 # epochs of no val improvement before early stop
-    min_epochs      = 200,                 # don't allow early stop before this
+    n_hidden        = 16,
+    n_hidden_sweep  = [16, 32, 64],
+    lr              = 1e-4,
+    weight_decay    = 0,
+    batch_size      = 16,
+    max_epochs      = 1000,
+    patience        = 50,                  # epochs of no val improvement before early stop
+    min_epochs      = 100,                 # don't allow early stop before this
     val_frac        = 0.2,
     grad_clip       = 1.0,
     seed            = 0,
-    lick_weight     = 1.0,                 # multiplier on pos_weight = n_neg/n_pos
+    lick_weight     = 1.0,                 # multiplier on pos_weight
                                            # >1 -> model predicts more licks
 
     # FA target shape: when does the decision happen relative to the observed lick?
@@ -336,10 +336,9 @@ BEHAVIOUR_RNN_OPS = dict(
     motor_shift_stat  = 'median',          # 'median' or 'mean'; ignored for rt_convolved
     fa_extend_bins    = 0,                 # extra bins past FA in mask (FA trials only)
 
-    # warm-up pad: zero-TF bins prepended to every trial so the RNN can settle
-    # from h=0 before the real trial starts. target=0 across the pad (mouse never
-    # licks during the ITI).
-    pad_seconds       = 1.0,
+    # ITI: zero-TF bins prepended to every trial so the RNN can settle from
+    # h=0 before the real trial starts. target=0 across the ITI.
+    iti_seconds       = 1.0,
 )
 #%%
 PLOT_OPTIONS = dict(

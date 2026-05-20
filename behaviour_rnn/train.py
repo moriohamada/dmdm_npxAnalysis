@@ -96,57 +96,86 @@ def build_tensors(df, config=ANALYSIS_OPTIONS, ops=BEHAVIOUR_RNN_OPS):
     baseline and the response window (mode='full_trial'), so the model sees the
     change pulse on hit/miss trials.
 
-    inputs: (N, T, 3) float32 -- tf in octaves, time/16, block (+/-1)
+    inputs: (N, T, 6) float32 -- tf in octaves, time/16, block (+/-1),
+                                 prev_licked (0/1), prev_lick_t / 20, prev_rewarded (0/1)
     target: (N, T) float32 -- decision kernel at the FA bin (FA trials) and at the
                               hit bin (hit trials), peak 1.0. miss trials are zero.
                               kernel set by ops['target_kernel']; the centre is
                               shifted earlier by the mouse's motor delay.
-    mask:   (N, T) float32 -- 1 for bins in [ignore_trial_start, bl_end). non-FA
-                              trials extend through stimT + response_window.
+    mask:   (N, T) float32 -- 1 for every bin up to bl_end (ITI included).
+                              non-FA trials extend bl_end through stimT + response_window.
     """
     # exclude aborts/refs
     df = df[~df['trialoutcome'].isin(['abort', 'Ref'])]
     df = clean_baseline_trials(df)
     tf_mat, bl_end, fa_time, dt = precompute_tf(
         df, fa_extend_bins=ops['fa_extend_bins'], mode='full_trial')
-    n_trials, max_t = tf_mat.shape
+    n_trials, T_trial = tf_mat.shape
+
+    # ITI prepended so the RNN settles from h=0 before trial start. mask=1
+    # and target=0 over the ITI to teach "no lick during ITI". time channel
+    # is negative across the ITI for a smooth clock.
+    iti_bins = int(round(ops.get('iti_seconds', 0.0) / dt))
+    max_t = T_trial + iti_bins
 
     blocks = df['hazardblock'].map({'early': 1.0, 'late': -1.0}).to_numpy(dtype=np.float32)
-
-    tf_in = np.nan_to_num(tf_mat, nan=0.0).astype(np.float32)
-    t_grid = (np.arange(max_t) * dt).astype(np.float32)
-    time_in = np.broadcast_to(t_grid / 16.0, (n_trials, max_t))
-    block_in = np.broadcast_to(blocks[:, None], (n_trials, max_t))
-    inputs = np.stack([tf_in, time_in, block_in], axis=-1)
 
     is_fa  = df['IsFA'].to_numpy(dtype=bool)
     is_hit = df['IsHit'].to_numpy(dtype=bool)
     is_miss = df['IsMiss'].to_numpy(dtype=bool)
 
     fa_t_safe = np.nan_to_num(fa_time, nan=0.0)
-    fa_bin = np.clip(np.ceil(fa_t_safe / dt).astype(int) - 1, 0, max_t - 1)
-    fa_bin = np.where(is_fa, fa_bin, -1)
+    fa_bin_rel = np.clip(np.ceil(fa_t_safe / dt).astype(int) - 1, 0, T_trial - 1)
+    fa_bin = np.where(is_fa, fa_bin_rel + iti_bins, -1)
 
     stim_t = df['stimT'].to_numpy(dtype=float)
     rt_rt  = df['rt_RT'].to_numpy(dtype=float)
     hit_t  = np.where(is_hit, stim_t + rt_rt, 0.0)
-    hit_bin = np.clip(np.ceil(hit_t / dt).astype(int) - 1, 0, max_t - 1)
-    hit_bin = np.where(is_hit, hit_bin, -1)
+    hit_bin_rel = np.clip(np.ceil(hit_t / dt).astype(int) - 1, 0, T_trial - 1)
+    hit_bin = np.where(is_hit, hit_bin_rel + iti_bins, -1)
 
-    # baseline_end_bin = where the baseline periodactually ends (used by hazard /
-    # pulse / kernel analyses, which are baseline-only). distinct from bl_end which
-    # in 'full_trial' mode extends through the response window for non-FA trials.
+    # previous-trial features (within session; first trial of each session = 0)
+    sess = df['sessionID'].to_numpy()
+    same_sess = np.concatenate([[False], sess[1:] == sess[:-1]])
+    licked_self = (is_fa | is_hit).astype(np.float32)
+    lick_t_self = np.where(is_fa, fa_t_safe,
+                           np.where(is_hit, stim_t + np.nan_to_num(rt_rt, nan=0.0),
+                                    0.0)).astype(np.float32)
+    rewarded_self = is_hit.astype(np.float32)
+
+    def _shift(x):
+        out = np.concatenate([[0], x[:-1]])
+        return np.where(same_sess, out, 0.0).astype(np.float32)
+
+    prev_licked   = _shift(licked_self)
+    prev_lick_t   = _shift(lick_t_self) / 20.0
+    prev_rewarded = _shift(rewarded_self)
+
+    tf_in = np.zeros((n_trials, max_t), dtype=np.float32)
+    tf_in[:, iti_bins:] = np.nan_to_num(tf_mat, nan=0.0).astype(np.float32)
+    t_grid = ((np.arange(max_t) - iti_bins) * dt).astype(np.float32)
+    time_in = np.broadcast_to(t_grid / 16.0, (n_trials, max_t))
+    block_in = np.broadcast_to(blocks[:, None], (n_trials, max_t))
+    pl_in  = np.broadcast_to(prev_licked[:, None],   (n_trials, max_t))
+    plt_in = np.broadcast_to(prev_lick_t[:, None],   (n_trials, max_t))
+    pr_in  = np.broadcast_to(prev_rewarded[:, None], (n_trials, max_t))
+    inputs = np.stack([tf_in, time_in, block_in, pl_in, plt_in, pr_in], axis=-1)
+
+    # baseline_end = where the baseline period actually ends (used by hazard /
+    # pulse / kernel analyses). distinct from bl_end which in 'full_trial' mode
+    # extends through the response window for non-FA trials.
     baseline_end_t = np.where(is_fa, fa_t_safe, stim_t)
     baseline_end_bin = np.minimum(
-        np.ceil(baseline_end_t / dt).astype(int), max_t)
+        np.ceil(baseline_end_t / dt).astype(int) + iti_bins, max_t)
+    bl_end = bl_end + iti_bins
 
     rt_samples = _motor_rt_samples(df)
     target = _build_target(fa_bin, is_fa, hit_bin, is_hit,
                            n_trials, max_t, rt_samples, dt, ops)
 
-    min_bin = int(round(config['ignore_trial_start'] / dt))
+    # loss applies over every bin up to bl_end (ITI included; target=0 there)
     t_idx = np.arange(max_t)[None]
-    mask = ((t_idx >= min_bin) & (t_idx < bl_end[:, None])).astype(np.float32)
+    mask = (t_idx < bl_end[:, None]).astype(np.float32)
 
     meta = dict(
         df         = df.reset_index(drop=True),
@@ -160,8 +189,8 @@ def build_tensors(df, config=ANALYSIS_OPTIONS, ops=BEHAVIOUR_RNN_OPS):
         is_miss    = is_miss,
         dt         = dt,
         blocks     = blocks,
-        min_bin    = min_bin,
         rt_samples = rt_samples,
+        iti_bins   = iti_bins,
     )
     return (
         torch.from_numpy(inputs),
@@ -192,13 +221,13 @@ def split_train_val(meta, val_frac=0.2, seed=0):
 #%% model
 
 class BehaviourRNN(nn.Module):
-    """vanilla tanh RNN with linear sigmoid read-out (logits returned)"""
+    """vanilla relu RNN with linear sigmoid read-out (logits returned)"""
 
-    def __init__(self, n_hidden=8, n_in=3):
+    def __init__(self, n_hidden=8, n_in=6):
         super().__init__()
         self.n_hidden = n_hidden
         self.rnn = nn.RNN(input_size=n_in, hidden_size=n_hidden,
-                          nonlinearity='tanh', batch_first=True)
+                          nonlinearity='relu', batch_first=True)
         self.readout = nn.Linear(n_hidden, 1)
         nn.init.orthogonal_(self.rnn.weight_hh_l0)
 
@@ -228,7 +257,7 @@ def train_one(inputs, target, mask, train_idx, val_idx,
               n_hidden=8, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=True):
     """one RNN fit with a fixed n_hidden. returns (model, history, pos_weight)"""
     torch.manual_seed(ops['seed'])
-    model = BehaviourRNN(n_hidden=n_hidden).to(device)
+    model = BehaviourRNN(n_hidden=n_hidden, n_in=inputs.shape[-1]).to(device)
     opt   = torch.optim.Adam(model.parameters(), lr=ops['lr'],
                              weight_decay=ops['weight_decay'])
 
@@ -346,6 +375,7 @@ def save_model(result, path):
         history    = result['history'],
         pos_weight = result['pos_weight'],
         n_hidden   = result['n_hidden'],
+        n_in       = result['model'].rnn.input_size,
         train_idx  = result['train_idx'],
         val_idx    = result['val_idx'],
     )
@@ -357,7 +387,7 @@ def save_model(result, path):
 
 def load_model(path):
     obj = torch.load(path, weights_only=False)
-    model = BehaviourRNN(n_hidden=obj['n_hidden'])
+    model = BehaviourRNN(n_hidden=obj['n_hidden'], n_in=obj.get('n_in', 6))
     model.load_state_dict(obj['state_dict'])
     model.eval()
     return model, obj

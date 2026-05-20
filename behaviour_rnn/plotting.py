@@ -144,46 +144,100 @@ def plot_hazard_real_vs_rnn(real, sim, config=ANALYSIS_OPTIONS):
 #%% real vs RNN: pulse-aligned lick probability
 
 def plot_pulse_lick_real_vs_rnn(real, sim, config=ANALYSIS_OPTIONS):
-    """one figure per (block, time window): real vs RNN lick prob over TF magnitude"""
+    """one figure per time window. mirrors plot_pulse_aligned_lick_prob:
+    row 1 = mouse early/late lick prob (CI ribbon) + RNN dotted overlay;
+    row 2 = paired Early-Late delta (mouse mean + CI, RNN dotted)."""
     subj_keys = [s for s in real if s in sim]
+    if not subj_keys:
+        return {}
     bin_centres = np.array(real[subj_keys[0]]['binCentres'])
+    time_starts = real[subj_keys[0]]['time_starts']
+    time_win    = real[subj_keys[0]]['time_win']
+    min_n = config.get('min_pulse_samples', 500)
+    xlims = [-0.6, 0.6]
+
+    def _gather(d, cond):
+        arr = []
+        n   = []
+        for s in subj_keys:
+            if cond not in d[s]:
+                arr.append(None)
+                continue
+            arr.append(np.asarray(d[s][cond]['lickProb'], dtype=float))
+            n.append(np.asarray(d[s][cond].get('n', np.zeros_like(arr[-1]))))
+        if any(a is None for a in arr):
+            return None, None
+        return np.stack(arr), np.stack(n) if n else None
+
     figs = {}
+    for t_start in time_starts:
+        t_end = t_start + time_win
+        label = f'{t_start:.0f}-{t_end:.0f}s'
+        early_key = f'earlyBlock_{label}'
+        late_key  = f'lateBlock_{label}'
 
-    # collect common condition names from real
-    cond_names = [k for k in real[subj_keys[0]]
-                  if k not in ('binCentres', 'time_starts', 'time_win')]
-
-    for cond in cond_names:
-        if not all(cond in real[s] and cond in sim[s] for s in subj_keys):
+        real_e, n_e = _gather(real, early_key)
+        real_l, n_l = _gather(real, late_key)
+        sim_e, _    = _gather(sim,  early_key)
+        sim_l, _    = _gather(sim,  late_key)
+        if any(x is None for x in (real_e, real_l, sim_e, sim_l)):
             continue
-        block = 'early' if cond.startswith('early') else 'late'
-        colour = _block_colour(block)
+        if n_e is not None:
+            real_e[:, n_e.sum(axis=0) < min_n] = np.nan
+        if n_l is not None:
+            real_l[:, n_l.sum(axis=0) < min_n] = np.nan
 
-        real_arr = np.stack([real[s][cond]['lickProb'] for s in subj_keys]).astype(float)
-        sim_arr  = np.stack([sim[s][cond]['lickProb']  for s in subj_keys]).astype(float)
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.6, 0.4], vertical_spacing=0.08)
 
-        fig = go.Figure()
-        for i in range(real_arr.shape[0]):
-            fig.add_trace(go.Scatter(
-                x=bin_centres, y=real_arr[i], mode='lines',
-                line=dict(color=colour, width=1), opacity=0.25,
-                showlegend=False, hoverinfo='skip'))
-            fig.add_trace(go.Scatter(
-                x=bin_centres, y=sim_arr[i], mode='lines',
-                line=dict(color=colour, width=1, dash='dot'), opacity=0.25,
-                showlegend=False, hoverinfo='skip'))
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=np.nanmean(real_arr, axis=0), mode='lines',
-            name='mouse', line=dict(color=colour, width=2.5)))
-        fig.add_trace(go.Scatter(
-            x=bin_centres, y=np.nanmean(sim_arr, axis=0), mode='lines',
-            name='RNN', line=dict(color=colour, width=2.5, dash='dot')))
+        for block, real_arr, sim_arr in (('early', real_e, sim_e),
+                                         ('late',  real_l, sim_l)):
+            colour = _block_colour(block)
+            rgba   = _block_rgba(block, 0.15)
+            n_valid = np.sum(~np.isnan(real_arr), axis=0).astype(float)
+            mean_r  = np.nanmean(real_arr, axis=0)
+            ci_r    = 1.96 * np.nanstd(real_arr, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+            mean_s  = np.nanmean(sim_arr, axis=0)
 
-        fig.update_xaxes(title_text='preceding TF (octaves)')
-        fig.update_yaxes(title_text='P(lick in window)')
-        fig.update_layout(template='plotly_white', width=600, height=400,
-                          title_text=cond)
-        figs[cond] = fig
+            fig.add_trace(go.Scatter(x=bin_centres, y=mean_r + ci_r, mode='lines',
+                line=dict(width=0), showlegend=False), row=1, col=1)
+            fig.add_trace(go.Scatter(x=bin_centres, y=mean_r - ci_r, mode='lines',
+                line=dict(width=0), fill='tonexty', fillcolor=rgba,
+                showlegend=False), row=1, col=1)
+            fig.add_trace(go.Scatter(x=bin_centres, y=mean_r, mode='lines',
+                name=f'{block.capitalize()} block',
+                line=dict(color=colour, width=2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=bin_centres, y=mean_s, mode='lines',
+                name=f'{block.capitalize()} (RNN)',
+                line=dict(color=colour, width=2, dash='dot')), row=1, col=1)
+
+        delta_r = real_e - real_l
+        delta_s = sim_e  - sim_l
+        n_valid = np.sum(~np.isnan(delta_r), axis=0).astype(float)
+        mean_dr = np.nanmean(delta_r, axis=0)
+        ci_dr   = 1.96 * np.nanstd(delta_r, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+        mean_ds = np.nanmean(delta_s, axis=0)
+
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_dr + ci_dr, mode='lines',
+            line=dict(width=0), showlegend=False), row=2, col=1)
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_dr - ci_dr, mode='lines',
+            line=dict(width=0), fill='tonexty', fillcolor='rgba(128,128,128,0.15)',
+            showlegend=False), row=2, col=1)
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_dr, mode='lines',
+            name='Early - Late', line=dict(color='grey', width=2)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=bin_centres, y=mean_ds, mode='lines',
+            name='Early - Late (RNN)',
+            line=dict(color='grey', width=2, dash='dot')), row=2, col=1)
+        fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                      row=2, col=1)
+
+        fig.update_xaxes(range=xlims, row=1, col=1)
+        fig.update_xaxes(range=xlims, title_text='Delta TF (oct)', row=2, col=1)
+        fig.update_yaxes(title_text='P(lick in window)', row=1, col=1)
+        fig.update_yaxes(title_text='Delta P(lick) (Early - Late)', row=2, col=1)
+        fig.update_layout(template='plotly_white', width=600, height=500,
+                          title_text=label)
+        figs[label] = fig
 
     return figs
 
@@ -191,49 +245,103 @@ def plot_pulse_lick_real_vs_rnn(real, sim, config=ANALYSIS_OPTIONS):
 #%% real vs RNN: lick-triggered TF kernel
 
 def plot_kernel_real_vs_rnn(real_elta, sim_kernel, config=ANALYSIS_OPTIONS):
-    """overlay mouse and RNN lick-triggered TF for each condition"""
+    """mirrors plot_elta. row 1 = mouse 3-condition kernels (CI ribbons) with
+    RNN dotted overlay; row 2 = paired Early-Late delta on early-trial licks
+    (mouse mean + CI, RNN dotted)."""
     n_pre = config.get('n_pre_lick_samples', 40)
     sample_rate = config.get('tf_sample_rate', 20)
     t = np.linspace(-n_pre / sample_rate, 0, n_pre)
 
     line_specs = {
-        'earlyBlock_early': {'block': 'early', 'dash': 'solid',  'label': 'early block, early lick'},
-        'lateBlock_early':  {'block': 'late',  'dash': 'dash',   'label': 'late block, early lick'},
-        'lateBlock_late':   {'block': 'late',  'dash': 'solid',  'label': 'late block, late lick'},
+        'earlyBlock_early': {'block': 'early', 'dash': 'solid',
+                             'label': 'Early block, early lick'},
+        'lateBlock_early':  {'block': 'late',  'dash': 'dash',
+                             'label': 'Late block, early lick'},
+        'lateBlock_late':   {'block': 'late',  'dash': 'solid',
+                             'label': 'Late block, late lick'},
     }
 
-    fig = go.Figure()
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.4], vertical_spacing=0.08)
+
     for cond, spec in line_specs.items():
         if cond not in real_elta:
             continue
         scale = 0.65 if spec['dash'] == 'dash' else 1.0
         colour = _block_colour(spec['block'], scale)
+        rgba   = _block_rgba(spec['block'], 0.2, scale)
 
-        # real
         mean_r = real_elta[cond]['mean']
         sem_r  = real_elta[cond]['sem']
         fig.add_trace(go.Scatter(
-            x=t, y=mean_r, mode='lines', name=f"{spec['label']} (mouse)",
-            line=dict(color=colour, width=2.5, dash=spec['dash'])))
+            x=t, y=mean_r, mode='lines', name=spec['label'],
+            line=dict(color=colour, dash=spec['dash'], width=2)), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=list(t) + list(t)[::-1],
             y=list(mean_r + sem_r) + list(mean_r - sem_r)[::-1],
-            fill='toself', fillcolor=_block_rgba(spec['block'], 0.18, scale),
-            line=dict(width=0), mode='none', showlegend=False))
+            fill='toself', fillcolor=rgba, line=dict(width=0),
+            mode='none', showlegend=False), row=1, col=1)
 
-        # RNN: aggregate across mice
         sim_subjs = [s for s in sim_kernel if cond in sim_kernel[s]]
-        if not sim_subjs:
-            continue
-        sim_arr = np.stack([sim_kernel[s][cond] for s in sim_subjs]).astype(float)
-        mean_s = np.nanmean(sim_arr, axis=0)
-        fig.add_trace(go.Scatter(
-            x=t, y=mean_s, mode='lines', name=f"{spec['label']} (RNN)",
-            line=dict(color=colour, width=2.5, dash='dot')))
+        if sim_subjs:
+            sim_arr = np.stack([sim_kernel[s][cond] for s in sim_subjs]).astype(float)
+            mean_s = np.nanmean(sim_arr, axis=0)
+            fig.add_trace(go.Scatter(
+                x=t, y=mean_s, mode='lines', name=f"{spec['label']} (RNN)",
+                line=dict(color=colour, width=2, dash='dot')), row=1, col=1)
 
-    fig.update_xaxes(title_text='time relative to lick (s)')
-    fig.update_yaxes(title_text='baseline TF (octaves)')
-    fig.update_layout(template='plotly_white', width=700, height=450)
+    # delta: early-trial licks, early block minus late block (paired across mice).
+    # only available when called with cohort elta (subj_means present); single-subj
+    # path from plot_subject_mirrors passes only 'mean'/'sem' so skip the delta there.
+    has_cohort = ('earlyBlock_early' in real_elta and 'lateBlock_early' in real_elta
+                  and 'subj_means' in real_elta['earlyBlock_early']
+                  and 'subj_means' in real_elta['lateBlock_early'])
+    if has_cohort:
+        e, l = real_elta['earlyBlock_early'], real_elta['lateBlock_early']
+        e_subjs = e.get('subjs')
+        l_subjs = l.get('subjs')
+        if e_subjs is not None and l_subjs is not None:
+            common = [s for s in e_subjs if s in l_subjs]
+            e_idx = [e_subjs.index(s) for s in common]
+            l_idx = [l_subjs.index(s) for s in common]
+            delta = e['subj_means'][e_idx] - l['subj_means'][l_idx]
+        else:
+            delta = e['subj_means'] - l['subj_means']
+
+        n_valid = np.sum(~np.isnan(delta), axis=0).astype(float)
+        mean_d = np.nanmean(delta, axis=0)
+        sem_d = np.nanstd(delta, axis=0) / np.sqrt(np.where(n_valid > 0, n_valid, 1))
+
+        fig.add_trace(go.Scatter(
+            x=t, y=mean_d, mode='lines',
+            name='Early - Late (early-trial licks)',
+            line=dict(color='grey', width=2)), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=list(t) + list(t)[::-1],
+            y=list(mean_d + sem_d) + list(mean_d - sem_d)[::-1],
+            fill='toself', fillcolor='rgba(128,128,128,0.2)',
+            line=dict(width=0), mode='none', showlegend=False), row=2, col=1)
+
+        common_sim = [s for s in sim_kernel
+                      if 'earlyBlock_early' in sim_kernel[s]
+                      and 'lateBlock_early' in sim_kernel[s]]
+        if common_sim:
+            d_sim = np.stack([sim_kernel[s]['earlyBlock_early']
+                              - sim_kernel[s]['lateBlock_early']
+                              for s in common_sim]).astype(float)
+            mean_ds = np.nanmean(d_sim, axis=0)
+            fig.add_trace(go.Scatter(
+                x=t, y=mean_ds, mode='lines',
+                name='Early - Late (RNN)',
+                line=dict(color='grey', width=2, dash='dot')), row=2, col=1)
+
+        fig.add_hline(y=0, line=dict(color='black', width=1, dash='dot'),
+                      row=2, col=1)
+
+    fig.update_xaxes(title_text='Time relative to lick (s)', row=2, col=1)
+    fig.update_yaxes(title_text='Baseline stimulus (octaves)', row=1, col=1)
+    fig.update_yaxes(title_text='Delta stimulus (octaves)', row=2, col=1)
+    fig.update_layout(template='plotly_white', width=700, height=550)
     return fig
 
 
@@ -298,11 +406,10 @@ def plot_outcome_dist_cohort(dist_by_subj):
 
 #%% example-trial panels
 
-def plot_example_trials(model, df_subj, pos_weight, n_examples=3, seed=0,
-                        config=ANALYSIS_OPTIONS):
-    """grid of example trials per (block, outcome): TF + RNN p_lick + lick/change markers.
-    rows = early hit / early FA / early miss / late hit / late FA / late miss.
-    cols = n_examples random trials per cell."""
+def plot_example_trials(model, df_subj, pos_weight, config=ANALYSIS_OPTIONS):
+    """heatmaps of all trials per (block, outcome), sorted by lick time.
+    left col = stimulus TF; right col = RNN P(lick). lick / change times
+    overlaid as markers. mirrors lick_pred.analysis.plot_session_heatmap."""
     from behaviour_rnn.simulate_behaviour import predict_for_df
     p_lick, tf_in, meta = predict_for_df(model, df_subj, pos_weight)
     df = meta['df']
@@ -310,72 +417,85 @@ def plot_example_trials(model, df_subj, pos_weight, n_examples=3, seed=0,
     max_t = p_lick.shape[1]
     t_grid = np.arange(max_t) * dt
 
-    rng = np.random.default_rng(seed)
-    outcomes = [('hit',  meta['is_hit']),
-                ('fa',   meta['is_fa']),
-                ('miss', meta['is_miss'])]
-    blocks_def = [('early', 1.0), ('late', -1.0)]
+    stim_t = df['stimT'].to_numpy(dtype=float)
+    rt_rt  = df['rt_RT'].to_numpy(dtype=float)
+    rt_fa  = df['rt_FA'].to_numpy(dtype=float)
 
-    rows, row_labels = [], []
+    pl = np.where(np.isnan(p_lick), 0.0, p_lick)
+
+    blocks_def = [('early', 1.0), ('late', -1.0)]
+    outcomes   = [('hit', meta['is_hit']),
+                  ('fa',  meta['is_fa']),
+                  ('miss', meta['is_miss'])]
+
+    cells = []  # (label, sorted trial indices, lick_t (or None), stim_t)
     for block_name, block_val in blocks_def:
         for outcome_name, outcome_mask in outcomes:
             sel = np.where((meta['blocks'] == block_val) & outcome_mask)[0]
-            picks = (rng.choice(sel, size=min(n_examples, len(sel)), replace=False)
-                     if len(sel) else np.array([], dtype=int))
-            rows.append(picks)
-            row_labels.append(f'{block_name} {outcome_name}')
+            if outcome_name == 'hit':
+                lick = stim_t[sel] + rt_rt[sel]
+            elif outcome_name == 'fa':
+                lick = rt_fa[sel]
+            else:
+                lick = stim_t[sel]
+            order = np.argsort(lick) if len(sel) else np.array([], dtype=int)
+            cells.append((f'{block_name} {outcome_name}',
+                          sel[order], lick[order] if len(sel) else None,
+                          stim_t[sel[order]] if len(sel) else None))
 
-    n_rows = len(rows)
-    fig = make_subplots(rows=n_rows, cols=n_examples,
-                        specs=[[{'secondary_y': True}] * n_examples] * n_rows,
-                        row_titles=row_labels,
-                        shared_xaxes=False, shared_yaxes=False,
-                        horizontal_spacing=0.06, vertical_spacing=0.025)
+    n_rows = len(cells)
+    fig = make_subplots(rows=n_rows, cols=2,
+                        row_titles=[c[0] for c in cells],
+                        column_titles=['Stimulus (TF, oct)', 'RNN P(lick)'],
+                        shared_xaxes=True, shared_yaxes=False,
+                        horizontal_spacing=0.08, vertical_spacing=0.015)
 
-    for r, trial_ids in enumerate(rows, start=1):
-        block_name = 'early' if r <= 3 else 'late'
-        col = _block_colour(block_name)
-        for c, trial_i in enumerate(trial_ids, start=1):
-            tf_tr = tf_in[trial_i]
-            pl_tr = p_lick[trial_i]
-            valid = ~np.isnan(pl_tr)
-            if not valid.any():
-                continue
-            t = t_grid[valid]
+    for r, (label, idx, lick, stm) in enumerate(cells, start=1):
+        if len(idx) == 0:
+            continue
+        y_pos = np.arange(len(idx))
 
-            fig.add_trace(go.Scatter(x=t, y=tf_tr[valid], mode='lines',
-                line=dict(color='dimgrey', width=1.2),
-                showlegend=(r == 1 and c == 1), name='TF (oct)'),
-                row=r, col=c, secondary_y=False)
-            fig.add_trace(go.Scatter(x=t, y=pl_tr[valid], mode='lines',
-                line=dict(color=col, width=1.6),
-                showlegend=(r == 1 and c == 1), name='RNN P(lick)'),
-                row=r, col=c, secondary_y=True)
+        fig.add_trace(go.Heatmap(
+            z=tf_in[idx], x=t_grid, y=y_pos, coloraxis='coloraxis',
+            hoverinfo='skip'), row=r, col=1)
+        fig.add_trace(go.Heatmap(
+            z=pl[idx], x=t_grid, y=y_pos, coloraxis='coloraxis2',
+            hoverinfo='skip'), row=r, col=2)
 
-            tr = df.iloc[int(trial_i)]
-            stim_t = float(tr['stimT']) if np.isfinite(tr.get('stimT', np.nan)) else None
-            if meta['is_hit'][trial_i] or meta['is_miss'][trial_i]:
-                if stim_t is not None:
-                    fig.add_vline(x=stim_t, line_dash='dash', line_color='black',
-                                  row=r, col=c)
-            if meta['is_hit'][trial_i] and np.isfinite(tr.get('rt_RT', np.nan)):
-                fig.add_vline(x=stim_t + float(tr['rt_RT']),
-                              line_dash='solid', line_color='seagreen',
-                              row=r, col=c)
-            if meta['is_fa'][trial_i] and np.isfinite(tr.get('rt_FA', np.nan)):
-                fig.add_vline(x=float(tr['rt_FA']),
-                              line_dash='solid', line_color='crimson',
-                              row=r, col=c)
+        # change-onset (black) on both panels
+        if stm is not None and np.isfinite(stm).any():
+            for c_i in (1, 2):
+                fig.add_trace(go.Scatter(
+                    x=stm, y=y_pos, mode='lines',
+                    line=dict(color='black', width=1, dash='dot'),
+                    showlegend=False, hoverinfo='skip'),
+                    row=r, col=c_i)
 
-    fig.update_xaxes(title_text='time in trial (s)', row=n_rows)
-    fig.update_yaxes(title_text='TF (octaves)', secondary_y=False, col=1)
-    fig.update_yaxes(title_text='P(lick)', secondary_y=True, col=n_examples)
-    fig.update_yaxes(range=[0, 1], secondary_y=True)
-    fig.update_layout(template='plotly_white',
-                      height=180 * n_rows, width=320 * n_examples,
-                      showlegend=True,
-                      legend=dict(orientation='h', yanchor='bottom', y=1.02,
-                                  xanchor='right', x=1))
+        # lick time (green hit / red FA, no marker for miss)
+        outcome = label.split()[-1]
+        if outcome in ('hit', 'fa') and np.isfinite(lick).any():
+            colour = 'seagreen' if outcome == 'hit' else 'crimson'
+            for c_i in (1, 2):
+                fig.add_trace(go.Scatter(
+                    x=lick, y=y_pos, mode='lines',
+                    line=dict(color=colour, width=1.5),
+                    showlegend=False, hoverinfo='skip'),
+                    row=r, col=c_i)
+
+        fig.update_yaxes(title_text=f'trials (n={len(idx)})',
+                         row=r, col=1, autorange='reversed')
+        fig.update_yaxes(showticklabels=False, row=r, col=2, autorange='reversed')
+
+    fig.update_xaxes(title_text='Time in trial (s)', row=n_rows)
+    fig.update_layout(
+        template='plotly_white',
+        height=140 * n_rows, width=950,
+        coloraxis  = dict(colorscale='RdBu_r', cmin=-1.5, cmax=1.5, cmid=0,
+                          colorbar=dict(title='TF', x=0.46, len=0.4, y=0.5)),
+        coloraxis2 = dict(colorscale='Reds', cmin=0, cmax=1,
+                          colorbar=dict(title='P(lick)', x=1.02, len=0.4, y=0.5)),
+        showlegend=False,
+    )
     return fig
 
 
