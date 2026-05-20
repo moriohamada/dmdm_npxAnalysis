@@ -16,9 +16,11 @@ from behaviour_rnn.train import build_tensors, _rt_kernel
 @torch.no_grad()
 def predict_p_lick(model, inputs, mask, pos_weight, batch_size=64, device='cpu'):
     """
-    per-bin calibrated P(lick) for valid bins, NaN elsewhere.
-    we undo the pos_weight rescaling by subtracting log(pos_weight) from
-    the model's logits before sigmoid.
+    per-bin P(lick) for valid bins, NaN elsewhere.
+    if lick_weight > 1 was used at training to upweight lick bins, the
+    inference logits are shifted by -log(pos_weight) to undo that scaling.
+    with lick_weight=1 (default), this shift is zero and we just sigmoid the
+    raw logits.
     """
     model.eval().to(device)
     n, max_t = inputs.shape[:2]

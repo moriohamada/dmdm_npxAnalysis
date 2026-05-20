@@ -315,7 +315,7 @@ TFDIM_OPTIONS = dict(
 )
 #%%
 BEHAVIOUR_RNN_OPS = dict(
-    n_hidden        = 16,
+    n_hidden        = 32,
     n_hidden_sweep  = [16, 32, 64],
     lr              = 1e-4,
     weight_decay    = 0,
@@ -326,8 +326,11 @@ BEHAVIOUR_RNN_OPS = dict(
     val_frac        = 0.2,
     grad_clip       = 1.0,
     seed            = 0,
-    lick_weight     = 1.0,                 # multiplier on pos_weight
-                                           # >1 -> model predicts more licks
+    lick_weight     = 1.0,                 # manual pos_weight on lick bins in BCE.
+                                           # 1.0 = standard BCE (no class-balance
+                                           # correction). >1 upweights lick bins.
+    lick_weight_sweep = [1.0, 5.0, 10.0],  # swept independently of n_hidden sweep
+                                           # (at default n_hidden), for diagnostics.
 
     # FA target shape: when does the decision happen relative to the observed lick?
     # motor delay (rt_RT for hits at 2/4 Hz changes) is subtracted from fa_bin per mouse.

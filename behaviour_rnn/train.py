@@ -18,6 +18,8 @@ RNN_DATA_DIR  = os.path.join(PATHS['npx_dir_local'], 'behaviour_rnn')
 MODELS_SUBDIR = 'models'
 SIM_NAME      = 'rnn_sim.pkl'
 
+DEFAULT_DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 
 #%% dataset
 
@@ -96,7 +98,7 @@ def build_tensors(df, config=ANALYSIS_OPTIONS, ops=BEHAVIOUR_RNN_OPS):
     baseline and the response window (mode='full_trial'), so the model sees the
     change pulse on hit/miss trials.
 
-    inputs: (N, T, 6) float32 -- tf in octaves, time/16, block (+/-1),
+    inputs: (N, T, 7) float32 -- tf in octaves, stim_on (0/1), time/16, block (+/-1),
                                  prev_licked (0/1), prev_lick_t / 20, prev_rewarded (0/1)
     target: (N, T) float32 -- decision kernel at the FA bin (FA trials) and at the
                               hit bin (hit trials), peak 1.0. miss trials are zero.
@@ -153,13 +155,15 @@ def build_tensors(df, config=ANALYSIS_OPTIONS, ops=BEHAVIOUR_RNN_OPS):
 
     tf_in = np.zeros((n_trials, max_t), dtype=np.float32)
     tf_in[:, iti_bins:] = np.nan_to_num(tf_mat, nan=0.0).astype(np.float32)
+    stim_on = np.zeros((n_trials, max_t), dtype=np.float32)
+    stim_on[:, iti_bins:] = 1.0
     t_grid = ((np.arange(max_t) - iti_bins) * dt).astype(np.float32)
     time_in = np.broadcast_to(t_grid / 16.0, (n_trials, max_t))
     block_in = np.broadcast_to(blocks[:, None], (n_trials, max_t))
     pl_in  = np.broadcast_to(prev_licked[:, None],   (n_trials, max_t))
     plt_in = np.broadcast_to(prev_lick_t[:, None],   (n_trials, max_t))
     pr_in  = np.broadcast_to(prev_rewarded[:, None], (n_trials, max_t))
-    inputs = np.stack([tf_in, time_in, block_in, pl_in, plt_in, pr_in], axis=-1)
+    inputs = np.stack([tf_in, stim_on, time_in, block_in, pl_in, plt_in, pr_in], axis=-1)
 
     # baseline_end = where the baseline period actually ends (used by hazard /
     # pulse / kernel analyses). distinct from bl_end which in 'full_trial' mode
@@ -223,7 +227,7 @@ def split_train_val(meta, val_frac=0.2, seed=0):
 class BehaviourRNN(nn.Module):
     """vanilla relu RNN with linear sigmoid read-out (logits returned)"""
 
-    def __init__(self, n_hidden=8, n_in=6):
+    def __init__(self, n_hidden=8, n_in=7):
         super().__init__()
         self.n_hidden = n_hidden
         self.rnn = nn.RNN(input_size=n_in, hidden_size=n_hidden,
@@ -238,14 +242,10 @@ class BehaviourRNN(nn.Module):
 
 #%% training
 
-def compute_pos_weight(target, mask):
-    n_pos = (target * mask).sum()
-    n_neg = ((1.0 - target) * mask).sum()
-    return float((n_neg / n_pos).item())
-
-
 def masked_bce(logit, target, mask, pos_weight):
-    """bce-with-logits, mean over valid bins per trial, then over trials"""
+    """bce-with-logits, mean over valid bins per trial, then over trials.
+    pos_weight here is whatever ops['lick_weight'] is set to (manual knob,
+    1.0 = standard BCE, >1 upweights lick bins). no auto class-balance scaling."""
     pw = torch.tensor(pos_weight, device=logit.device)
     per_bin = nn.functional.binary_cross_entropy_with_logits(
         logit, target, pos_weight=pw, reduction='none')
@@ -254,7 +254,7 @@ def masked_bce(logit, target, mask, pos_weight):
 
 
 def train_one(inputs, target, mask, train_idx, val_idx,
-              n_hidden=8, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=True):
+              n_hidden=8, ops=BEHAVIOUR_RNN_OPS, device=DEFAULT_DEVICE, verbose=True):
     """one RNN fit with a fixed n_hidden. returns (model, history, pos_weight)"""
     torch.manual_seed(ops['seed'])
     model = BehaviourRNN(n_hidden=n_hidden, n_in=inputs.shape[-1]).to(device)
@@ -265,7 +265,7 @@ def train_one(inputs, target, mask, train_idx, val_idx,
     target = target.to(device)
     mask   = mask.to(device)
 
-    pos_weight = compute_pos_weight(target[train_idx], mask[train_idx]) * ops['lick_weight']
+    pos_weight = float(ops['lick_weight'])
 
     hist = {'train': [], 'val': []}
     best_val, best_state, stagn = np.inf, None, 0
@@ -316,14 +316,16 @@ def train_one(inputs, target, mask, train_idx, val_idx,
     return model, hist, pos_weight
 
 
-def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=True,
+def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device=DEFAULT_DEVICE, verbose=True,
              subj=None, sweep_plot_dir=None, real_cached=None):
     """
-    fit one mouse. n_hidden=None -> sweep ops['n_hidden_sweep'] and pick
-    the smallest n_h within 1% of the best val loss.
+    fit one mouse. n_hidden=None -> independent sweeps over ops['n_hidden_sweep']
+    (at default lick_weight) and ops['lick_weight_sweep'] (at default n_hidden),
+    for diagnostics. always use (ops['n_hidden'], ops['lick_weight']) as the
+    downstream model so cross-mouse comparisons are at fixed capacity / weighting.
 
     if subj and sweep_plot_dir are provided, real-vs-RNN mirror plots are written
-    to sweep_plot_dir/<subj>/n_h_<n_h>/ after each sweep entry.
+    to sweep_plot_dir/<subj>/<tag>/ after each sweep entry (tag = 'n_h_X' or 'lw_Y').
     """
     inputs, target, mask, meta = build_tensors(df)
     train_idx, val_idx = split_train_val(meta, val_frac=ops['val_frac'], seed=ops['seed'])
@@ -333,34 +335,74 @@ def fit_subj(df, n_hidden=None, ops=BEHAVIOUR_RNN_OPS, device='cpu', verbose=Tru
             inputs, target, mask, train_idx, val_idx,
             n_hidden=n_hidden, ops=ops, device=device, verbose=verbose)
         if subj and sweep_plot_dir:
-            _plot_sweep_entry(model, df, pw, subj, n_hidden,
+            _plot_sweep_entry(model, df, pw, subj, f'n_h_{n_hidden}',
                               sweep_plot_dir, real_cached)
         return dict(
             model=model, history=hist, pos_weight=pw, n_hidden=n_hidden,
             meta=meta, train_idx=train_idx, val_idx=val_idx,
         )
 
-    sweep = {}
+    default_nh = ops['n_hidden']
+    default_lw = float(ops['lick_weight'])
+
+    # train default model once; both sweep legs reuse it
+    if verbose:
+        print(f'--- default n_hidden={default_nh}, lick_weight={default_lw} ---')
+    m_d, h_d, pw_d = train_one(
+        inputs, target, mask, train_idx, val_idx,
+        n_hidden=default_nh, ops=ops, device=device, verbose=verbose)
+    default = dict(model=m_d, history=h_d, pos_weight=pw_d, best_val=min(h_d['val']))
+    if subj and sweep_plot_dir:
+        _plot_sweep_entry(m_d, df, pw_d, subj, f'n_h_{default_nh}',
+                          sweep_plot_dir, real_cached)
+        _plot_sweep_entry(m_d, df, pw_d, subj, f'lw_{default_lw}',
+                          sweep_plot_dir, real_cached)
+
+    # n_hidden sweep at default lick_weight
+    nh_sweep = {default_nh: default}
     for n_h in ops['n_hidden_sweep']:
+        if n_h == default_nh:
+            continue
         if verbose:
-            print(f'--- n_hidden = {n_h} ---')
+            print(f'--- n_hidden = {n_h} (lw = {default_lw}) ---')
         m, h, pw = train_one(
             inputs, target, mask, train_idx, val_idx,
             n_hidden=n_h, ops=ops, device=device, verbose=verbose)
-        sweep[n_h] = dict(model=m, history=h, pos_weight=pw, best_val=min(h['val']))
+        nh_sweep[n_h] = dict(model=m, history=h, pos_weight=pw, best_val=min(h['val']))
         if subj and sweep_plot_dir:
-            _plot_sweep_entry(m, df, pw, subj, n_h, sweep_plot_dir, real_cached)
+            _plot_sweep_entry(m, df, pw, subj, f'n_h_{n_h}',
+                              sweep_plot_dir, real_cached)
 
-    best_loss = min(s['best_val'] for s in sweep.values())
-    chosen = min(n_h for n_h, s in sweep.items() if s['best_val'] <= best_loss * 1.01)
+    # lick_weight sweep at default n_hidden
+    lw_sweep = {default_lw: default}
+    for lw in ops['lick_weight_sweep']:
+        lw_f = float(lw)
+        if lw_f == default_lw:
+            continue
+        if verbose:
+            print(f'--- lick_weight = {lw_f} (n_h = {default_nh}) ---')
+        ops_lw = {**ops, 'lick_weight': lw_f}
+        m, h, pw = train_one(
+            inputs, target, mask, train_idx, val_idx,
+            n_hidden=default_nh, ops=ops_lw, device=device, verbose=verbose)
+        lw_sweep[lw_f] = dict(model=m, history=h, pos_weight=pw, best_val=min(h['val']))
+        if subj and sweep_plot_dir:
+            _plot_sweep_entry(m, df, pw, subj, f'lw_{lw_f}',
+                              sweep_plot_dir, real_cached)
+
     if verbose:
-        print(f'chosen n_hidden = {chosen} (best val {sweep[chosen]["best_val"]:.4f})')
+        nh_best = min(nh_sweep.items(), key=lambda kv: kv[1]['best_val'])
+        lw_best = min(lw_sweep.items(), key=lambda kv: kv[1]['best_val'])
+        print(f'using n_hidden={default_nh}, lick_weight={default_lw} '
+              f'(val {default["best_val"]:.4f}; '
+              f'best n_h={nh_best[0]} @ {nh_best[1]["best_val"]:.4f}; '
+              f'best lw={lw_best[0]} @ {lw_best[1]["best_val"]:.4f})')
 
     return dict(
-        sweep=sweep, n_hidden=chosen, meta=meta,
+        sweep={'n_hidden': nh_sweep, 'lick_weight': lw_sweep},
+        n_hidden=default_nh, lick_weight=default_lw, meta=meta,
         train_idx=train_idx, val_idx=val_idx,
-        model=sweep[chosen]['model'], history=sweep[chosen]['history'],
-        pos_weight=sweep[chosen]['pos_weight'],
+        model=default['model'], history=default['history'], pos_weight=default['pos_weight'],
     )
 
 
@@ -380,27 +422,31 @@ def save_model(result, path):
         val_idx    = result['val_idx'],
     )
     if 'sweep' in result:
-        obj['sweep_val'] = {n_h: s['best_val'] for n_h, s in result['sweep'].items()}
+        obj['sweep_val'] = {
+            dim: {k: s['best_val'] for k, s in legs.items()}
+            for dim, legs in result['sweep'].items()
+        }
     torch.save(obj, path)
     print(f'saved to {path}')
 
 
 def load_model(path):
     obj = torch.load(path, weights_only=False)
-    model = BehaviourRNN(n_hidden=obj['n_hidden'], n_in=obj.get('n_in', 6))
+    model = BehaviourRNN(n_hidden=obj['n_hidden'], n_in=obj.get('n_in', 7))
     model.load_state_dict(obj['state_dict'])
     model.eval()
     return model, obj
 
 
-def _plot_sweep_entry(model, df, pos_weight, subj, n_h, plot_dir, real_cached):
-    """write real-vs-RNN mirror plots + example trials + outcome dist for one mouse"""
+def _plot_sweep_entry(model, df, pos_weight, subj, tag, plot_dir, real_cached):
+    """write real-vs-RNN mirror plots + example trials + outcome dist for one mouse.
+    tag is the sweep-entry label (e.g. 'n_h_16', 'lw_5')."""
     from behaviour_rnn.simulate_behaviour import simulate_all
     from behaviour_rnn.plotting import (plot_subject_mirrors, plot_example_trials,
                                         plot_outcome_dist_single)
     from utils.figures import save_fig
 
-    out_dir = Path(plot_dir) / subj / f'n_h_{n_h}'
+    out_dir = Path(plot_dir) / subj / tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sim = simulate_all(model, df, pos_weight)
@@ -415,12 +461,12 @@ def _model_path(subj, data_dir=RNN_DATA_DIR):
     return Path(data_dir) / MODELS_SUBDIR / f'rnn_{subj}.pt'
 
 
-def train_rnns_all_subj(dfs, overwrite=False, data_dir=RNN_DATA_DIR,
+def train_rnns_all_subj(dfs, overwrite=True, data_dir=RNN_DATA_DIR,
                         sweep_plot_dir=None, **fit_kwargs):
     """
     train an RNN per mouse, save weights, compute and save the simulated
     behavioural mirrors (hazard, pulse-lick, kernel) for the whole cohort.
-    skips mice whose model already exists unless overwrite=True.
+    retrains every mouse by default; pass overwrite=False to skip cached models.
 
     sweep_plot_dir, if given, receives per-mouse per-n_hidden diagnostic plots
     (one subdir per (mouse, n_h)) generated as each sweep entry finishes.

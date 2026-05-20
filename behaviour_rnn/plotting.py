@@ -499,6 +499,119 @@ def plot_example_trials(model, df_subj, pos_weight, config=ANALYSIS_OPTIONS):
     return fig
 
 
+#%% per-trial PDF (mirrors lick_pred.plot_all_lick_trials)
+
+def plot_all_rnn_trials(model, df_subj, pos_weight, save_path,
+                        config=ANALYSIS_OPTIONS):
+    """multipage PDF, one page per trial.
+    row 1: TF trace + change-onset (black dotted) + mouse lick (green hit / red FA).
+    row 2: training target + RNN P(lick), same markers.
+    title: block, mouse outcome, model outcome (argmax of analytic P_fa/P_hit/P_miss).
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from matplotlib.backends.backend_pdf import PdfPages
+    from behaviour_rnn.train import build_tensors
+    from behaviour_rnn.simulate_behaviour import predict_p_lick, _apply_motor_delay
+
+    inputs, target, mask, meta = build_tensors(df_subj)
+    p_lick = predict_p_lick(model, inputs, mask, pos_weight)
+
+    iti = meta.get('iti_bins', 0)
+    if iti > 0:
+        p_lick    = p_lick[:, iti:]
+        target_np = target.numpy()[:, iti:]
+        tf_in     = inputs[:, iti:, 0].numpy()
+    else:
+        target_np = target.numpy()
+        tf_in     = inputs[:, :, 0].numpy()
+    p_lick = _apply_motor_delay(p_lick, meta['rt_samples'], meta['dt'])
+
+    df    = meta['df']
+    dt    = meta['dt']
+    n, T  = p_lick.shape
+    t_grid = np.arange(T) * dt
+
+    # per-trial model outcome label (argmax of analytic P_fa, P_hit_cond, P_miss_cond)
+    rw_bins = int(round(config.get('response_window', 2.15) / dt))
+    p_safe  = np.where(np.isnan(p_lick), 0.0, p_lick)
+    log_s   = np.log(np.clip(1.0 - p_safe, 1e-9, 1.0))
+    cumlog  = np.concatenate([np.zeros((n, 1)), np.cumsum(log_s, axis=1)[:, :-1]], axis=1)
+    p_first = p_safe * np.exp(cumlog)
+
+    stim_t     = df['stimT'].to_numpy(dtype=float)
+    has_change = np.isfinite(stim_t)
+    change_bin = np.where(has_change,
+                          np.clip(np.ceil(stim_t / dt).astype(int) - 1, 0, T - 1),
+                          T)
+
+    model_outcome = np.empty(n, dtype=object)
+    for i in range(n):
+        cb = int(change_bin[i])
+        p_fa = float(p_first[i, :cb].sum()) if cb > 0 else 0.0
+        if has_change[i] and cb < T:
+            saw = float(np.exp(cumlog[i, cb]))
+            p_hit_u = float(p_first[i, cb:min(cb + rw_bins, T)].sum())
+            p_hit = p_hit_u / saw if saw > 1e-9 else 0.0
+            p_miss = max(0.0, 1.0 - p_hit)
+            joint = np.array([p_fa, (1 - p_fa) * p_hit, (1 - p_fa) * p_miss])
+        else:
+            joint = np.array([p_fa, 0.0, 1.0 - p_fa])
+        model_outcome[i] = ['fa', 'hit', 'miss'][int(joint.argmax())]
+
+    mouse_outcome = np.where(df['IsHit'], 'hit',
+                     np.where(df['IsFA'], 'fa',
+                     np.where(df['IsMiss'], 'miss', 'other')))
+    blocks_str = np.where(meta['blocks'] == 1.0, 'early', 'late')
+    rt_rt = df['rt_RT'].to_numpy(dtype=float)
+    rt_fa = df['rt_FA'].to_numpy(dtype=float)
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with PdfPages(save_path) as pdf:
+        for i in range(n):
+            fig, (ax_tf, ax_p) = plt.subplots(
+                2, 1, figsize=(8, 5), sharex=True,
+                gridspec_kw={'height_ratios': [1, 1.4]})
+
+            ax_tf.plot(t_grid, tf_in[i], color='k', linewidth=1)
+            ax_tf.axhline(0, color='grey', linewidth=0.3)
+            ax_tf.set_ylabel('TF (oct)')
+
+            if has_change[i]:
+                for ax in (ax_tf, ax_p):
+                    ax.axvline(stim_t[i], color='black', linestyle=':', linewidth=1)
+
+            if mouse_outcome[i] == 'hit' and np.isfinite(rt_rt[i]):
+                lick_t, colour = stim_t[i] + rt_rt[i], 'seagreen'
+            elif mouse_outcome[i] == 'fa' and np.isfinite(rt_fa[i]):
+                lick_t, colour = rt_fa[i], 'crimson'
+            else:
+                lick_t = None
+            if lick_t is not None:
+                for ax in (ax_tf, ax_p):
+                    ax.axvline(lick_t, color=colour, linewidth=1)
+
+            ax_p.plot(t_grid, target_np[i], color='grey', alpha=0.7, label='target')
+            ax_p.plot(t_grid, p_lick[i],    color='tab:red',          label='RNN P(lick)')
+            ax_p.set_ylim(-0.05, 1.05)
+            ax_p.set_ylabel('P(lick)')
+            ax_p.set_xlabel('Time in trial (s)')
+            ax_p.legend(loc='upper right', fontsize=8)
+
+            ax_tf.set_title(
+                f'trial {i + 1} | {blocks_str[i]} block | '
+                f'mouse: {mouse_outcome[i]} | model: {model_outcome[i]}')
+            sns.despine(ax=ax_tf)
+            sns.despine(ax=ax_p)
+            fig.tight_layout()
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+
+    print(f'saved {n} trial plots to {save_path}')
+
+
 #%% single-subject plots (used during n_hidden sweep)
 
 def plot_subject_mirrors(subj, sim, plot_dir, real_cached=None,
@@ -522,11 +635,12 @@ def plot_subject_mirrors(subj, sim, plot_dir, real_cached=None,
         save_fig(plot_hazard_real_vs_rnn(real_h, sim_h, config),
                  str(plot_dir / 'hazard_rates'))
 
-    real_p = {subj: real_cached['pulse'][subj]} if subj in real_cached['pulse'] else {}
-    sim_p  = {subj: sim['pulse']}
-    if real_p:
-        for cond, fig in plot_pulse_lick_real_vs_rnn(real_p, sim_p, config).items():
-            save_fig(fig, str(plot_dir / f'pulse_lick_prob_{cond}'))
+    # pulse_lick_prob plots disabled (slow)
+    # real_p = {subj: real_cached['pulse'][subj]} if subj in real_cached['pulse'] else {}
+    # sim_p  = {subj: sim['pulse']}
+    # if real_p:
+    #     for cond, fig in plot_pulse_lick_real_vs_rnn(real_p, sim_p, config).items():
+    #         save_fig(fig, str(plot_dir / f'pulse_lick_prob_{cond}'))
 
     # elta is cohort-aggregated (mean/sem across subjs); rebuild for this subj only
     real_elta_subj = {}
@@ -562,9 +676,10 @@ def comparative_plots(plot_dir):
     save_fig(plot_training_curves(rnn), str(plot_dir / 'training_curves'))
     save_fig(plot_hazard_real_vs_rnn(load_behavioural('hazard_rates'), sim['hazard']),
              str(plot_dir / 'hazard_rates'))
-    for cond, fig in plot_pulse_lick_real_vs_rnn(
-            load_behavioural('pulse_lick_prob'), sim['pulse']).items():
-        save_fig(fig, str(plot_dir / f'pulse_lick_prob_{cond}'))
+    # pulse_lick_prob plots disabled (slow)
+    # for cond, fig in plot_pulse_lick_real_vs_rnn(
+    #         load_behavioural('pulse_lick_prob'), sim['pulse']).items():
+    #     save_fig(fig, str(plot_dir / f'pulse_lick_prob_{cond}'))
     save_fig(plot_kernel_real_vs_rnn(load_behavioural('elta'), sim['kernel']),
              str(plot_dir / 'elta'))
     save_fig(plot_outcome_dist_cohort(sim['outcome']),
